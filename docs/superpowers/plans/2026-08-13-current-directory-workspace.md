@@ -422,3 +422,205 @@ git log -4 --oneline
 
 Expected: diff check succeeds, status is empty, and the three implementation
 commits follow the approved design commit.
+
+---
+
+### Task 4: Add an interactive Working spinner
+
+**Files:**
+- Create: `agent_app/cli_progress.py`
+- Modify: `agent_app/adapters/anthropic.py`
+- Modify: `agent_app/bootstrap.py`
+- Modify: `tests/test_agent_app_anthropic_adapter.py`
+- Create: `tests/test_cli_progress.py`
+- Modify: `tests/test_agent_app_bootstrap.py`
+- Modify: `README.md`
+
+**Interfaces:**
+- Consumes: interactive `stderr`, streaming model request lifecycle, production bootstrap
+- Produces: `TerminalSpinner`, `terminal_progress(label: str)`, no-op adapter default, and `AnthropicAdapter(..., progress=...)`
+
+- [ ] **Step 1: Write deterministic terminal progress tests**
+
+Create `tests/test_cli_progress.py` with fakes for stream, event, and thread.
+The fake stream records writes and exposes configurable `isatty()`. The fake
+event returns `False` once and `True` on its next `wait()` so the animation
+target emits a bounded number of frames. Assert:
+
+```python
+def test_tty_spinner_animates_then_clears_and_joins():
+    stream = FakeStream(tty=True)
+    created = []
+    spinner = TerminalSpinner(
+        "Working",
+        stream=stream,
+        frames=("A", "B"),
+        interval=0.01,
+        event_factory=FakeEvent,
+        thread_factory=lambda **kwargs: FakeThread(created, **kwargs),
+    )
+
+    with spinner:
+        pass
+
+    assert "\rA Working" in "".join(stream.writes)
+    assert stream.writes[-1] == "\r\033[2K"
+    assert created[0].daemon is True
+    assert created[0].joined == [1.0]
+```
+
+Add a second test calling `spinner.stop()` twice and asserting only one clear
+write, and a non-TTY test asserting no thread and no output.
+
+- [ ] **Step 2: Write adapter progress-order tests**
+
+In `tests/test_agent_app_anthropic_adapter.py`, use a recording progress
+context and monkeypatch `builtins.print` to append events. Add three tests:
+
+```python
+def test_streaming_stops_progress_before_first_visible_chunk(monkeypatch):
+    # Stream yields "visible" then returns a final message.
+    # Expected event order begins: enter, stop, print:visible, exit.
+
+
+def test_streaming_exception_exits_progress(monkeypatch):
+    # Stream raises before yielding text.
+    # Assert the exception propagates and events end with stop/exit cleanup.
+
+
+def test_tool_only_stream_keeps_progress_until_final_message(monkeypatch):
+    # text_stream is empty and get_final_message records "final".
+    # Assert final occurs before the context cleanup event.
+```
+
+Keep the existing adapter tests constructing `AnthropicAdapter(client)`; they
+prove the default progress implementation is silent and backward compatible.
+
+- [ ] **Step 3: Run focused tests and verify RED**
+
+Run:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider \
+  tests/test_cli_progress.py tests/test_agent_app_anthropic_adapter.py -q
+```
+
+Expected: FAIL because `cli_progress` and adapter progress injection do not
+exist.
+
+- [ ] **Step 4: Implement no-op progress at the adapter boundary**
+
+In `agent_app/adapters/anthropic.py`, add a private idempotent no-op context
+handle and factory. Extend the dataclass compatibly:
+
+```python
+@dataclass(frozen=True, slots=True)
+class AnthropicAdapter:
+    client: Any
+    progress: Callable[[str], ContextManager] = _null_progress
+```
+
+Wrap only `create_streaming()`:
+
+```python
+with self.progress("Working") as progress:
+    with self.client.messages.stream(...) as stream:
+        for chunk in stream.text_stream:
+            if not chunk:
+                continue
+            progress.stop()
+            chunks.append(chunk)
+            print(chunk, end="", flush=True)
+        return stream.get_final_message()
+```
+
+The existing outer `try`/`except PartialStreamError` behavior and newline
+`finally` remain unchanged. Do not show progress for `create()`.
+
+- [ ] **Step 5: Implement the TTY-only spinner**
+
+Create `agent_app/cli_progress.py` with `TerminalSpinner`. It uses the frame
+sequence `⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏`, defaults to `sys.stderr` and a `0.08` second
+interval, starts one daemon thread named `pamu-working-spinner`, and writes:
+
+```python
+stream.write(f"\r{frame} {label}")
+```
+
+`stop()` sets its event, joins the worker for `1.0` second unless invoked by
+that worker, then writes `"\r\033[2K"` and flushes. Guard stop and writes with
+a lock so repeated stops clear once and cannot race the animation. For
+`isatty() == False`, `__enter__` returns without starting a thread and `stop()`
+does not write. `__exit__` always calls `stop()` and returns `False`.
+
+Expose:
+
+```python
+def terminal_progress(label: str) -> TerminalSpinner:
+    return TerminalSpinner(label)
+```
+
+- [ ] **Step 6: Wire progress only into the production CLI runtime**
+
+Extend `build_runtime` with a backward-compatible keyword-only argument:
+
+```python
+def build_runtime(config, sdk_client, *, progress_factory=None):
+    llm = (
+        AnthropicAdapter(sdk_client, progress_factory)
+        if progress_factory is not None
+        else AnthropicAdapter(sdk_client)
+    )
+```
+
+Import `terminal_progress` in bootstrap and have `build_default_runtime()` call:
+
+```python
+return build_runtime(
+    config,
+    Anthropic(base_url=base_url),
+    progress_factory=terminal_progress,
+)
+```
+
+Update the default-runtime bootstrap test to assert
+`runtime.llm.progress is bootstrap.terminal_progress`. Explicit
+`build_runtime(config, FakeSDKClient())` tests remain silent.
+
+- [ ] **Step 7: Run focused and full regression tests**
+
+Run:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider \
+  tests/test_cli_progress.py tests/test_agent_app_anthropic_adapter.py \
+  tests/test_agent_app_bootstrap.py tests/test_cli.py -q
+PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider -q
+```
+
+Expected: focused and full suites pass with no spinner noise in captured output.
+
+- [ ] **Step 8: Document and commit the spinner**
+
+Add a short README note: interactive model waits display an animated `Working`
+status; redirected and non-interactive output stays clean. Then run:
+
+```bash
+git add agent_app/cli_progress.py agent_app/adapters/anthropic.py \
+  agent_app/bootstrap.py tests/test_cli_progress.py \
+  tests/test_agent_app_anthropic_adapter.py tests/test_agent_app_bootstrap.py \
+  README.md
+git commit -m "feat: show interactive PamuCode working status"
+```
+
+- [ ] **Step 9: Verify thread and output cleanup**
+
+Run:
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 uv run pytest -p no:cacheprovider -q
+git diff --check
+git status --short
+```
+
+Expected: all tests pass, diff check succeeds, and status is empty.
