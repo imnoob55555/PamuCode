@@ -1,0 +1,27 @@
+[project]
+name = "pamucode"
+version = "0.1.0"
+description = "A layered coding-agent runtime"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+  "anthropic>=0.52",
+  "python-dotenv>=1.0",
+  "PyYAML>=6.0",
+]
+
+[project.scripts]
+pamu = "agent_app.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8.0"]
+
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["agent_app*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
