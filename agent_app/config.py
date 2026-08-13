@@ -6,6 +6,14 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+class MissingConfigurationError(ValueError):
+    """A required PamuCode configuration value was not provided."""
+
+    def __init__(self, key: str) -> None:
+        self.key = key
+        super().__init__(f"Missing required configuration: {key}")
+
+
 @dataclass(frozen=True, slots=True)
 class AppConfig:
     repo_root: Path
@@ -45,6 +53,9 @@ class AppConfig:
         environ: Mapping[str, str] | None = None,
     ) -> "AppConfig":
         environment = os.environ if environ is None else environ
+        model_id = environment.get("MODEL_ID")
+        if model_id is None or not model_id.strip():
+            raise MissingConfigurationError("MODEL_ID")
         root = repo_root.resolve()
         workspace = (workdir or repo_root).resolve()
         state_dir = workspace / ".pamu"
@@ -63,6 +74,6 @@ class AppConfig:
             mailbox_dir=state_dir / "mailboxes",
             scheduled_tasks_path=state_dir / "scheduled_tasks.json",
             worktrees_dir=state_dir / "worktrees",
-            primary_model=environment["MODEL_ID"],
+            primary_model=model_id,
             fallback_model=environment.get("FALLBACK_MODEL_ID"),
         )

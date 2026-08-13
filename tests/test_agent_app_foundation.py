@@ -1,5 +1,21 @@
+import pytest
+
+import agent_app.config as config_module
 from agent_app.config import AppConfig
 from agent_app.runtime import SessionState
+
+
+@pytest.mark.parametrize(
+    "environment",
+    [{}, {"MODEL_ID": ""}, {"MODEL_ID": "  \t"}],
+)
+def test_app_config_rejects_missing_or_blank_model_id(tmp_path, environment):
+    with pytest.raises(Exception) as raised:
+        AppConfig.from_env(tmp_path, environ=environment)
+
+    assert isinstance(raised.value, config_module.MissingConfigurationError)
+    assert raised.value.key == "MODEL_ID"
+    assert "MODEL_ID" in str(raised.value)
 
 
 def test_app_config_separates_installation_workspace_and_state_paths(
