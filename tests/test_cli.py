@@ -9,6 +9,26 @@ import pytest
 
 import agent_app.cli as cli
 from agent_app.cli import main
+from agent_app.config import MissingConfigurationError
+
+
+def test_cli_explains_missing_model_configuration(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+
+    def missing_runtime():
+        raise MissingConfigurationError("MODEL_ID")
+
+    result = main(runtime_factory=missing_runtime)
+    captured = capsys.readouterr()
+
+    assert result == 2
+    assert captured.out == ""
+    assert "配置错误" in captured.err
+    assert "MODEL_ID" in captured.err
+    assert str(Path.home() / ".config" / "pamucode" / ".env") in captured.err
+    assert str(tmp_path / ".pamu" / ".env") in captured.err
+    assert "MODEL_ID=claude-sonnet-4-6" in captured.err
+    assert "Traceback" not in captured.err
 
 
 def test_cli_exits_without_agent_turn(monkeypatch):
@@ -31,6 +51,42 @@ def test_cli_exits_without_agent_turn(monkeypatch):
     assert calls == []
     assert runtime.stop_event.is_set()
     assert stopped == [[]]
+
+
+def test_module_cli_missing_model_exits_two_without_traceback(tmp_path):
+    project_root = Path(__file__).resolve().parents[1]
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in {"MODEL_ID", "FALLBACK_MODEL_ID"}
+    }
+    environment.update(
+        {
+            "HOME": str(home),
+            "PYTHONPATH": str(project_root),
+        }
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-m", "agent_app"],
+        text=True,
+        capture_output=True,
+        cwd=workspace,
+        env=environment,
+        timeout=10,
+    )
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert "配置错误" in result.stderr
+    assert "MODEL_ID" in result.stderr
+    assert str(home / ".config" / "pamucode" / ".env") in result.stderr
+    assert str(workspace / ".pamu" / ".env") in result.stderr
+    assert "Traceback" not in result.stderr
 
 
 def test_cli_stops_started_threads_when_startup_raises():

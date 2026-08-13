@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import sys
 import threading
+from pathlib import Path
 
 from .bootstrap import build_default_runtime
+from .config import MissingConfigurationError
 from .core.loop import run_agent_loop
 from .features.scheduler import (
     cron_scheduler_loop,
@@ -73,8 +76,21 @@ def main(
     run_turn=run_agent_turn,
     start_threads=start_runtime_threads,
     stop_threads=stop_runtime_threads,
-) -> None:
-    runtime = runtime_factory()
+) -> int | None:
+    try:
+        runtime = runtime_factory()
+    except MissingConfigurationError as error:
+        global_config = Path.home() / ".config" / "pamucode" / ".env"
+        project_config = Path.cwd().resolve() / ".pamu" / ".env"
+        print(
+            f"配置错误：缺少必需配置项 {error.key}。\n"
+            "请在以下任一位置添加配置：\n"
+            f"  全局：{global_config}\n"
+            f"  项目：{project_config}\n"
+            "示例：MODEL_ID=claude-sonnet-4-6",
+            file=sys.stderr,
+        )
+        return 2
     threads = []
     try:
         threads = start_threads(runtime)
