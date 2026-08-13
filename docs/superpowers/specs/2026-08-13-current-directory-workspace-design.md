@@ -52,18 +52,17 @@ Model/provider configuration has three layers, from lowest to highest priority:
 → variables explicitly present in the launching process environment
 ```
 
-Neither dotenv file overwrites variables that were already present in the
-launching process. The project file therefore overrides the global file only
-when the variable did not originate in the process environment. This requires
-loading the project file before the global file, both with `override=False`, so
-python-dotenv's first loaded value wins while the process environment remains
-authoritative.
+PamuCode reads both dotenv files with `dotenv_values()` and merges the resulting
+mappings in the order shown above. The launching process environment is applied
+last and therefore remains authoritative. This isolated mapping is passed into
+runtime configuration without mutating `os.environ`, so sequential runtimes do
+not inherit values loaded for an earlier workspace.
 
 Supported variables remain `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL`,
-`ANTHROPIC_AUTH_TOKEN`, `MODEL_ID`, and `FALLBACK_MODEL_ID`. If
-`ANTHROPIC_BASE_URL` is configured, PamuCode preserves the existing behavior of
-removing `ANTHROPIC_AUTH_TOKEN` before constructing the Anthropic-compatible
-client.
+`ANTHROPIC_AUTH_TOKEN`, `MODEL_ID`, and `FALLBACK_MODEL_ID`. When
+`ANTHROPIC_BASE_URL` is configured, PamuCode passes the selected base URL and API
+key explicitly to the Anthropic-compatible client and does not pass an ambient
+`ANTHROPIC_AUTH_TOKEN`.
 
 ## Runtime state mapping
 
