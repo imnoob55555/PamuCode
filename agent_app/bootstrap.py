@@ -34,7 +34,7 @@ from .tools.hooks import (
 from .tools.registry import ToolRegistry
 
 
-DEFAULT_REPO_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_REPO_ROOT = Path(__file__).resolve().parents[1]
 TEAM_GUARDED_TOOLS = {"bash", "write_file"}
 
 
