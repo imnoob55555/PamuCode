@@ -360,14 +360,9 @@ def build_default_runtime() -> RuntimeContext:
     from anthropic import Anthropic
     from dotenv import load_dotenv
 
-    workspace = Path.cwd().resolve()
-    load_dotenv(dotenv_path=workspace / ".pamu" / ".env", override=False)
-    load_dotenv(
-        dotenv_path=Path.home() / ".config" / "pamucode" / ".env",
-        override=False,
-    )
+    load_dotenv(override=True)
     base_url = os.getenv("ANTHROPIC_BASE_URL")
     if base_url:
         os.environ.pop("ANTHROPIC_AUTH_TOKEN", None)
-    config = AppConfig.from_env(INSTALL_ROOT, workspace)
+    config = AppConfig.from_env(INSTALL_ROOT)
     return build_runtime(config, Anthropic(base_url=base_url))

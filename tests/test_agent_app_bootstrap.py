@@ -115,8 +115,11 @@ def test_build_default_runtime_owns_environment_and_sdk_creation(
     fake_dotenv.load_dotenv = lambda **kwargs: calls.append(("dotenv", kwargs))
     monkeypatch.setitem(sys.modules, "anthropic", fake_anthropic)
     monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
-    monkeypatch.setattr(bootstrap, "INSTALL_ROOT", tmp_path)
-    monkeypatch.chdir(tmp_path)
+    install_root = tmp_path / "install"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setattr(bootstrap, "INSTALL_ROOT", install_root)
+    monkeypatch.chdir(workspace)
     monkeypatch.setenv("MODEL_ID", "test-model")
     monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://example.invalid")
     monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "remove-me")
@@ -124,10 +127,9 @@ def test_build_default_runtime_owns_environment_and_sdk_creation(
     runtime = bootstrap.build_default_runtime()
 
     assert calls == [
-        ("dotenv", {"dotenv_path": tmp_path / ".pamu" / ".env", "override": False}),
-        ("dotenv", {"dotenv_path": Path.home() / ".config" / "pamucode" / ".env", "override": False}),
+        ("dotenv", {"override": True}),
         ("anthropic", {"base_url": "https://example.invalid"}),
     ]
     assert "ANTHROPIC_AUTH_TOKEN" not in __import__("os").environ
-    assert runtime.config.repo_root == tmp_path.resolve()
-    assert runtime.config.workdir == tmp_path.resolve()
+    assert runtime.config.repo_root == bootstrap.INSTALL_ROOT.resolve()
+    assert runtime.config.workdir == bootstrap.INSTALL_ROOT.resolve()
