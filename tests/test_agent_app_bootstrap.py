@@ -1,4 +1,5 @@
 import importlib
+import os
 import sys
 import types
 from pathlib import Path
@@ -16,6 +17,49 @@ class FakeSDKClient:
 
     def __init__(self):
         self.messages = self.Messages()
+
+
+def test_environment_loads_project_before_global_without_override(tmp_path):
+    import agent_app.bootstrap as bootstrap
+
+    calls = []
+    workspace = tmp_path / "project"
+    global_env = tmp_path / "config" / ".env"
+
+    bootstrap._load_environment(
+        workspace,
+        global_env,
+        lambda path, **kwargs: calls.append((path, kwargs)),
+    )
+
+    assert calls == [
+        (workspace / ".pamu" / ".env", {"override": False}),
+        (global_env, {"override": False}),
+    ]
+
+
+def test_environment_keeps_project_and_process_values(tmp_path, monkeypatch):
+    from dotenv import load_dotenv
+
+    import agent_app.bootstrap as bootstrap
+
+    workspace = tmp_path / "project"
+    global_env = tmp_path / "config" / ".env"
+    project_env = workspace / ".pamu" / ".env"
+    project_env.parent.mkdir(parents=True)
+    global_env.parent.mkdir(parents=True)
+    global_env.write_text("MODEL_ID=global\n", encoding="utf-8")
+    project_env.write_text("MODEL_ID=project\n", encoding="utf-8")
+    monkeypatch.delenv("MODEL_ID", raising=False)
+
+    bootstrap._load_environment(workspace, global_env, load_dotenv)
+
+    assert os.environ["MODEL_ID"] == "project"
+
+    monkeypatch.setenv("MODEL_ID", "process")
+    bootstrap._load_environment(workspace, global_env, load_dotenv)
+
+    assert os.environ["MODEL_ID"] == "process"
 
 
 def test_import_does_not_create_runtime_files(tmp_path, monkeypatch):
@@ -112,13 +156,17 @@ def test_build_default_runtime_owns_environment_and_sdk_creation(
     fake_anthropic = types.ModuleType("anthropic")
     fake_dotenv = types.ModuleType("dotenv")
     fake_anthropic.Anthropic = FakeAnthropic
-    fake_dotenv.load_dotenv = lambda **kwargs: calls.append(("dotenv", kwargs))
+    fake_dotenv.load_dotenv = lambda path, **kwargs: calls.append(
+        ("dotenv", path, kwargs)
+    )
     monkeypatch.setitem(sys.modules, "anthropic", fake_anthropic)
     monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
     install_root = tmp_path / "install"
     workspace = tmp_path / "workspace"
+    global_env = tmp_path / "config" / ".env"
     workspace.mkdir()
     monkeypatch.setattr(bootstrap, "INSTALL_ROOT", install_root)
+    monkeypatch.setattr(bootstrap, "GLOBAL_ENV_PATH", global_env)
     monkeypatch.chdir(workspace)
     monkeypatch.setenv("MODEL_ID", "test-model")
     monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://example.invalid")
@@ -127,9 +175,10 @@ def test_build_default_runtime_owns_environment_and_sdk_creation(
     runtime = bootstrap.build_default_runtime()
 
     assert calls == [
-        ("dotenv", {"override": True}),
+        ("dotenv", workspace / ".pamu" / ".env", {"override": False}),
+        ("dotenv", global_env, {"override": False}),
         ("anthropic", {"base_url": "https://example.invalid"}),
     ]
     assert "ANTHROPIC_AUTH_TOKEN" not in __import__("os").environ
     assert runtime.config.repo_root == bootstrap.INSTALL_ROOT.resolve()
-    assert runtime.config.workdir == bootstrap.INSTALL_ROOT.resolve()
+    assert runtime.config.workdir == workspace.resolve()

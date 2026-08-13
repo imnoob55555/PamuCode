@@ -35,7 +35,14 @@ from .tools.registry import ToolRegistry
 
 
 INSTALL_ROOT = Path(__file__).resolve().parents[1]
+GLOBAL_ENV_PATH = Path.home() / ".config" / "pamucode" / ".env"
 TEAM_GUARDED_TOOLS = {"bash", "write_file"}
+
+
+def _load_environment(workspace: Path, global_env: Path, load) -> None:
+    """Load workspace and user defaults without replacing process settings."""
+    load(workspace / ".pamu" / ".env", override=False)
+    load(global_env, override=False)
 
 
 def _create_storage_roots(config: AppConfig) -> None:
@@ -360,9 +367,10 @@ def build_default_runtime() -> RuntimeContext:
     from anthropic import Anthropic
     from dotenv import load_dotenv
 
-    load_dotenv(override=True)
+    workspace = Path.cwd().resolve()
+    _load_environment(workspace, GLOBAL_ENV_PATH, load_dotenv)
     base_url = os.getenv("ANTHROPIC_BASE_URL")
     if base_url:
         os.environ.pop("ANTHROPIC_AUTH_TOKEN", None)
-    config = AppConfig.from_env(INSTALL_ROOT)
+    config = AppConfig.from_env(INSTALL_ROOT, workspace)
     return build_runtime(config, Anthropic(base_url=base_url))

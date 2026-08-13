@@ -206,13 +206,18 @@ def test_start_runtime_threads_cleans_up_partial_start(monkeypatch):
 
 def test_module_cli_starts_without_installed_dependencies(tmp_path):
     (tmp_path / "anthropic.py").write_text(
+        "import os\n"
         "class Anthropic:\n"
         "    def __init__(self, **kwargs):\n"
+        "        cwd_file = os.environ.get('PAMU_TEST_CWD_FILE')\n"
+        "        if cwd_file:\n"
+        "            with open(cwd_file, 'w', encoding='utf-8') as handle:\n"
+        "                handle.write(os.getcwd())\n"
         "        self.messages = object()\n",
         encoding="utf-8",
     )
     (tmp_path / "dotenv.py").write_text(
-        "def load_dotenv(**kwargs):\n"
+        "def load_dotenv(path, **kwargs):\n"
         "    return None\n",
         encoding="utf-8",
     )
@@ -224,11 +229,15 @@ def test_module_cli_starts_without_installed_dependencies(tmp_path):
         encoding="utf-8",
     )
     project_root = Path(__file__).resolve().parents[1]
+    workspace = tmp_path / "project"
+    cwd_file = tmp_path / "anthropic-cwd.txt"
+    workspace.mkdir()
     environment = dict(os.environ)
     environment.update(
         {
             "MODEL_ID": "test-model",
             "PYTHONPATH": f"{project_root}{os.pathsep}{tmp_path}",
+            "PAMU_TEST_CWD_FILE": str(cwd_file),
         }
     )
 
@@ -237,9 +246,12 @@ def test_module_cli_starts_without_installed_dependencies(tmp_path):
         input="q\n",
         text=True,
         capture_output=True,
-        cwd=project_root,
+        cwd=workspace,
         env=environment,
         timeout=10,
     )
 
     assert result.returncode == 0, result.stderr
+    assert cwd_file.read_text(encoding="utf-8") == str(workspace.resolve())
+    assert (workspace / ".pamu").is_dir()
+    assert not (project_root / ".pamu").exists()
