@@ -44,6 +44,11 @@ state is stored beneath `.pamu/`, including `memory/`, `transcripts/`,
 `scheduled_tasks.json`. The state directory contains its own protective
 `.gitignore`; it should remain untracked by the project repository.
 
+Static symlink and path validation prevents accidental state escape, but
+PamuCode is not a sandbox against the workspace owner concurrently mutating
+paths while it runs. This boundary does not weaken file-tool workspace
+containment.
+
 Legacy top-level state directories and files are not migrated automatically.
 They are left in place so you can review or remove them deliberately.
 

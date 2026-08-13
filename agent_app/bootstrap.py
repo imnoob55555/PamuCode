@@ -9,7 +9,6 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Mapping
-from contextlib import contextmanager
 from dataclasses import asdict
 from pathlib import Path
 
@@ -115,121 +114,60 @@ def _validate_state_paths(config: AppConfig) -> None:
                     f"PamuCode state path contains a symlink: {component}"
                 )
 
-        resolved = candidate.resolve(strict=False)
-        if resolved != expected:
-            raise ValueError(
-                f"PamuCode state path resolves outside the state root: {candidate}"
-            )
+    _validate_existing_gitignore(expected_state_dir / ".gitignore")
 
 
-_DIRECTORY_OPEN_FLAGS = (
-    os.O_RDONLY
-    | getattr(os, "O_DIRECTORY", 0)
-    | getattr(os, "O_NOFOLLOW", 0)
-)
-
-
-@contextmanager
-def _closing_fd(descriptor: int):
+def _validate_existing_gitignore(ignore: Path) -> None:
     try:
-        yield descriptor
-    finally:
-        os.close(descriptor)
+        mode = ignore.lstat().st_mode
+    except FileNotFoundError:
+        return
+    if not stat.S_ISREG(mode):
+        kind = "symlink" if stat.S_ISLNK(mode) else "non-regular file"
+        raise ValueError(
+            f"PamuCode state .gitignore must be a regular file, not a "
+            f"{kind}: {ignore}"
+        )
 
 
-def _open_or_create_directory(parent_fd: int, name: str) -> int:
+def _create_state_gitignore(ignore: Path) -> None:
     try:
-        os.mkdir(name, dir_fd=parent_fd)
+        handle = ignore.open("x", encoding="utf-8")
     except FileExistsError:
-        pass
-    return os.open(name, _DIRECTORY_OPEN_FLAGS, dir_fd=parent_fd)
+        _validate_existing_gitignore(ignore)
+        return
 
-
-def _verify_named_directory(
-    parent_fd: int, name: str, directory_fd: int, label: str
-) -> None:
-    named = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-    opened = os.fstat(directory_fd)
-    if not stat.S_ISDIR(named.st_mode) or (
-        named.st_dev,
-        named.st_ino,
-    ) != (opened.st_dev, opened.st_ino):
-        raise OSError(f"PamuCode {label} changed during initialization")
-
-
-def _create_directory_path(state_fd: int, parts: tuple[str, ...]) -> None:
-    current_fd = os.dup(state_fd)
     try:
-        for part in parts:
-            child_fd = _open_or_create_directory(current_fd, part)
-            os.close(current_fd)
-            current_fd = child_fd
-    finally:
-        os.close(current_fd)
-
-
-def _create_state_gitignore(state_fd: int, ignore: Path) -> None:
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
-    try:
-        descriptor = os.open(".gitignore", flags, 0o666, dir_fd=state_fd)
-    except FileExistsError:
-        mode = os.stat(
-            ".gitignore", dir_fd=state_fd, follow_symlinks=False
-        ).st_mode
-        if not stat.S_ISREG(mode):
-            raise ValueError(
-                f"PamuCode state .gitignore must be a regular file: {ignore}"
-            )
-    else:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        with handle:
             handle.write("*\n!.gitignore\n")
+    except BaseException as error:
+        try:
+            ignore.unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as cleanup_error:
+            error.add_note(
+                f"Could not remove incomplete state .gitignore: "
+                f"{cleanup_error}"
+            )
+        raise
 
 
 def _create_storage_roots(config: AppConfig) -> None:
     _validate_state_paths(config)
     config.workdir.mkdir(parents=True, exist_ok=True)
-    with _closing_fd(
-        os.open(config.workdir.parent, _DIRECTORY_OPEN_FLAGS)
-    ) as parent_fd:
-        workspace_name = config.workdir.name or "."
-        with _closing_fd(
-            os.open(
-                workspace_name,
-                _DIRECTORY_OPEN_FLAGS,
-                dir_fd=parent_fd,
-            )
-        ) as workspace_fd:
-            _verify_named_directory(
-                parent_fd, workspace_name, workspace_fd, "workspace"
-            )
-            with _closing_fd(
-                _open_or_create_directory(workspace_fd, ".pamu")
-            ) as state_fd:
-                _validate_state_paths(config)
-                _verify_named_directory(
-                    parent_fd, workspace_name, workspace_fd, "workspace"
-                )
-                _create_state_gitignore(
-                    state_fd, config.state_dir / ".gitignore"
-                )
-                for root in (
-                    config.memory_dir,
-                    config.transcripts_dir,
-                    config.tool_result_dir,
-                    config.task_dir,
-                    config.mailbox_dir,
-                    config.worktrees_dir,
-                    config.scheduled_tasks_path.parent,
-                ):
-                    relative = root.relative_to(config.state_dir)
-                    _create_directory_path(state_fd, relative.parts)
-                _validate_state_paths(config)
-                _verify_named_directory(
-                    parent_fd, workspace_name, workspace_fd, "workspace"
-                )
-                _verify_named_directory(
-                    workspace_fd, ".pamu", state_fd, "state root"
-                )
+    config.state_dir.mkdir(parents=True, exist_ok=True)
+    _create_state_gitignore(config.state_dir / ".gitignore")
+    for root in (
+        config.memory_dir,
+        config.transcripts_dir,
+        config.tool_result_dir,
+        config.task_dir,
+        config.mailbox_dir,
+        config.worktrees_dir,
+        config.scheduled_tasks_path.parent,
+    ):
+        root.mkdir(parents=True, exist_ok=True)
 
 
 def _run_git(config: AppConfig, args: list[str]) -> tuple[bool, str]:

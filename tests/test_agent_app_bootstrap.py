@@ -1,5 +1,7 @@
 import importlib
+import io
 import os
+import stat
 import sys
 import types
 from dataclasses import replace
@@ -123,18 +125,66 @@ def test_build_runtime_creates_protective_state_gitignore(tmp_path, monkeypatch)
     )
 
 
+def test_failed_initial_gitignore_write_is_removed_and_retry_regenerates(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("MODEL_ID", "test-model")
+    config = AppConfig.from_env(tmp_path / "install", tmp_path / "project")
+    ignore = config.state_dir / ".gitignore"
+
+    from agent_app.bootstrap import build_runtime
+
+    real_open = io.open
+    failed = False
+
+    class FailingWrite:
+        def __init__(self, handle):
+            self.handle = handle
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            self.handle.close()
+
+        def write(self, value):
+            self.handle.write(value[:1])
+            self.handle.flush()
+            raise OSError("simulated gitignore write failure")
+
+    def fail_first_write(file, *args, **kwargs):
+        nonlocal failed
+        handle = real_open(file, *args, **kwargs)
+        if not failed:
+            failed = True
+            return FailingWrite(handle)
+        return handle
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(io, "open", fail_first_write)
+        with pytest.raises(OSError, match="simulated gitignore write failure"):
+            build_runtime(config, FakeSDKClient())
+
+    assert not ignore.exists()
+
+    build_runtime(config, FakeSDKClient())
+
+    assert ignore.read_text(encoding="utf-8") == "*\n!.gitignore\n"
+
+
 def test_build_runtime_preserves_existing_state_gitignore(tmp_path, monkeypatch):
     monkeypatch.setenv("MODEL_ID", "test-model")
     config = AppConfig.from_env(tmp_path / "install", tmp_path / "project")
     config.state_dir.mkdir(parents=True)
     ignore = config.state_dir / ".gitignore"
-    ignore.write_text("custom\n", encoding="utf-8")
+    original = b"\xffcustom\r\n"
+    ignore.write_bytes(original)
 
     from agent_app.bootstrap import build_runtime
 
     build_runtime(config, FakeSDKClient())
 
-    assert ignore.read_text(encoding="utf-8") == "custom\n"
+    assert ignore.read_bytes() == original
 
 
 def test_build_runtime_rejects_external_state_symlink_before_writing(
@@ -202,70 +252,6 @@ def test_build_runtime_rejects_dangling_gitignore_symlink_without_following_it(
     assert sorted(path.name for path in state.iterdir()) == [".gitignore"]
 
 
-def test_build_runtime_does_not_follow_state_symlink_swapped_after_validation(
-    tmp_path, monkeypatch
-):
-    monkeypatch.setenv("MODEL_ID", "test-model")
-    workspace = tmp_path / "project"
-    state = workspace / ".pamu"
-    displaced_state = workspace / ".pamu-displaced"
-    external = tmp_path / "external"
-    state.mkdir(parents=True)
-    external.mkdir()
-    config = AppConfig.from_env(tmp_path / "install", workspace)
-
-    import agent_app.bootstrap as bootstrap
-
-    real_validate = bootstrap._validate_state_paths
-    validations = 0
-
-    def validate_then_swap(seen_config):
-        nonlocal validations
-        real_validate(seen_config)
-        validations += 1
-        if validations == 2:
-            state.rename(displaced_state)
-            state.symlink_to(external, target_is_directory=True)
-
-    monkeypatch.setattr(bootstrap, "_validate_state_paths", validate_then_swap)
-
-    with pytest.raises((ValueError, OSError)):
-        bootstrap.build_runtime(config, FakeSDKClient())
-
-    assert list(external.iterdir()) == []
-
-
-def test_build_runtime_does_not_write_to_workspace_renamed_after_open(
-    tmp_path, monkeypatch
-):
-    monkeypatch.setenv("MODEL_ID", "test-model")
-    workspace = tmp_path / "project"
-    displaced_workspace = tmp_path / "project-displaced"
-    (workspace / ".pamu").mkdir(parents=True)
-    config = AppConfig.from_env(tmp_path / "install", workspace)
-
-    import agent_app.bootstrap as bootstrap
-
-    real_validate = bootstrap._validate_state_paths
-    validations = 0
-
-    def validate_then_swap(seen_config):
-        nonlocal validations
-        real_validate(seen_config)
-        validations += 1
-        if validations == 2:
-            workspace.rename(displaced_workspace)
-            workspace.mkdir()
-
-    monkeypatch.setattr(bootstrap, "_validate_state_paths", validate_then_swap)
-
-    with pytest.raises(OSError, match="workspace"):
-        bootstrap.build_runtime(config, FakeSDKClient())
-
-    assert list(workspace.iterdir()) == []
-    assert list((displaced_workspace / ".pamu").iterdir()) == []
-
-
 def test_build_runtime_rejects_non_regular_state_gitignore(
     tmp_path, monkeypatch
 ):
@@ -283,6 +269,23 @@ def test_build_runtime_rejects_non_regular_state_gitignore(
     assert sorted(path.name for path in config.state_dir.iterdir()) == [
         ".gitignore"
     ]
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFO is POSIX-only")
+def test_build_runtime_rejects_fifo_state_gitignore(tmp_path, monkeypatch):
+    monkeypatch.setenv("MODEL_ID", "test-model")
+    workspace = tmp_path / "project"
+    ignore = workspace / ".pamu" / ".gitignore"
+    ignore.parent.mkdir(parents=True)
+    os.mkfifo(ignore)
+    config = AppConfig.from_env(tmp_path / "install", workspace)
+
+    from agent_app.bootstrap import build_runtime
+
+    with pytest.raises(ValueError, match="regular file"):
+        build_runtime(config, FakeSDKClient())
+
+    assert stat.S_ISFIFO(ignore.lstat().st_mode)
 
 
 def test_build_runtime_rejects_dotdot_state_path_before_creating_it(

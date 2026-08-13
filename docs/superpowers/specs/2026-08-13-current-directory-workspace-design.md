@@ -113,6 +113,10 @@ unchanged. Tests and embedders can continue constructing an explicit
   the existing explicit environment lookup.
 - State directories are created only when building a runtime, never when
   importing modules.
+- Static symlink and path validation prevents accidental state escape, but
+  PamuCode is not a sandbox against the workspace owner concurrently mutating
+  paths while it runs. This boundary does not weaken file-tool workspace
+  containment.
 
 ## Verification
 
