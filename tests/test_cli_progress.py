@@ -165,3 +165,79 @@ def test_stop_waits_until_worker_has_started_before_joining():
     assert not stopper.is_alive()
     assert created[0].joined == [1.0]
     assert stream.writes[-1] == "\r\033[2K"
+
+
+def test_stop_before_start_permanently_prevents_worker_and_output():
+    stream = FakeStream(tty=True)
+    created = []
+    spinner = TerminalSpinner(
+        "Working",
+        stream=stream,
+        event_factory=FakeEvent,
+        thread_factory=lambda **kwargs: FakeThread(created, **kwargs),
+    )
+
+    spinner.stop()
+    spinner.start()
+    spinner.start()
+    spinner.stop()
+
+    assert spinner._stopped is True
+    assert created == []
+    assert stream.writes == []
+    assert stream.flushes == 0
+
+
+def test_worker_originated_stop_exits_and_clears_exactly_once():
+    stopped_inside_write = threading.Event()
+
+    class SelfStoppingStream(FakeStream):
+        spinner = None
+
+        def write(self, value):
+            super().write(value)
+            if value != "\r\033[2K" and not stopped_inside_write.is_set():
+                self.spinner.stop()
+                stopped_inside_write.set()
+
+    stream = SelfStoppingStream(tty=True)
+    spinner = TerminalSpinner(
+        "Working",
+        stream=stream,
+        frames=("A",),
+        interval=0.001,
+    )
+    stream.spinner = spinner
+
+    spinner.start()
+    worker = spinner._thread
+    stopped = stopped_inside_write.wait(1.0)
+    worker.join(1.0)
+    spinner.stop()
+
+    assert stopped is True
+    assert not worker.is_alive()
+    assert stream.writes.count("\r\033[2K") == 1
+    assert stream.writes[-1] == "\r\033[2K"
+
+
+def test_isatty_error_disables_spinner_without_worker_or_output():
+    class BrokenTTYStream(FakeStream):
+        def isatty(self):
+            raise OSError("terminal unavailable")
+
+    stream = BrokenTTYStream(tty=True)
+    created = []
+    spinner = TerminalSpinner(
+        "Working",
+        stream=stream,
+        event_factory=FakeEvent,
+        thread_factory=lambda **kwargs: FakeThread(created, **kwargs),
+    )
+
+    with spinner:
+        pass
+
+    assert created == []
+    assert stream.writes == []
+    assert stream.flushes == 0

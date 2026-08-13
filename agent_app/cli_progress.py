@@ -48,10 +48,14 @@ class TerminalSpinner:
 
     def start(self) -> None:
         with self._lifecycle_lock:
-            if self._started:
+            if self._started or self._stopped:
                 return
             self._started = True
-            if not self.stream.isatty():
+            try:
+                interactive = bool(self.stream.isatty())
+            except Exception:
+                interactive = False
+            if not interactive:
                 return
             self._enabled = True
             self._event = self._event_factory()
@@ -64,16 +68,21 @@ class TerminalSpinner:
 
     def stop(self) -> None:
         with self._lifecycle_lock:
-            if not self._enabled or self._stopped:
+            if self._stopped:
                 return
             self._stopped = True
+            if not self._enabled:
+                return
             event = self._event
             worker = self._thread
             event.set()
 
-        if worker is not threading.current_thread():
-            worker.join(1.0)
+        if worker is threading.current_thread():
+            return
+        worker.join(1.0)
+        self._clear()
 
+    def _clear(self) -> None:
         with self._write_lock:
             if self._cleared:
                 return
@@ -82,14 +91,18 @@ class TerminalSpinner:
             self._cleared = True
 
     def _animate(self) -> None:
-        for frame in itertools.cycle(self.frames):
-            if self._event.wait(self.interval):
-                return
-            with self._write_lock:
-                if self._stopped:
+        try:
+            for frame in itertools.cycle(self.frames):
+                if self._event.wait(self.interval):
                     return
-                self.stream.write(f"\r{frame} {self.label}")
-                self.stream.flush()
+                with self._write_lock:
+                    if self._stopped:
+                        return
+                    self.stream.write(f"\r{frame} {self.label}")
+                    self.stream.flush()
+        finally:
+            if self._stopped:
+                self._clear()
 
 
 def terminal_progress(label: str) -> TerminalSpinner:
