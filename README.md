@@ -5,7 +5,12 @@ PamuCode is a layered coding-agent runtime extracted into an independent project
 ## Setup
 
 ```bash
-cp .env.example .env
+git clone https://github.com/Godhao55555/PamuCode.git
+cd PamuCode
+```
+
+```bash
+cp .env.example .env 
 uv sync
 ```
 
