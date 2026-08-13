@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -38,8 +39,12 @@ class AppConfig:
 
     @classmethod
     def from_env(
-        cls, repo_root: Path, workdir: Path | None = None
+        cls,
+        repo_root: Path,
+        workdir: Path | None = None,
+        environ: Mapping[str, str] | None = None,
     ) -> "AppConfig":
+        environment = os.environ if environ is None else environ
         root = repo_root.resolve()
         workspace = (workdir or repo_root).resolve()
         state_dir = workspace / ".pamu"
@@ -58,6 +63,6 @@ class AppConfig:
             mailbox_dir=state_dir / "mailboxes",
             scheduled_tasks_path=state_dir / "scheduled_tasks.json",
             worktrees_dir=state_dir / "worktrees",
-            primary_model=os.environ["MODEL_ID"],
-            fallback_model=os.getenv("FALLBACK_MODEL_ID"),
+            primary_model=environment["MODEL_ID"],
+            fallback_model=environment.get("FALLBACK_MODEL_ID"),
         )

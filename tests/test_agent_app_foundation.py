@@ -27,6 +27,24 @@ def test_app_config_separates_installation_workspace_and_state_paths(
     assert not config.state_dir.exists()
 
 
+def test_app_config_can_read_an_injected_environment_mapping(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("MODEL_ID", "process-model")
+    monkeypatch.setenv("FALLBACK_MODEL_ID", "process-fallback")
+
+    config = AppConfig.from_env(
+        tmp_path,
+        environ={
+            "MODEL_ID": "isolated-model",
+            "FALLBACK_MODEL_ID": "isolated-fallback",
+        },
+    )
+
+    assert config.primary_model == "isolated-model"
+    assert config.fallback_model == "isolated-fallback"
+
+
 def test_session_state_is_fresh_per_instance():
     first = SessionState()
     second = SessionState()

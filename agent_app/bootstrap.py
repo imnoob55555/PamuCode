@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import os
+import stat
 import subprocess
 import threading
 import time
 import uuid
+from collections.abc import Callable, Mapping
+from contextlib import contextmanager
 from dataclasses import asdict
 from pathlib import Path
 
@@ -40,27 +43,193 @@ GLOBAL_ENV_PATH = Path.home() / ".config" / "pamucode" / ".env"
 TEAM_GUARDED_TOOLS = {"bash", "write_file"}
 
 
-def _load_environment(workspace: Path, global_env: Path, load) -> None:
-    """Load workspace and user defaults without replacing process settings."""
-    load(workspace / ".pamu" / ".env", override=False)
-    load(global_env, override=False)
+def _load_environment(
+    workspace: Path,
+    global_env: Path,
+    process_environment: Mapping[str, str],
+    read: Callable[[Path], Mapping[str, str | None]],
+) -> dict[str, str]:
+    """Build isolated workspace settings without mutating the process."""
+
+    def defined(values: Mapping[str, str | None]) -> dict[str, str]:
+        return {name: value for name, value in values.items() if value is not None}
+
+    project_values = defined(read(workspace / ".pamu" / ".env"))
+    global_values = defined(read(global_env))
+    return {
+        **global_values,
+        **project_values,
+        **dict(process_environment),
+    }
 
 
-def _create_storage_roots(config: AppConfig) -> None:
-    config.state_dir.mkdir(parents=True, exist_ok=True)
-    ignore = config.state_dir / ".gitignore"
-    if not ignore.exists():
-        ignore.write_text("*\n!.gitignore\n", encoding="utf-8")
-    for root in (
+def _state_paths(config: AppConfig) -> tuple[Path, ...]:
+    return (
+        config.state_dir,
+        config.state_dir / ".gitignore",
         config.memory_dir,
+        config.memory_index,
         config.transcripts_dir,
         config.tool_result_dir,
         config.task_dir,
         config.mailbox_dir,
+        config.scheduled_tasks_path,
         config.worktrees_dir,
-        config.scheduled_tasks_path.parent,
-    ):
-        root.mkdir(parents=True, exist_ok=True)
+    )
+
+
+def _validate_state_paths(config: AppConfig) -> None:
+    """Reject state paths that escape the workspace or traverse symlinks."""
+    workspace = config.workdir.resolve()
+    expected_state_dir = workspace / ".pamu"
+    expected_paths = (
+        expected_state_dir,
+        expected_state_dir / ".gitignore",
+        expected_state_dir / "memory",
+        expected_state_dir / "memory" / "MEMORY.md",
+        expected_state_dir / "transcripts",
+        expected_state_dir / "task_outputs" / "tool-results",
+        expected_state_dir / "tasks",
+        expected_state_dir / "mailboxes",
+        expected_state_dir / "scheduled_tasks.json",
+        expected_state_dir / "worktrees",
+    )
+
+    for path, expected in zip(_state_paths(config), expected_paths, strict=True):
+        candidate = path.absolute()
+        if candidate != expected:
+            raise ValueError(
+                f"PamuCode state path does not match the workspace layout: "
+                f"{candidate}"
+            )
+
+        component = workspace
+        for part in expected.relative_to(workspace).parts:
+            component /= part
+            try:
+                mode = component.lstat().st_mode
+            except FileNotFoundError:
+                continue
+            if stat.S_ISLNK(mode):
+                raise ValueError(
+                    f"PamuCode state path contains a symlink: {component}"
+                )
+
+        resolved = candidate.resolve(strict=False)
+        if resolved != expected:
+            raise ValueError(
+                f"PamuCode state path resolves outside the state root: {candidate}"
+            )
+
+
+_DIRECTORY_OPEN_FLAGS = (
+    os.O_RDONLY
+    | getattr(os, "O_DIRECTORY", 0)
+    | getattr(os, "O_NOFOLLOW", 0)
+)
+
+
+@contextmanager
+def _closing_fd(descriptor: int):
+    try:
+        yield descriptor
+    finally:
+        os.close(descriptor)
+
+
+def _open_or_create_directory(parent_fd: int, name: str) -> int:
+    try:
+        os.mkdir(name, dir_fd=parent_fd)
+    except FileExistsError:
+        pass
+    return os.open(name, _DIRECTORY_OPEN_FLAGS, dir_fd=parent_fd)
+
+
+def _verify_named_directory(
+    parent_fd: int, name: str, directory_fd: int, label: str
+) -> None:
+    named = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    opened = os.fstat(directory_fd)
+    if not stat.S_ISDIR(named.st_mode) or (
+        named.st_dev,
+        named.st_ino,
+    ) != (opened.st_dev, opened.st_ino):
+        raise OSError(f"PamuCode {label} changed during initialization")
+
+
+def _create_directory_path(state_fd: int, parts: tuple[str, ...]) -> None:
+    current_fd = os.dup(state_fd)
+    try:
+        for part in parts:
+            child_fd = _open_or_create_directory(current_fd, part)
+            os.close(current_fd)
+            current_fd = child_fd
+    finally:
+        os.close(current_fd)
+
+
+def _create_state_gitignore(state_fd: int, ignore: Path) -> None:
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(".gitignore", flags, 0o666, dir_fd=state_fd)
+    except FileExistsError:
+        mode = os.stat(
+            ".gitignore", dir_fd=state_fd, follow_symlinks=False
+        ).st_mode
+        if not stat.S_ISREG(mode):
+            raise ValueError(
+                f"PamuCode state .gitignore must be a regular file: {ignore}"
+            )
+    else:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write("*\n!.gitignore\n")
+
+
+def _create_storage_roots(config: AppConfig) -> None:
+    _validate_state_paths(config)
+    config.workdir.mkdir(parents=True, exist_ok=True)
+    with _closing_fd(
+        os.open(config.workdir.parent, _DIRECTORY_OPEN_FLAGS)
+    ) as parent_fd:
+        workspace_name = config.workdir.name or "."
+        with _closing_fd(
+            os.open(
+                workspace_name,
+                _DIRECTORY_OPEN_FLAGS,
+                dir_fd=parent_fd,
+            )
+        ) as workspace_fd:
+            _verify_named_directory(
+                parent_fd, workspace_name, workspace_fd, "workspace"
+            )
+            with _closing_fd(
+                _open_or_create_directory(workspace_fd, ".pamu")
+            ) as state_fd:
+                _validate_state_paths(config)
+                _verify_named_directory(
+                    parent_fd, workspace_name, workspace_fd, "workspace"
+                )
+                _create_state_gitignore(
+                    state_fd, config.state_dir / ".gitignore"
+                )
+                for root in (
+                    config.memory_dir,
+                    config.transcripts_dir,
+                    config.tool_result_dir,
+                    config.task_dir,
+                    config.mailbox_dir,
+                    config.worktrees_dir,
+                    config.scheduled_tasks_path.parent,
+                ):
+                    relative = root.relative_to(config.state_dir)
+                    _create_directory_path(state_fd, relative.parts)
+                _validate_state_paths(config)
+                _verify_named_directory(
+                    parent_fd, workspace_name, workspace_fd, "workspace"
+                )
+                _verify_named_directory(
+                    workspace_fd, ".pamu", state_fd, "state root"
+                )
 
 
 def _run_git(config: AppConfig, args: list[str]) -> tuple[bool, str]:
@@ -372,16 +541,32 @@ def build_runtime(
 def build_default_runtime() -> RuntimeContext:
     """Load process configuration and construct the production SDK client."""
     from anthropic import Anthropic
-    from dotenv import load_dotenv
+    from dotenv import dotenv_values
 
     workspace = Path.cwd().resolve()
-    _load_environment(workspace, GLOBAL_ENV_PATH, load_dotenv)
-    base_url = os.getenv("ANTHROPIC_BASE_URL")
+    environment = _load_environment(
+        workspace,
+        GLOBAL_ENV_PATH,
+        dict(os.environ),
+        dotenv_values,
+    )
+    base_url = environment.get("ANTHROPIC_BASE_URL")
+    api_key = environment.get("ANTHROPIC_API_KEY")
+    auth_token = environment.get("ANTHROPIC_AUTH_TOKEN")
+    client_options = {}
+    if api_key is not None:
+        client_options["api_key"] = api_key
     if base_url:
-        os.environ.pop("ANTHROPIC_AUTH_TOKEN", None)
-    config = AppConfig.from_env(INSTALL_ROOT, workspace)
+        client_options["base_url"] = base_url
+        if api_key is None:
+            client_options["api_key"] = ""
+    elif auth_token is not None:
+        client_options["auth_token"] = auth_token
+    elif api_key is None:
+        client_options["api_key"] = ""
+    config = AppConfig.from_env(INSTALL_ROOT, workspace, environment)
     return build_runtime(
         config,
-        Anthropic(base_url=base_url),
+        Anthropic(**client_options),
         progress_factory=terminal_progress,
     )

@@ -217,8 +217,8 @@ def test_module_cli_starts_without_installed_dependencies(tmp_path):
         encoding="utf-8",
     )
     (tmp_path / "dotenv.py").write_text(
-        "def load_dotenv(path, **kwargs):\n"
-        "    return None\n",
+        "def dotenv_values(path):\n"
+        "    return {}\n",
         encoding="utf-8",
     )
     (tmp_path / "yaml.py").write_text(

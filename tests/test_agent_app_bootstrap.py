@@ -2,7 +2,10 @@ import importlib
 import os
 import sys
 import types
+from dataclasses import replace
 from pathlib import Path
+
+import pytest
 
 from agent_app.config import AppConfig
 
@@ -19,47 +22,61 @@ class FakeSDKClient:
         self.messages = self.Messages()
 
 
-def test_environment_loads_project_before_global_without_override(tmp_path):
+def test_environment_isolated_mapping_uses_process_then_project_then_global(
+    tmp_path,
+):
     import agent_app.bootstrap as bootstrap
 
     calls = []
     workspace = tmp_path / "project"
     global_env = tmp_path / "config" / ".env"
+    values = {
+        workspace / ".pamu" / ".env": {
+            "MODEL_ID": "project",
+            "ANTHROPIC_API_KEY": "project-key",
+        },
+        global_env: {
+            "MODEL_ID": "global",
+            "FALLBACK_MODEL_ID": "global-fallback",
+        },
+    }
 
-    bootstrap._load_environment(
+    environment = bootstrap._load_environment(
         workspace,
         global_env,
-        lambda path, **kwargs: calls.append((path, kwargs)),
+        {"MODEL_ID": "process"},
+        lambda path: (calls.append(path), values[path])[1],
     )
 
     assert calls == [
-        (workspace / ".pamu" / ".env", {"override": False}),
-        (global_env, {"override": False}),
+        workspace / ".pamu" / ".env",
+        global_env,
     ]
+    assert environment == {
+        "MODEL_ID": "process",
+        "FALLBACK_MODEL_ID": "global-fallback",
+        "ANTHROPIC_API_KEY": "project-key",
+    }
 
 
-def test_environment_keeps_project_and_process_values(tmp_path, monkeypatch):
-    from dotenv import load_dotenv
+def test_environment_loading_does_not_mutate_process_and_allows_missing_files(
+    tmp_path, monkeypatch
+):
+    from dotenv import dotenv_values
 
     import agent_app.bootstrap as bootstrap
 
     workspace = tmp_path / "project"
     global_env = tmp_path / "config" / ".env"
-    project_env = workspace / ".pamu" / ".env"
-    project_env.parent.mkdir(parents=True)
-    global_env.parent.mkdir(parents=True)
-    global_env.write_text("MODEL_ID=global\n", encoding="utf-8")
-    project_env.write_text("MODEL_ID=project\n", encoding="utf-8")
-    monkeypatch.delenv("MODEL_ID", raising=False)
-
-    bootstrap._load_environment(workspace, global_env, load_dotenv)
-
-    assert os.environ["MODEL_ID"] == "project"
-
     monkeypatch.setenv("MODEL_ID", "process")
-    bootstrap._load_environment(workspace, global_env, load_dotenv)
+    before = dict(os.environ)
 
-    assert os.environ["MODEL_ID"] == "process"
+    environment = bootstrap._load_environment(
+        workspace, global_env, os.environ, dotenv_values
+    )
+
+    assert environment["MODEL_ID"] == "process"
+    assert dict(os.environ) == before
 
 
 def test_import_does_not_create_runtime_files(tmp_path, monkeypatch):
@@ -120,6 +137,175 @@ def test_build_runtime_preserves_existing_state_gitignore(tmp_path, monkeypatch)
     assert ignore.read_text(encoding="utf-8") == "custom\n"
 
 
+def test_build_runtime_rejects_external_state_symlink_before_writing(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("MODEL_ID", "test-model")
+    workspace = tmp_path / "project"
+    external = tmp_path / "external"
+    workspace.mkdir()
+    external.mkdir()
+    sentinel = external / "sentinel"
+    sentinel.write_text("untouched\n", encoding="utf-8")
+    (workspace / ".pamu").symlink_to(external, target_is_directory=True)
+    config = AppConfig.from_env(tmp_path / "install", workspace)
+
+    from agent_app.bootstrap import build_runtime
+
+    with pytest.raises(ValueError, match="symlink"):
+        build_runtime(config, FakeSDKClient())
+
+    assert sorted(path.name for path in external.iterdir()) == ["sentinel"]
+    assert sentinel.read_text(encoding="utf-8") == "untouched\n"
+
+
+def test_build_runtime_rejects_symlinked_state_component_before_mutating_state(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("MODEL_ID", "test-model")
+    workspace = tmp_path / "project"
+    state = workspace / ".pamu"
+    external = tmp_path / "external-tasks"
+    state.mkdir(parents=True)
+    external.mkdir()
+    (state / "tasks").symlink_to(external, target_is_directory=True)
+    config = AppConfig.from_env(tmp_path / "install", workspace)
+
+    from agent_app.bootstrap import build_runtime
+
+    with pytest.raises(ValueError, match="symlink"):
+        build_runtime(config, FakeSDKClient())
+
+    assert sorted(path.name for path in state.iterdir()) == ["tasks"]
+    assert list(external.iterdir()) == []
+
+
+def test_build_runtime_rejects_dangling_gitignore_symlink_without_following_it(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("MODEL_ID", "test-model")
+    workspace = tmp_path / "project"
+    state = workspace / ".pamu"
+    external = tmp_path / "external"
+    state.mkdir(parents=True)
+    external.mkdir()
+    external_ignore = external / "created-by-symlink"
+    (state / ".gitignore").symlink_to(external_ignore)
+    config = AppConfig.from_env(tmp_path / "install", workspace)
+
+    from agent_app.bootstrap import build_runtime
+
+    with pytest.raises(ValueError, match="symlink"):
+        build_runtime(config, FakeSDKClient())
+
+    assert not external_ignore.exists()
+    assert sorted(path.name for path in state.iterdir()) == [".gitignore"]
+
+
+def test_build_runtime_does_not_follow_state_symlink_swapped_after_validation(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("MODEL_ID", "test-model")
+    workspace = tmp_path / "project"
+    state = workspace / ".pamu"
+    displaced_state = workspace / ".pamu-displaced"
+    external = tmp_path / "external"
+    state.mkdir(parents=True)
+    external.mkdir()
+    config = AppConfig.from_env(tmp_path / "install", workspace)
+
+    import agent_app.bootstrap as bootstrap
+
+    real_validate = bootstrap._validate_state_paths
+    validations = 0
+
+    def validate_then_swap(seen_config):
+        nonlocal validations
+        real_validate(seen_config)
+        validations += 1
+        if validations == 2:
+            state.rename(displaced_state)
+            state.symlink_to(external, target_is_directory=True)
+
+    monkeypatch.setattr(bootstrap, "_validate_state_paths", validate_then_swap)
+
+    with pytest.raises((ValueError, OSError)):
+        bootstrap.build_runtime(config, FakeSDKClient())
+
+    assert list(external.iterdir()) == []
+
+
+def test_build_runtime_does_not_write_to_workspace_renamed_after_open(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("MODEL_ID", "test-model")
+    workspace = tmp_path / "project"
+    displaced_workspace = tmp_path / "project-displaced"
+    (workspace / ".pamu").mkdir(parents=True)
+    config = AppConfig.from_env(tmp_path / "install", workspace)
+
+    import agent_app.bootstrap as bootstrap
+
+    real_validate = bootstrap._validate_state_paths
+    validations = 0
+
+    def validate_then_swap(seen_config):
+        nonlocal validations
+        real_validate(seen_config)
+        validations += 1
+        if validations == 2:
+            workspace.rename(displaced_workspace)
+            workspace.mkdir()
+
+    monkeypatch.setattr(bootstrap, "_validate_state_paths", validate_then_swap)
+
+    with pytest.raises(OSError, match="workspace"):
+        bootstrap.build_runtime(config, FakeSDKClient())
+
+    assert list(workspace.iterdir()) == []
+    assert list((displaced_workspace / ".pamu").iterdir()) == []
+
+
+def test_build_runtime_rejects_non_regular_state_gitignore(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("MODEL_ID", "test-model")
+    workspace = tmp_path / "project"
+    ignore = workspace / ".pamu" / ".gitignore"
+    ignore.mkdir(parents=True)
+    config = AppConfig.from_env(tmp_path / "install", workspace)
+
+    from agent_app.bootstrap import build_runtime
+
+    with pytest.raises(ValueError, match="regular file"):
+        build_runtime(config, FakeSDKClient())
+
+    assert sorted(path.name for path in config.state_dir.iterdir()) == [
+        ".gitignore"
+    ]
+
+
+def test_build_runtime_rejects_dotdot_state_path_before_creating_it(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("MODEL_ID", "test-model")
+    workspace = tmp_path / "project"
+    config = AppConfig.from_env(tmp_path / "install", workspace)
+    escaped = workspace / "escaped-memory"
+    config = replace(
+        config,
+        memory_dir=config.state_dir / ".." / escaped.name,
+        memory_index=config.state_dir / ".." / escaped.name / "MEMORY.md",
+    )
+
+    from agent_app.bootstrap import build_runtime
+
+    with pytest.raises(ValueError, match="state path"):
+        build_runtime(config, FakeSDKClient())
+
+    assert not escaped.exists()
+
+
 def test_build_runtime_registers_every_owner_tool(tmp_path, monkeypatch):
     monkeypatch.setenv("MODEL_ID", "test-model")
 
@@ -156,9 +342,10 @@ def test_build_default_runtime_owns_environment_and_sdk_creation(
     fake_anthropic = types.ModuleType("anthropic")
     fake_dotenv = types.ModuleType("dotenv")
     fake_anthropic.Anthropic = FakeAnthropic
-    fake_dotenv.load_dotenv = lambda path, **kwargs: calls.append(
-        ("dotenv", path, kwargs)
-    )
+    fake_dotenv.dotenv_values = lambda path: (
+        calls.append(("dotenv", path)),
+        {},
+    )[1]
     monkeypatch.setitem(sys.modules, "anthropic", fake_anthropic)
     monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
     install_root = tmp_path / "install"
@@ -169,17 +356,119 @@ def test_build_default_runtime_owns_environment_and_sdk_creation(
     monkeypatch.setattr(bootstrap, "GLOBAL_ENV_PATH", global_env)
     monkeypatch.chdir(workspace)
     monkeypatch.setenv("MODEL_ID", "test-model")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://example.invalid")
     monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "remove-me")
+    before = dict(os.environ)
 
     runtime = bootstrap.build_default_runtime()
 
     assert calls == [
-        ("dotenv", workspace / ".pamu" / ".env", {"override": False}),
-        ("dotenv", global_env, {"override": False}),
-        ("anthropic", {"base_url": "https://example.invalid"}),
+        ("dotenv", workspace / ".pamu" / ".env"),
+        ("dotenv", global_env),
+        (
+            "anthropic",
+            {"api_key": "", "base_url": "https://example.invalid"},
+        ),
     ]
-    assert "ANTHROPIC_AUTH_TOKEN" not in __import__("os").environ
+    assert dict(os.environ) == before
     assert runtime.config.repo_root == bootstrap.INSTALL_ROOT.resolve()
     assert runtime.config.workdir == workspace.resolve()
     assert runtime.llm.progress is bootstrap.terminal_progress
+
+
+def test_default_runtimes_do_not_leak_project_environment_between_workspaces(
+    tmp_path, monkeypatch
+):
+    import agent_app.bootstrap as bootstrap
+
+    client_calls = []
+
+    class FakeAnthropic:
+        def __init__(self, **kwargs):
+            client_calls.append(kwargs)
+            self.messages = FakeSDKClient.Messages()
+
+    def read_values(path):
+        if not path.exists():
+            return {}
+        return dict(
+            line.split("=", 1)
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line and not line.startswith("#")
+        )
+
+    fake_anthropic = types.ModuleType("anthropic")
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_anthropic.Anthropic = FakeAnthropic
+    fake_dotenv.dotenv_values = read_values
+    monkeypatch.setitem(sys.modules, "anthropic", fake_anthropic)
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+    monkeypatch.setattr(bootstrap, "GLOBAL_ENV_PATH", tmp_path / "missing-global")
+    for name in (
+        "MODEL_ID",
+        "FALLBACK_MODEL_ID",
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_BASE_URL",
+        "ANTHROPIC_AUTH_TOKEN",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    before = dict(os.environ)
+    projects = []
+    for name, model, api_key in (
+        ("a", "alpha", "alpha-key"),
+        ("b", "beta", "beta-key"),
+    ):
+        project = tmp_path / name
+        env_file = project / ".pamu" / ".env"
+        env_file.parent.mkdir(parents=True)
+        env_file.write_text(
+            f"MODEL_ID={model}\nANTHROPIC_API_KEY={api_key}\n",
+            encoding="utf-8",
+        )
+        projects.append(project)
+
+    monkeypatch.chdir(projects[0])
+    alpha = bootstrap.build_default_runtime()
+    monkeypatch.chdir(projects[1])
+    beta = bootstrap.build_default_runtime()
+
+    assert alpha.config.primary_model == "alpha"
+    assert beta.config.primary_model == "beta"
+    assert client_calls == [
+        {"api_key": "alpha-key"},
+        {"api_key": "beta-key"},
+    ]
+    assert dict(os.environ) == before
+
+
+def test_default_runtime_passes_both_supported_credentials_without_base_url(
+    tmp_path, monkeypatch
+):
+    import agent_app.bootstrap as bootstrap
+
+    client_calls = []
+
+    class FakeAnthropic:
+        def __init__(self, **kwargs):
+            client_calls.append(kwargs)
+            self.messages = FakeSDKClient.Messages()
+
+    fake_anthropic = types.ModuleType("anthropic")
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_anthropic.Anthropic = FakeAnthropic
+    fake_dotenv.dotenv_values = lambda _path: {}
+    monkeypatch.setitem(sys.modules, "anthropic", fake_anthropic)
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+    monkeypatch.setattr(bootstrap, "GLOBAL_ENV_PATH", tmp_path / "missing-global")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("MODEL_ID", "test-model")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "api-key")
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "auth-token")
+    monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
+
+    bootstrap.build_default_runtime()
+
+    assert client_calls == [
+        {"api_key": "api-key", "auth_token": "auth-token"}
+    ]

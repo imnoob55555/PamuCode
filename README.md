@@ -8,9 +8,10 @@ PamuCode keeps your user-level defaults outside of individual projects. Create
 the global configuration once, then install the command as an editable UV tool:
 
 ```bash
+cd /path/to/PamuCode
 mkdir -p ~/.config/pamucode
 cp .env.example ~/.config/pamucode/.env
-uv tool install --editable /Users/wh/python/PamuCode
+uv tool install --editable .
 uv tool update-shell
 ```
 
