@@ -8,7 +8,7 @@ PamuCode keeps your user-level defaults outside of individual projects. Create
 the global configuration once, then install the command as an editable UV tool:
 
 ```bash
-git clone https://github.com/Godhao55555/PamuCode.git
+git clone https://github.com/imnoob55555/PamuCode.git
 cd PamuCode
 uv sync
 mkdir -p ~/.config/pamucode
