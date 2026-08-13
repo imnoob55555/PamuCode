@@ -12,5 +12,6 @@ __pycache__/
 .tasks/
 .mailboxes/
 .worktrees/
+docs/
 .scheduled_tasks.json
 .todo.json
