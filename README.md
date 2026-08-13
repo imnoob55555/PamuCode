@@ -34,6 +34,9 @@ cd /path/to/project
 pamu
 ```
 
+While waiting for a model response, interactive terminals show an animated
+`Working` status. Redirected and other non-interactive output stays clean.
+
 PamuCode uses the current directory as the project workspace. Its local runtime
 state is stored beneath `.pamu/`, including `memory/`, `transcripts/`,
 `task_outputs/`, `tasks/`, `mailboxes/`, `worktrees/`, and

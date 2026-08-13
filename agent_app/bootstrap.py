@@ -11,6 +11,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from .adapters.anthropic import AnthropicAdapter
+from .cli_progress import terminal_progress
 from .config import AppConfig
 from .core.compaction import persist_large_output
 from .core.prompt import PromptBuilder
@@ -91,10 +92,16 @@ def _register_default_hooks(
     hooks.register("Stop", make_summary_hook(config.workdir))
 
 
-def build_runtime(config: AppConfig, sdk_client) -> RuntimeContext:
+def build_runtime(
+    config: AppConfig, sdk_client, *, progress_factory=None
+) -> RuntimeContext:
     """Build one completely independent runtime from explicit dependencies."""
     _create_storage_roots(config)
-    llm = AnthropicAdapter(sdk_client)
+    llm = (
+        AnthropicAdapter(sdk_client, progress_factory)
+        if progress_factory is not None
+        else AnthropicAdapter(sdk_client)
+    )
 
     session = SessionState()
     scheduler_state = scheduler.SchedulerState()
@@ -373,4 +380,8 @@ def build_default_runtime() -> RuntimeContext:
     if base_url:
         os.environ.pop("ANTHROPIC_AUTH_TOKEN", None)
     config = AppConfig.from_env(INSTALL_ROOT, workspace)
-    return build_runtime(config, Anthropic(base_url=base_url))
+    return build_runtime(
+        config,
+        Anthropic(base_url=base_url),
+        progress_factory=terminal_progress,
+    )

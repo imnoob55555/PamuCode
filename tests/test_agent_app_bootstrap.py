@@ -182,3 +182,4 @@ def test_build_default_runtime_owns_environment_and_sdk_creation(
     assert "ANTHROPIC_AUTH_TOKEN" not in __import__("os").environ
     assert runtime.config.repo_root == bootstrap.INSTALL_ROOT.resolve()
     assert runtime.config.workdir == workspace.resolve()
+    assert runtime.llm.progress is bootstrap.terminal_progress
