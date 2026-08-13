@@ -60,12 +60,12 @@ def test_protocol_routes_only_matching_response_and_permission(bus, tmp_path):
     assert bus.read_inbox("worker")[0]["content"] == {"request_id": "permit", "approved": True, "reason": ""}
 
 
-def test_runtime_registers_team_tools_and_uses_plural_mailboxes(runtime):
+def test_runtime_registers_team_tools_and_uses_state_mailboxes(runtime):
     schemas, handlers = runtime.tools.snapshot()
     names = {schema["name"] for schema in schemas}
     assert {"task", "spawn_teammate", "send_message", "check_inbox"} <= names
     assert {"task", "spawn_teammate", "send_message", "check_inbox"} <= set(handlers)
-    assert runtime.config.mailbox_dir.name == ".mailboxes"
+    assert runtime.config.mailbox_dir.name == "mailboxes"
 
 
 @pytest.mark.parametrize("name", ["a", "Researcher_1", "worker-name", "x" * 32])

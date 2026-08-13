@@ -34,11 +34,15 @@ from .tools.hooks import (
 from .tools.registry import ToolRegistry
 
 
-DEFAULT_REPO_ROOT = Path(__file__).resolve().parents[1]
+INSTALL_ROOT = Path(__file__).resolve().parents[1]
 TEAM_GUARDED_TOOLS = {"bash", "write_file"}
 
 
 def _create_storage_roots(config: AppConfig) -> None:
+    config.state_dir.mkdir(parents=True, exist_ok=True)
+    ignore = config.state_dir / ".gitignore"
+    if not ignore.exists():
+        ignore.write_text("*\n!.gitignore\n", encoding="utf-8")
     for root in (
         config.memory_dir,
         config.transcripts_dir,
@@ -356,9 +360,14 @@ def build_default_runtime() -> RuntimeContext:
     from anthropic import Anthropic
     from dotenv import load_dotenv
 
-    load_dotenv(override=True)
+    workspace = Path.cwd().resolve()
+    load_dotenv(dotenv_path=workspace / ".pamu" / ".env", override=False)
+    load_dotenv(
+        dotenv_path=Path.home() / ".config" / "pamucode" / ".env",
+        override=False,
+    )
     base_url = os.getenv("ANTHROPIC_BASE_URL")
     if base_url:
         os.environ.pop("ANTHROPIC_AUTH_TOKEN", None)
-    config = AppConfig.from_env(DEFAULT_REPO_ROOT)
+    config = AppConfig.from_env(INSTALL_ROOT, workspace)
     return build_runtime(config, Anthropic(base_url=base_url))

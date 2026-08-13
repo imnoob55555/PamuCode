@@ -84,9 +84,9 @@ def runtime_factory(tmp_path, monkeypatch):
     monkeypatch.setenv("MODEL_ID", "test-model")
     monkeypatch.delenv("FALLBACK_MODEL_ID", raising=False)
     config = AppConfig.from_env(tmp_path)
-    config.task_dir.mkdir()
-    config.mailbox_dir.mkdir()
-    config.worktrees_dir.mkdir()
+    config.task_dir.mkdir(parents=True)
+    config.mailbox_dir.mkdir(parents=True)
+    config.worktrees_dir.mkdir(parents=True)
 
     def make_runtime(responses):
         return RuntimeContext(

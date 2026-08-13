@@ -74,6 +74,7 @@ def test_scheduler_removes_one_shot_job_after_firing(tmp_path, monkeypatch):
 
 def test_load_durable_jobs_loads_only_valid_jobs(tmp_path, monkeypatch):
     config = config_for(tmp_path, monkeypatch)
+    config.scheduled_tasks_path.parent.mkdir(parents=True)
     config.scheduled_tasks_path.write_text(
         json.dumps([
             {

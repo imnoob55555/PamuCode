@@ -9,6 +9,7 @@ from pathlib import Path
 class AppConfig:
     repo_root: Path
     workdir: Path
+    state_dir: Path
     skills_dir: Path
     memory_dir: Path
     memory_index: Path
@@ -36,23 +37,27 @@ class AppConfig:
     permission_timeout: float = 300.0
 
     @classmethod
-    def from_env(cls, repo_root: Path) -> "AppConfig":
+    def from_env(
+        cls, repo_root: Path, workdir: Path | None = None
+    ) -> "AppConfig":
         root = repo_root.resolve()
-        workdir = root
-        memory_dir = workdir / ".memory"
-        tool_result_dir = workdir / ".task_outputs" / "tool-results"
+        workspace = (workdir or repo_root).resolve()
+        state_dir = workspace / ".pamu"
+        memory_dir = state_dir / "memory"
+        tool_result_dir = state_dir / "task_outputs" / "tool-results"
         return cls(
             repo_root=root,
-            workdir=workdir,
-            skills_dir=workdir / "skills",
+            workdir=workspace,
+            state_dir=state_dir,
+            skills_dir=workspace / "skills",
             memory_dir=memory_dir,
             memory_index=memory_dir / "MEMORY.md",
-            transcripts_dir=workdir / ".transcripts",
+            transcripts_dir=state_dir / "transcripts",
             tool_result_dir=tool_result_dir,
-            task_dir=workdir / ".tasks",
-            mailbox_dir=workdir / ".mailboxes",
-            scheduled_tasks_path=workdir / ".scheduled_tasks.json",
-            worktrees_dir=workdir / ".worktrees",
+            task_dir=state_dir / "tasks",
+            mailbox_dir=state_dir / "mailboxes",
+            scheduled_tasks_path=state_dir / "scheduled_tasks.json",
+            worktrees_dir=state_dir / "worktrees",
             primary_model=os.environ["MODEL_ID"],
             fallback_model=os.getenv("FALLBACK_MODEL_ID"),
         )

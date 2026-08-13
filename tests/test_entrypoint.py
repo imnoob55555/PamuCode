@@ -1,7 +1,7 @@
 import runpy
 from pathlib import Path
 
-from agent_app.bootstrap import DEFAULT_REPO_ROOT
+from agent_app.bootstrap import INSTALL_ROOT
 
 
 def test_module_entrypoint_delegates_to_cli(monkeypatch):
@@ -13,5 +13,5 @@ def test_module_entrypoint_delegates_to_cli(monkeypatch):
     assert calls == ["main"]
 
 
-def test_default_repo_root_is_the_standalone_project_root():
-    assert DEFAULT_REPO_ROOT == Path(__file__).resolve().parents[1]
+def test_install_root_is_the_standalone_project_root():
+    assert INSTALL_ROOT == Path(__file__).resolve().parents[1]

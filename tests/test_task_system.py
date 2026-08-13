@@ -119,10 +119,10 @@ def test_required_task_tools_are_registered(task_tools):
         assert set(schemas[name]["input_schema"].get("required", [])) == required
 
 
-def test_task_storage_is_configured_as_dot_tasks(tmp_path, monkeypatch):
+def test_task_storage_is_configured_under_project_state(tmp_path, monkeypatch):
     monkeypatch.setenv("MODEL_ID", "test-model")
 
-    assert AppConfig.from_env(tmp_path).task_dir == tmp_path / ".tasks"
+    assert AppConfig.from_env(tmp_path).task_dir == tmp_path / ".pamu" / "tasks"
 
 
 def test_create_task_persists_utf8_json_and_reloads(task_store):

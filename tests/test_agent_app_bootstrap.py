@@ -49,6 +49,33 @@ def test_build_runtime_creates_independent_state(tmp_path, monkeypatch):
     assert config.mailbox_dir.is_dir()
 
 
+def test_build_runtime_creates_protective_state_gitignore(tmp_path, monkeypatch):
+    monkeypatch.setenv("MODEL_ID", "test-model")
+    config = AppConfig.from_env(tmp_path / "install", tmp_path / "project")
+
+    from agent_app.bootstrap import build_runtime
+
+    build_runtime(config, FakeSDKClient())
+
+    assert (config.state_dir / ".gitignore").read_text(encoding="utf-8") == (
+        "*\n!.gitignore\n"
+    )
+
+
+def test_build_runtime_preserves_existing_state_gitignore(tmp_path, monkeypatch):
+    monkeypatch.setenv("MODEL_ID", "test-model")
+    config = AppConfig.from_env(tmp_path / "install", tmp_path / "project")
+    config.state_dir.mkdir(parents=True)
+    ignore = config.state_dir / ".gitignore"
+    ignore.write_text("custom\n", encoding="utf-8")
+
+    from agent_app.bootstrap import build_runtime
+
+    build_runtime(config, FakeSDKClient())
+
+    assert ignore.read_text(encoding="utf-8") == "custom\n"
+
+
 def test_build_runtime_registers_every_owner_tool(tmp_path, monkeypatch):
     monkeypatch.setenv("MODEL_ID", "test-model")
 
@@ -88,7 +115,8 @@ def test_build_default_runtime_owns_environment_and_sdk_creation(
     fake_dotenv.load_dotenv = lambda **kwargs: calls.append(("dotenv", kwargs))
     monkeypatch.setitem(sys.modules, "anthropic", fake_anthropic)
     monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
-    monkeypatch.setattr(bootstrap, "DEFAULT_REPO_ROOT", tmp_path)
+    monkeypatch.setattr(bootstrap, "INSTALL_ROOT", tmp_path)
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("MODEL_ID", "test-model")
     monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://example.invalid")
     monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "remove-me")
@@ -96,8 +124,10 @@ def test_build_default_runtime_owns_environment_and_sdk_creation(
     runtime = bootstrap.build_default_runtime()
 
     assert calls == [
-        ("dotenv", {"override": True}),
+        ("dotenv", {"dotenv_path": tmp_path / ".pamu" / ".env", "override": False}),
+        ("dotenv", {"dotenv_path": Path.home() / ".config" / "pamucode" / ".env", "override": False}),
         ("anthropic", {"base_url": "https://example.invalid"}),
     ]
     assert "ANTHROPIC_AUTH_TOKEN" not in __import__("os").environ
     assert runtime.config.repo_root == tmp_path.resolve()
+    assert runtime.config.workdir == tmp_path.resolve()
