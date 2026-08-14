@@ -1,4 +1,5 @@
 .env
+.settings
 .pamu/
 .venv/
 *.egg-info/

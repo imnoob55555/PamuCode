@@ -22,13 +22,15 @@ Open a new terminal if the installer asks you to refresh `PATH`, then run:
 git clone https://github.com/imnoob55555/PamuCode.git
 cd PamuCode
 uv sync
-mkdir -p ~/.config/pamucode
-cp .env.example ~/.config/pamucode/.env
+mkdir -p ~/.pamu
+if [ ! -e ~/.pamu/.settings ]; then
+  cp .settings.example ~/.pamu/.settings
+fi
 uv tool install --editable .
 uv tool update-shell
 ```
 
-Edit `~/.config/pamucode/.env` and set `ANTHROPIC_API_KEY` and `MODEL_ID`.
+Edit `~/.pamu/.settings` and set `ANTHROPIC_API_KEY` and `MODEL_ID`.
 Restart the terminal after `uv tool update-shell` before running `pamu`.
 
 ### Windows (PowerShell)
@@ -46,13 +48,15 @@ run:
 git clone https://github.com/imnoob55555/PamuCode.git
 Set-Location PamuCode
 uv sync
-New-Item -ItemType Directory -Force -Path "$HOME\.config\pamucode" | Out-Null
-Copy-Item -Path .env.example -Destination "$HOME\.config\pamucode\.env"
+New-Item -ItemType Directory -Force -Path "$HOME\.pamu" | Out-Null
+if (!(Test-Path "$HOME\.pamu\.settings")) {
+    Copy-Item -Path .settings.example -Destination "$HOME\.pamu\.settings"
+}
 uv tool install --editable .
 uv tool update-shell
 ```
 
-Edit `$HOME\.config\pamucode\.env` and set `ANTHROPIC_API_KEY` and `MODEL_ID`.
+Edit `$HOME\.pamu\.settings` and set `ANTHROPIC_API_KEY` and `MODEL_ID`.
 Restart PowerShell after `uv tool update-shell` before running `pamu`.
 
 The editable install means later changes to this checkout are used directly by
@@ -61,11 +65,49 @@ the global `pamu` command.
 Configuration is loaded in this priority order:
 
 1. Environment variables already set in the process.
-2. `<project>/.pamu/.env`, for project-specific overrides.
-3. `~/.config/pamucode/.env`, for user-wide defaults.
+2. `<project>/.pamu/.settings`, for project-specific overrides.
+3. `~/.pamu/.settings`, for user-wide defaults.
 
 The first value found wins, so a project configuration can override the global
 default while an explicitly exported environment variable overrides both.
+
+### Migrating from `.env`
+
+PamuCode no longer reads `~/.config/pamucode/.env` or
+`<project>/.pamu/.env`. Move an existing configuration explicitly before
+upgrading. Do not overwrite a `.settings` file that already exists.
+
+On macOS or Linux:
+
+```bash
+mkdir -p ~/.pamu
+if [ -e ~/.pamu/.settings ]; then
+  echo "Refusing to overwrite ~/.pamu/.settings" >&2
+else
+  mv ~/.config/pamucode/.env ~/.pamu/.settings
+fi
+# Run inside a project only when it has a project-specific configuration:
+if [ -e .pamu/.settings ]; then
+  echo "Refusing to overwrite .pamu/.settings" >&2
+else
+  mv .pamu/.env .pamu/.settings
+fi
+```
+
+On Windows PowerShell:
+
+```powershell
+New-Item -ItemType Directory -Force -Path "$HOME\.pamu" | Out-Null
+if (Test-Path "$HOME\.pamu\.settings") {
+    throw "Refusing to overwrite $HOME\.pamu\.settings"
+}
+Move-Item "$HOME\.config\pamucode\.env" "$HOME\.pamu\.settings"
+# Run inside a project only when it has a project-specific configuration:
+if (Test-Path ".pamu\.settings") {
+    throw "Refusing to overwrite .pamu\.settings"
+}
+Move-Item ".pamu\.env" ".pamu\.settings"
+```
 
 ## Run
 
