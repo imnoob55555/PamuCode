@@ -4,8 +4,19 @@ PamuCode is a layered coding-agent runtime extracted into an independent project
 
 ## Setup
 
-PamuCode keeps your user-level defaults outside of individual projects. Create
-the global configuration once, then install the command as an editable UV tool:
+PamuCode requires [Git](https://git-scm.com/) and
+[UV](https://docs.astral.sh/uv/getting-started/installation/). Choose the
+instructions for your operating system.
+
+### macOS / Linux
+
+Install UV if it is not already available:
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+Open a new terminal if the installer asks you to refresh `PATH`, then run:
 
 ```bash
 git clone https://github.com/imnoob55555/PamuCode.git
@@ -17,7 +28,33 @@ uv tool install --editable .
 uv tool update-shell
 ```
 
-Edit `~/.config/pamucode/.env` to set `ANTHROPIC_API_KEY` and `MODEL_ID`.
+Edit `~/.config/pamucode/.env` and set `ANTHROPIC_API_KEY` and `MODEL_ID`.
+Restart the terminal after `uv tool update-shell` before running `pamu`.
+
+### Windows (PowerShell)
+
+Install UV if it is not already available:
+
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+```
+
+Open a new PowerShell window if the installer asks you to refresh `PATH`, then
+run:
+
+```powershell
+git clone https://github.com/imnoob55555/PamuCode.git
+Set-Location PamuCode
+uv sync
+New-Item -ItemType Directory -Force -Path "$HOME\.config\pamucode" | Out-Null
+Copy-Item -Path .env.example -Destination "$HOME\.config\pamucode\.env"
+uv tool install --editable .
+uv tool update-shell
+```
+
+Edit `$HOME\.config\pamucode\.env` and set `ANTHROPIC_API_KEY` and `MODEL_ID`.
+Restart PowerShell after `uv tool update-shell` before running `pamu`.
+
 The editable install means later changes to this checkout are used directly by
 the global `pamu` command.
 
