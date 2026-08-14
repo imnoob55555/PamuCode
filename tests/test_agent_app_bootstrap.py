@@ -107,7 +107,7 @@ def test_environment_loader_never_requests_legacy_env_paths(tmp_path):
         global_settings,
     ]
     assert workspace / ".pamu" / ".env" not in requested
-    assert tmp_path / ".config" / "pamucode" / ".env" not in requested
+    assert global_settings.parent.parent / ".config" / "pamucode" / ".env" not in requested
 
 
 def test_import_does_not_create_runtime_files(tmp_path, monkeypatch):
