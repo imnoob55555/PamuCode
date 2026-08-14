@@ -38,13 +38,13 @@ from .tools.registry import ToolRegistry
 
 
 INSTALL_ROOT = Path(__file__).resolve().parents[1]
-GLOBAL_ENV_PATH = Path.home() / ".config" / "pamucode" / ".env"
+GLOBAL_SETTINGS_PATH = Path.home() / ".pamu" / ".settings"
 TEAM_GUARDED_TOOLS = {"bash", "write_file"}
 
 
 def _load_environment(
     workspace: Path,
-    global_env: Path,
+    global_settings: Path,
     process_environment: Mapping[str, str],
     read: Callable[[Path], Mapping[str, str | None]],
 ) -> dict[str, str]:
@@ -53,8 +53,8 @@ def _load_environment(
     def defined(values: Mapping[str, str | None]) -> dict[str, str]:
         return {name: value for name, value in values.items() if value is not None}
 
-    project_values = defined(read(workspace / ".pamu" / ".env"))
-    global_values = defined(read(global_env))
+    project_values = defined(read(workspace / ".pamu" / ".settings"))
+    global_values = defined(read(global_settings))
     return {
         **global_values,
         **project_values,
@@ -484,7 +484,7 @@ def build_default_runtime() -> RuntimeContext:
     workspace = Path.cwd().resolve()
     environment = _load_environment(
         workspace,
-        GLOBAL_ENV_PATH,
+        GLOBAL_SETTINGS_PATH,
         dict(os.environ),
         dotenv_values,
     )

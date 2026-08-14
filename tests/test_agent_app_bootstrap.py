@@ -31,13 +31,13 @@ def test_environment_isolated_mapping_uses_process_then_project_then_global(
 
     calls = []
     workspace = tmp_path / "project"
-    global_env = tmp_path / "config" / ".env"
+    global_settings = tmp_path / "home" / ".pamu" / ".settings"
     values = {
-        workspace / ".pamu" / ".env": {
+        workspace / ".pamu" / ".settings": {
             "MODEL_ID": "project",
             "ANTHROPIC_API_KEY": "project-key",
         },
-        global_env: {
+        global_settings: {
             "MODEL_ID": "global",
             "FALLBACK_MODEL_ID": "global-fallback",
         },
@@ -45,14 +45,14 @@ def test_environment_isolated_mapping_uses_process_then_project_then_global(
 
     environment = bootstrap._load_environment(
         workspace,
-        global_env,
+        global_settings,
         {"MODEL_ID": "process"},
         lambda path: (calls.append(path), values[path])[1],
     )
 
     assert calls == [
-        workspace / ".pamu" / ".env",
-        global_env,
+        workspace / ".pamu" / ".settings",
+        global_settings,
     ]
     assert environment == {
         "MODEL_ID": "process",
@@ -69,16 +69,45 @@ def test_environment_loading_does_not_mutate_process_and_allows_missing_files(
     import agent_app.bootstrap as bootstrap
 
     workspace = tmp_path / "project"
-    global_env = tmp_path / "config" / ".env"
+    global_settings = tmp_path / "home" / ".pamu" / ".settings"
     monkeypatch.setenv("MODEL_ID", "process")
     before = dict(os.environ)
 
     environment = bootstrap._load_environment(
-        workspace, global_env, os.environ, dotenv_values
+        workspace, global_settings, os.environ, dotenv_values
     )
 
     assert environment["MODEL_ID"] == "process"
     assert dict(os.environ) == before
+
+
+def test_global_settings_path_uses_home_pamu_directory():
+    import agent_app.bootstrap as bootstrap
+
+    assert bootstrap.GLOBAL_SETTINGS_PATH == Path.home() / ".pamu" / ".settings"
+
+
+def test_environment_loader_never_requests_legacy_env_paths(tmp_path):
+    import agent_app.bootstrap as bootstrap
+
+    workspace = tmp_path / "project"
+    global_settings = tmp_path / "home" / ".pamu" / ".settings"
+    requested = []
+
+    environment = bootstrap._load_environment(
+        workspace,
+        global_settings,
+        {},
+        lambda path: (requested.append(path), {})[1],
+    )
+
+    assert environment == {}
+    assert requested == [
+        workspace / ".pamu" / ".settings",
+        global_settings,
+    ]
+    assert workspace / ".pamu" / ".env" not in requested
+    assert tmp_path / ".config" / "pamucode" / ".env" not in requested
 
 
 def test_import_does_not_create_runtime_files(tmp_path, monkeypatch):
@@ -353,10 +382,10 @@ def test_build_default_runtime_owns_environment_and_sdk_creation(
     monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
     install_root = tmp_path / "install"
     workspace = tmp_path / "workspace"
-    global_env = tmp_path / "config" / ".env"
+    global_settings = tmp_path / "home" / ".pamu" / ".settings"
     workspace.mkdir()
     monkeypatch.setattr(bootstrap, "INSTALL_ROOT", install_root)
-    monkeypatch.setattr(bootstrap, "GLOBAL_ENV_PATH", global_env)
+    monkeypatch.setattr(bootstrap, "GLOBAL_SETTINGS_PATH", global_settings)
     monkeypatch.chdir(workspace)
     monkeypatch.setenv("MODEL_ID", "test-model")
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
@@ -367,8 +396,8 @@ def test_build_default_runtime_owns_environment_and_sdk_creation(
     runtime = bootstrap.build_default_runtime()
 
     assert calls == [
-        ("dotenv", workspace / ".pamu" / ".env"),
-        ("dotenv", global_env),
+        ("dotenv", workspace / ".pamu" / ".settings"),
+        ("dotenv", global_settings),
         (
             "anthropic",
             {"api_key": "", "base_url": "https://example.invalid"},
@@ -407,7 +436,7 @@ def test_default_runtimes_do_not_leak_project_environment_between_workspaces(
     fake_dotenv.dotenv_values = read_values
     monkeypatch.setitem(sys.modules, "anthropic", fake_anthropic)
     monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
-    monkeypatch.setattr(bootstrap, "GLOBAL_ENV_PATH", tmp_path / "missing-global")
+    monkeypatch.setattr(bootstrap, "GLOBAL_SETTINGS_PATH", tmp_path / "missing-global")
     for name in (
         "MODEL_ID",
         "FALLBACK_MODEL_ID",
@@ -423,9 +452,9 @@ def test_default_runtimes_do_not_leak_project_environment_between_workspaces(
         ("b", "beta", "beta-key"),
     ):
         project = tmp_path / name
-        env_file = project / ".pamu" / ".env"
-        env_file.parent.mkdir(parents=True)
-        env_file.write_text(
+        settings_file = project / ".pamu" / ".settings"
+        settings_file.parent.mkdir(parents=True)
+        settings_file.write_text(
             f"MODEL_ID={model}\nANTHROPIC_API_KEY={api_key}\n",
             encoding="utf-8",
         )
@@ -463,7 +492,7 @@ def test_default_runtime_passes_both_supported_credentials_without_base_url(
     fake_dotenv.dotenv_values = lambda _path: {}
     monkeypatch.setitem(sys.modules, "anthropic", fake_anthropic)
     monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
-    monkeypatch.setattr(bootstrap, "GLOBAL_ENV_PATH", tmp_path / "missing-global")
+    monkeypatch.setattr(bootstrap, "GLOBAL_SETTINGS_PATH", tmp_path / "missing-global")
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("MODEL_ID", "test-model")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "api-key")
