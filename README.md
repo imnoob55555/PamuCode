@@ -83,14 +83,18 @@ On macOS or Linux:
 mkdir -p ~/.pamu
 if [ -e ~/.pamu/.settings ]; then
   echo "Refusing to overwrite ~/.pamu/.settings" >&2
-else
+elif [ -e ~/.config/pamucode/.env ]; then
   mv ~/.config/pamucode/.env ~/.pamu/.settings
+else
+  echo "No legacy config found at ~/.config/pamucode/.env" >&2
 fi
 # Run inside a project only when it has a project-specific configuration:
 if [ -e .pamu/.settings ]; then
   echo "Refusing to overwrite .pamu/.settings" >&2
-else
+elif [ -e .pamu/.env ]; then
   mv .pamu/.env .pamu/.settings
+else
+  echo "No legacy config found at .pamu/.env" >&2
 fi
 ```
 
@@ -100,13 +104,19 @@ On Windows PowerShell:
 New-Item -ItemType Directory -Force -Path "$HOME\.pamu" | Out-Null
 if (Test-Path "$HOME\.pamu\.settings") {
     throw "Refusing to overwrite $HOME\.pamu\.settings"
+} elseif (Test-Path "$HOME\.config\pamucode\.env") {
+    Move-Item "$HOME\.config\pamucode\.env" "$HOME\.pamu\.settings"
+} else {
+    Write-Output "No legacy config found at $HOME\.config\pamucode\.env"
 }
-Move-Item "$HOME\.config\pamucode\.env" "$HOME\.pamu\.settings"
 # Run inside a project only when it has a project-specific configuration:
 if (Test-Path ".pamu\.settings") {
     throw "Refusing to overwrite .pamu\.settings"
+} elseif (Test-Path ".pamu\.env") {
+    Move-Item ".pamu\.env" ".pamu\.settings"
+} else {
+    Write-Output "No legacy config found at .pamu\.env"
 }
-Move-Item ".pamu\.env" ".pamu\.settings"
 ```
 
 ## Run
