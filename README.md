@@ -1,6 +1,6 @@
 # PamuCode
 
-PamuCode is a layered coding-agent runtime extracted into an independent project.
+PamuCode is a minimal‑baseline Agent implementation similar to Codex and Claude Code.
 
 ## Setup
 
