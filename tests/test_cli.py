@@ -25,8 +25,9 @@ def test_cli_explains_missing_model_configuration(tmp_path, monkeypatch, capsys)
     assert captured.out == ""
     assert "配置错误" in captured.err
     assert "MODEL_ID" in captured.err
-    assert str(Path.home() / ".config" / "pamucode" / ".env") in captured.err
-    assert str(tmp_path / ".pamu" / ".env") in captured.err
+    assert str(Path.home() / ".pamu" / ".settings") in captured.err
+    assert str(tmp_path / ".pamu" / ".settings") in captured.err
+    assert ".config/pamucode/.env" not in captured.err
     assert "MODEL_ID=claude-sonnet-4-6" in captured.err
     assert "Traceback" not in captured.err
 
@@ -84,8 +85,9 @@ def test_module_cli_missing_model_exits_two_without_traceback(tmp_path):
     assert result.stdout == ""
     assert "配置错误" in result.stderr
     assert "MODEL_ID" in result.stderr
-    assert str(home / ".config" / "pamucode" / ".env") in result.stderr
-    assert str(workspace / ".pamu" / ".env") in result.stderr
+    assert str(home / ".pamu" / ".settings") in result.stderr
+    assert str(workspace / ".pamu" / ".settings") in result.stderr
+    assert ".config/pamucode/.env" not in result.stderr
     assert "Traceback" not in result.stderr
 
 

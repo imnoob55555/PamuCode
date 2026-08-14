@@ -80,8 +80,8 @@ def main(
     try:
         runtime = runtime_factory()
     except MissingConfigurationError as error:
-        global_config = Path.home() / ".config" / "pamucode" / ".env"
-        project_config = Path.cwd().resolve() / ".pamu" / ".env"
+        global_config = Path.home() / ".pamu" / ".settings"
+        project_config = Path.cwd().resolve() / ".pamu" / ".settings"
         print(
             f"配置错误：缺少必需配置项 {error.key}。\n"
             "请在以下任一位置添加配置：\n"
