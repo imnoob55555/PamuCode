@@ -6,6 +6,10 @@ import select
 import subprocess
 import sys
 import time
+import json
+import fcntl
+import struct
+import termios
 
 
 def _read_until(master_fd, output, marker, deadline):
@@ -73,13 +77,16 @@ def test_cli_fake_stream_spinner_clears_before_text_and_leaves_no_worker(
     environment.update(
         {
             "MODEL_ID": "test-model",
+            "ANTHROPIC_API_KEY": "fake-pty-key",
+            "PAMU_TEST_CREDENTIALS_FILE": str(tmp_path / "missing-credentials.json"),
             "PAMU_TEST_RELEASE_FD": str(release_read),
             "PYTHONPATH": f"{fake_modules}{os.pathsep}{project_root}",
         }
     )
     command = (
         "from agent_app.cli import main; "
-        "main(); "
+        "from pathlib import Path; import os; "
+        "main(credentials_path=Path(os.environ['PAMU_TEST_CREDENTIALS_FILE'])); "
         "import threading; "
         "print('SPINNER_THREADS=' + str(sum("
         "t.name == 'pamu-working-spinner' for t in threading.enumerate())))"
@@ -123,3 +130,79 @@ def test_cli_fake_stream_spinner_clears_before_text_and_leaves_no_worker(
     text_at = merged.index(b"FAKE_ASSISTANT_TEXT", clear_at)
     assert spinner_at < clear_at < text_at
     assert process.returncode == 0
+
+
+def test_first_launch_login_key_model_and_slash_hints_in_real_terminal(tmp_path):
+    project_root = Path(__file__).resolve().parents[1]
+    credentials = tmp_path / "credentials.json"
+    script = '''
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+from agent_app import bootstrap
+from agent_app.cli import main
+class Messages:
+    def create(self, **kw):
+        raise AssertionError("onboarding must not verify remotely")
+class Client:
+    def __init__(self, **kw):
+        self.messages = Messages()
+sys.modules["anthropic"] = SimpleNamespace(Anthropic=Client)
+bootstrap.load_runtime_environment = lambda: {}
+main(argv=[], credentials_path=Path(sys.argv[1]))
+'''
+    environment = dict(os.environ)
+    environment["PYTHONPATH"] = str(project_root)
+    environment["TERM"] = "xterm-256color"
+    environment["PROMPT_TOOLKIT_NO_CPR"] = "1"
+    master, slave = pty.openpty()
+    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 110, 0, 0))
+    initial_flags = termios.tcgetattr(slave)
+    process = subprocess.Popen(
+        [sys.executable, "-c", script, str(credentials)],
+        stdin=slave, stdout=slave, stderr=slave, cwd=tmp_path, env=environment,
+    )
+    output = bytearray()
+    deadline = time.monotonic() + 15
+    def wait(marker):
+        _read_until(master, output, marker.encode(), deadline)
+    try:
+        wait("请输入 /login")
+        wait(">> ")
+        assert "选择 Provider".encode() not in output
+        os.write(master, b"/")
+        wait("配置 API Key 并选择模型")
+        wait("显示命令帮助")
+        # /login is already highlighted: Enter must execute it immediately.
+        os.write(master, b"\r")
+        wait("选择 Provider")
+        os.write(master, b"\x1b[B\r")
+        wait("DeepSeek · 输入 API Key")
+        os.write(master, b"fake-secret-123\x13")
+        wait("选择模型 · DeepSeek")
+        data = json.loads(credentials.read_text())
+        assert data["providers"]["deepseek"] == {"api_key": "fake-secret-123"}
+        assert data["active"] is None
+        os.write(master, b"\x1b[B\r")
+        wait("已选择 DeepSeek · deepseek-v4-pro")
+        os.write(master, b"/status\r")
+        wait("模型：deepseek-v4-pro")
+        os.write(master, b"q\r")
+        process.wait(timeout=5)
+        assert process.returncode == 0
+        assert b"fake-secret-123" not in output
+        restored_flags = termios.tcgetattr(slave)
+        # macOS sets PENDIN when returning to canonical mode; it is a
+        # kernel-managed pending-input marker, not an altered terminal mode.
+        for flags in (initial_flags, restored_flags):
+            flags[3] &= ~getattr(termios, "PENDIN", 0)
+        assert restored_flags == initial_flags
+        data = json.loads(credentials.read_text())
+        assert data["active"] == "deepseek"
+        assert data["providers"]["deepseek"]["model"] == "deepseek-v4-pro"
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=2)
+        os.close(slave)
+        os.close(master)

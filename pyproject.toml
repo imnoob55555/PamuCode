@@ -8,6 +8,7 @@ dependencies = [
   "anthropic>=0.52",
   "python-dotenv>=1.0",
   "PyYAML>=6.0",
+  "prompt-toolkit>=3.0.52,<4",
 ]
 
 [project.scripts]

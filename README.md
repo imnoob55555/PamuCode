@@ -30,7 +30,8 @@ uv tool install --editable .
 uv tool update-shell
 ```
 
-Edit `~/.pamu/.settings` and set `ANTHROPIC_API_KEY` and `MODEL_ID`.
+Run `pamu` and enter `/login` to configure your provider interactively.
+You can also configure `ANTHROPIC_API_KEY` and `MODEL_ID` in `~/.pamu/.settings`.
 Restart the terminal after `uv tool update-shell` before running `pamu`.
 
 ### Windows (PowerShell)
@@ -56,7 +57,8 @@ uv tool install --editable .
 uv tool update-shell
 ```
 
-Edit `$HOME\.pamu\.settings` and set `ANTHROPIC_API_KEY` and `MODEL_ID`.
+Run `pamu` and enter `/login` to configure your provider interactively.
+You can also configure `ANTHROPIC_API_KEY` and `MODEL_ID` in `$HOME\.pamu\.settings`.
 Restart PowerShell after `uv tool update-shell` before running `pamu`.
 
 The editable install means later changes to this checkout are used directly by
@@ -128,6 +130,64 @@ pamu
 
 While waiting for a model response, interactive terminals show an animated
 `Working` status. Redirected and other non-interactive output stays clean.
+
+### 日志（Logging）
+
+每次运行会自动在 `<项目>/.pamu/logs/pamu.log` 写入旋转日志（单文件 2MB，
+保留 5 份），记录轮次起止、工具调用、压缩与恢复事件、供应商/模型切换等。
+在 `.settings` 中设置 `LOG_LEVEL=DEBUG/INFO/WARNING/ERROR` 可调整级别。
+终端输出不变，日志仅为事后排查通道，且被 `.pamu/.gitignore` 屏蔽，不会入库。
+
+### 模型供应商登录与切换
+
+除环境变量外，PamuCode 支持多供应商账户登录，凭证保存在
+`~/.pamu/credentials.json`（仅属主可读，0600）：
+
+启动只检查本地保存的 API Key 记录及已有配置，不发送验证请求。
+首次启动没有配置时，输入区会提示输入 `/login`：
+
+1. 输入 `/login`，用 ↑↓ 选择 provider，按 Enter 确认。
+2. 输入 API Key（遮罩显示），按 **Ctrl+S** 保存到本地。
+3. 用 ↑↓ 选择模型，按 Enter 保存并进入会话。也可选择“自定义模型 ID”。
+
+模型菜单使用内置列表，不联网查询账户权限。保存 Key 后取消模型选择会保留
+Key；可重新 `/login` 配置，未启动模型会话时也可用 `/model` 继续选择。
+Esc 返回或取消当前步骤，Ctrl+C 取消 Key 输入并回到对话输入区。
+API Key 不进入输入历史或日志；凭证通过原子替换写入，写入失败可以重试。
+
+```bash
+pamu login [provider]    # provider → API Key → 模型，交互终端离线保存
+pamu logout [provider]   # 登出一个或全部供应商
+pamu status               # 查看当前供应商与已登录账户
+pamu use <provider>       # 设定下次启动使用的默认供应商
+```
+
+内置供应商（均提供 Anthropic 兼容端点）：`anthropic`、`deepseek`、`moonshot`、
+`zhipu`、`openrouter`。登录后无需再配置 `MODEL_ID`/`ANTHROPIC_API_KEY`。
+
+REPL 会话内支持热切换，无需重启：
+
+```
+/login             列出 provider，配置 API Key 并选择模型
+/status            查看当前供应商、模型与登录状态
+/model [id]        上下键选择模型，或直接指定模型 ID
+/provider <name>   切换供应商（需先登录）
+/help              查看命令列表
+```
+
+输入 `/` 后，输入区下方即时展示命令及简短说明；继续输入命令名称或说明关键词
+会实时过滤。↑↓ 选择建议、Enter 直接执行高亮命令；Tab 只补全，Esc 收起建议。
+`/login` 无需参数，执行后先列出支持 Anthropic 格式 API 的 provider，
+↑↓ 高亮并按 Enter 选择，再输入 Key、Ctrl+S 保存，最后选择模型。
+普通文本输入隐藏建议，并保留上下键历史导航。
+
+非交互终端保留普通行输入；`pamu login` 的行输入模式保留原有在线验证行为，
+可加 `--no-verify` 离线保存。键盘菜单和实时提示需要交互终端。
+
+同一 provider 的 Key 优先级：进程环境变量 > 项目 `.settings` > 全局
+`.settings` > 已保存凭证；启动和会话内切换均遵循此顺序。登录时选择的模型
+保存为该 provider 的默认模型；无登录模型记录时保留原有 `MODEL_ID` 配置方式。
+验收清单见 `docs/ACCEPTANCE.md`。
 
 PamuCode uses the current directory as the project workspace. Its local runtime
 state is stored beneath `.pamu/`, including `memory/`, `transcripts/`,

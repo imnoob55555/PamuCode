@@ -386,6 +386,9 @@ def test_build_default_runtime_owns_environment_and_sdk_creation(
     workspace.mkdir()
     monkeypatch.setattr(bootstrap, "INSTALL_ROOT", install_root)
     monkeypatch.setattr(bootstrap, "GLOBAL_SETTINGS_PATH", global_settings)
+    monkeypatch.setattr(
+        bootstrap, "CREDENTIALS_PATH", tmp_path / "missing-credentials.json"
+    )
     monkeypatch.chdir(workspace)
     monkeypatch.setenv("MODEL_ID", "test-model")
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
@@ -400,7 +403,7 @@ def test_build_default_runtime_owns_environment_and_sdk_creation(
         ("dotenv", global_settings),
         (
             "anthropic",
-            {"api_key": "", "base_url": "https://example.invalid"},
+            {"api_key": "", "base_url": "https://example.invalid", "auth_token": "remove-me"},
         ),
     ]
     assert dict(os.environ) == before
@@ -437,7 +440,11 @@ def test_default_runtimes_do_not_leak_project_environment_between_workspaces(
     monkeypatch.setitem(sys.modules, "anthropic", fake_anthropic)
     monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
     monkeypatch.setattr(bootstrap, "GLOBAL_SETTINGS_PATH", tmp_path / "missing-global")
+    monkeypatch.setattr(
+        bootstrap, "CREDENTIALS_PATH", tmp_path / "missing-credentials.json"
+    )
     for name in (
+        "MODEL_ID",
         "MODEL_ID",
         "FALLBACK_MODEL_ID",
         "ANTHROPIC_API_KEY",
@@ -493,6 +500,9 @@ def test_default_runtime_passes_both_supported_credentials_without_base_url(
     monkeypatch.setitem(sys.modules, "anthropic", fake_anthropic)
     monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
     monkeypatch.setattr(bootstrap, "GLOBAL_SETTINGS_PATH", tmp_path / "missing-global")
+    monkeypatch.setattr(
+        bootstrap, "CREDENTIALS_PATH", tmp_path / "missing-credentials.json"
+    )
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("MODEL_ID", "test-model")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "api-key")

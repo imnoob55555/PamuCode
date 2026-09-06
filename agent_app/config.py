@@ -28,8 +28,10 @@ class AppConfig:
     mailbox_dir: Path
     scheduled_tasks_path: Path
     worktrees_dir: Path
+    logs_dir: Path
     primary_model: str
     fallback_model: str | None
+    log_level: str = "INFO"
     default_max_tokens: int = 8_000
     escalated_max_tokens: int = 64_000
     max_continuations: int = 3
@@ -74,6 +76,8 @@ class AppConfig:
             mailbox_dir=state_dir / "mailboxes",
             scheduled_tasks_path=state_dir / "scheduled_tasks.json",
             worktrees_dir=state_dir / "worktrees",
+            logs_dir=state_dir / "logs",
             primary_model=model_id,
             fallback_model=environment.get("FALLBACK_MODEL_ID"),
+            log_level=(environment.get("LOG_LEVEL") or "INFO").strip() or "INFO",
         )

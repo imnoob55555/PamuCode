@@ -1,4 +1,15 @@
-ANTHROPIC_API_KEY=sk-ant-xxx
+# 可在 pamu 中输入 /login 配置供应商；也可在这里手动填写 Key。
+# 保持 Key 为空时，首次启动会提示 /login。
+ANTHROPIC_API_KEY=
 MODEL_ID=claude-sonnet-4-6
 # FALLBACK_MODEL_ID=claude-haiku-4-5
-ANTHROPIC_BASE_URL=https://api.anthropic.com
+# ANTHROPIC_BASE_URL=https://api.anthropic.com
+
+# 日志级别：DEBUG / INFO / WARNING / ERROR（日志写入 .pamu/logs/pamu.log）
+# LOG_LEVEL=INFO
+
+# 其他供应商示例（推荐使用 pamu login <provider> 登录，密钥存于 ~/.pamu/credentials.json）：
+# DEEPSEEK_API_KEY=
+# MOONSHOT_API_KEY=
+# ZHIPU_API_KEY=
+# OPENROUTER_API_KEY=

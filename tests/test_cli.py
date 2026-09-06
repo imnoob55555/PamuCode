@@ -290,6 +290,9 @@ def test_module_cli_starts_without_installed_dependencies(tmp_path):
     workspace = tmp_path / "project"
     cwd_file = tmp_path / "anthropic-cwd.txt"
     workspace.mkdir()
+    root_state = project_root / ".pamu"
+    before = {p.relative_to(root_state) for p in root_state.rglob("*")}
+    root_existed = root_state.exists()
     environment = dict(os.environ)
     environment.update(
         {
@@ -312,4 +315,5 @@ def test_module_cli_starts_without_installed_dependencies(tmp_path):
     assert result.returncode == 0, result.stderr
     assert cwd_file.read_text(encoding="utf-8") == str(workspace.resolve())
     assert (workspace / ".pamu").is_dir()
-    assert not (project_root / ".pamu").exists()
+    assert root_state.exists() == root_existed
+    assert {p.relative_to(root_state) for p in root_state.rglob("*")} == before

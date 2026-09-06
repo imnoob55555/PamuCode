@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import difflib
+import logging
 from contextlib import nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Mapping
 
+from ..logging_setup import get_logger
 from .builtin import safe_path
 
 
@@ -95,9 +97,12 @@ def make_permission_hook(
     return permission_hook
 
 
-def make_log_hook(root: Path):
+def make_log_hook(root: Path, logger: logging.Logger | None = None):
+    hook_logger = logger or get_logger("pamu.hooks")
+
     def log_hook(block, *, _root=root):
         args_preview = str(list(block.input.values())[:2])[:60]
+        hook_logger.info("tool_use name=%s args=%s", block.name, args_preview)
         print(f"\033[90m[HOOK] {block.name}({args_preview})\033[0m")
         return None
 

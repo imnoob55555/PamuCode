@@ -60,15 +60,17 @@ def spawn_subagent(
     tools: list[dict],
     handlers: dict,
     hooks,
+    model: str | None = None,
 ) -> str:
     """Run a fresh, bounded subagent conversation using only supplied tools."""
+    active_model = model or config.primary_model
     print("\n\033[35m[Subagent spawned]\033[0m")
     messages = [{"role": "user", "content": description}]
 
     for _ in range(30):
         try:
             response = llm(
-                model=config.primary_model,
+                model=active_model,
                 system=system,
                 messages=list(messages),
                 tools=tools,

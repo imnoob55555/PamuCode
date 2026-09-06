@@ -6,6 +6,7 @@ import copy
 import json
 import time
 
+from ..logging_setup import get_logger
 from .compaction import (
     compact_history,
     estimate_size,
@@ -45,6 +46,7 @@ CONTINUATION_PROMPT = (
     "no apology, no recap. Pick up mid-thought."
 )
 TEAM_GUARDED_TOOLS = {"bash", "write_file"}
+LOGGER = get_logger("pamu.loop")
 
 
 def _block_value(block, name, default=None):
@@ -77,7 +79,7 @@ def _summarize(runtime: RuntimeContext, payload, max_tokens: int = 2_000) -> str
     else:
         prompt = str(payload)
     response = runtime.llm.create(
-        model=runtime.config.primary_model,
+        model=runtime.model.primary_model,
         system=None,
         messages=[{"role": "user", "content": prompt}],
         max_tokens=max_tokens,
@@ -150,9 +152,17 @@ def run_agent_loop(runtime: RuntimeContext) -> None:
     """Run one agent turn, mutating only the supplied runtime's owned state."""
     session = runtime.session
     messages = session.history
+    provider, primary_model, fallback_model = runtime.model.snapshot()
+    LOGGER.info(
+        "turn start provider=%s model=%s fallback=%s rounds=%d",
+        provider,
+        primary_model,
+        fallback_model,
+        len(messages),
+    )
     state = RecoveryState(
-        current_model=runtime.config.primary_model,
-        fallback_model=runtime.config.fallback_model,
+        current_model=primary_model,
+        fallback_model=fallback_model,
     )
     max_tokens = runtime.config.default_max_tokens
     summarize = lambda payload, max_tokens=2_000: _summarize(
@@ -175,6 +185,7 @@ def run_agent_loop(runtime: RuntimeContext) -> None:
         messages[:] = snip_compact(messages)
         messages[:] = micro_compact(runtime.config, messages)
         if estimate_size(messages) > runtime.config.context_limit:
+            LOGGER.info("auto compact triggered")
             print("[auto compact]")
             messages[:] = compact_history(runtime.config, summarize, messages)
 
@@ -222,6 +233,11 @@ def run_agent_loop(runtime: RuntimeContext) -> None:
                     }
                 )
                 state.continuation_count += 1
+                LOGGER.warning(
+                    "stream interrupted; continuation %d/%d",
+                    state.continuation_count,
+                    runtime.config.max_continuations,
+                )
                 messages.append({"role": "user", "content": CONTINUATION_PROMPT})
                 print(
                     f"  \033[33m[stream interrupted] continuation "
@@ -257,6 +273,7 @@ def run_agent_loop(runtime: RuntimeContext) -> None:
                 < runtime.config.max_reactive_compacts
             ):
                 state.reactive_compact_count += 1
+                LOGGER.warning("recovery: reactive compact")
                 try:
                     messages[:] = reactive_compact(
                         runtime.config, summarize, messages
@@ -267,6 +284,11 @@ def run_agent_loop(runtime: RuntimeContext) -> None:
                     return
                 print("[recovery] reactive compact")
                 continue
+            LOGGER.error(
+                "unrecoverable error: %s: %s",
+                type(exc).__name__,
+                str(exc)[:300],
+            )
             append_unrecoverable_error(messages, exc)
             _update_context(runtime)
             return
@@ -330,6 +352,7 @@ def run_agent_loop(runtime: RuntimeContext) -> None:
             extract_memories(runtime.memory, pre_compact_messages, summarize)
             consolidate_memories(runtime.memory, summarize)
             _update_context(runtime)
+            LOGGER.info("turn complete")
             return
 
         session.rounds_since_todo += 1
@@ -341,6 +364,7 @@ def run_agent_loop(runtime: RuntimeContext) -> None:
             name = _block_value(block, "name")
             tool_input = _block_value(block, "input", {})
             tool_use_id = _block_value(block, "id")
+            LOGGER.info("tool_call name=%s", name)
             print(f"\033[36m> {name}\033[0m")
             if name == "compact":
                 messages[:] = compact_history(runtime.config, summarize, messages)

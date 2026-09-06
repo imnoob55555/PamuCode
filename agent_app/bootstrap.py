@@ -20,10 +20,12 @@ from .core.prompt import PromptBuilder
 from .core.recovery import RecoveryState, with_retry
 from .features import background, mcp, memory, scheduler, skills
 from .features import subagents, tasks, todos, worktrees
+from .features import auth as auth_store
 from .features.teams import bus as team_bus
 from .features.teams import protocol as team_protocol
 from .features.teams import teammates
-from .runtime import RuntimeContext, SessionState
+from .logging_setup import setup_logging
+from .runtime import ModelRouter, RuntimeContext, SessionState
 from .tools import builtin
 from .tools.hooks import (
     HookRegistry,
@@ -39,6 +41,7 @@ from .tools.registry import ToolRegistry
 
 INSTALL_ROOT = Path(__file__).resolve().parents[1]
 GLOBAL_SETTINGS_PATH = Path.home() / ".pamu" / ".settings"
+CREDENTIALS_PATH = auth_store.CREDENTIALS_PATH
 TEAM_GUARDED_TOOLS = {"bash", "write_file"}
 
 
@@ -74,6 +77,7 @@ def _state_paths(config: AppConfig) -> tuple[Path, ...]:
         config.mailbox_dir,
         config.scheduled_tasks_path,
         config.worktrees_dir,
+        config.logs_dir,
     )
 
 
@@ -92,6 +96,7 @@ def _validate_state_paths(config: AppConfig) -> None:
         expected_state_dir / "mailboxes",
         expected_state_dir / "scheduled_tasks.json",
         expected_state_dir / "worktrees",
+        expected_state_dir / "logs",
     )
 
     for path, expected in zip(_state_paths(config), expected_paths, strict=True):
@@ -166,6 +171,7 @@ def _create_storage_roots(config: AppConfig) -> None:
         config.mailbox_dir,
         config.worktrees_dir,
         config.scheduled_tasks_path.parent,
+        config.logs_dir,
     ):
         root.mkdir(parents=True, exist_ok=True)
 
@@ -200,14 +206,25 @@ def _register_default_hooks(
 
 
 def build_runtime(
-    config: AppConfig, sdk_client, *, progress_factory=None
+    config: AppConfig,
+    sdk_client,
+    *,
+    progress_factory=None,
+    provider: str = "anthropic",
 ) -> RuntimeContext:
     """Build one completely independent runtime from explicit dependencies."""
     _create_storage_roots(config)
+    setup_logging(config.logs_dir, config.log_level)
     llm = (
         AnthropicAdapter(sdk_client, progress_factory)
         if progress_factory is not None
         else AnthropicAdapter(sdk_client)
+    )
+    model_router = ModelRouter(
+        provider=provider,
+        primary_model=config.primary_model,
+        fallback_model=config.fallback_model,
+        llm=llm,
     )
 
     session = SessionState()
@@ -321,11 +338,14 @@ def build_runtime(
         )
 
     def spawn_teammate(name: str, role: str, prompt: str) -> str:
-        recovery = RecoveryState(config.primary_model, config.fallback_model)
+        _provider, primary, fallback = model_router.snapshot()
+        recovery = RecoveryState(primary, fallback)
 
         def teammate_llm(**kwargs):
             return with_retry(
-                lambda: llm.create(model=recovery.current_model, **kwargs),
+                lambda: model_router.llm.create(
+                    model=recovery.current_model, **kwargs
+                ),
                 recovery,
                 max_transient_retries=config.max_transient_retries,
                 max_consecutive_529=config.max_consecutive_529,
@@ -430,11 +450,12 @@ def build_runtime(
     ]
 
     def spawn_subagent(description: str) -> str:
-        recovery = RecoveryState(config.primary_model, config.fallback_model)
+        _provider, primary, fallback = model_router.snapshot()
+        recovery = RecoveryState(primary, fallback)
 
         def subagent_llm(**kwargs):
             return with_retry(
-                lambda: llm.create(
+                lambda: model_router.llm.create(
                     **{**kwargs, "model": recovery.current_model}
                 ),
                 recovery,
@@ -451,6 +472,7 @@ def build_runtime(
             subagent_tools,
             {name: builtin_handlers[name] for name in ("bash", "read_file", "write_file", "edit_file", "glob")},
             hooks,
+            model=primary,
         )
 
     subagents.register_subagent_tool(registry, spawn_subagent)
@@ -473,23 +495,95 @@ def build_runtime(
         protocols=protocols,
         team=team_state,
         mcp=mcp_state,
+        model=model_router,
     )
 
 
-def build_default_runtime() -> RuntimeContext:
-    """Load process configuration and construct the production SDK client."""
-    from anthropic import Anthropic
+def _resolve_active_provider(
+    environment: dict[str, str],
+    credentials: dict,
+) -> tuple:
+    """Return (spec, api_key, model_id) for the active non-anthropic provider.
+
+    Returns (None, None, None) when the classic Anthropic/env flow should
+    be used instead. Environment keys win over stored credentials so an
+    explicitly exported variable keeps overriding stored logins.
+    """
+    from .adapters.providers import PROVIDERS
+
+    active = auth_store.configured_provider(credentials)
+    spec = PROVIDERS.get(active) if isinstance(active, str) else None
+    if spec is None or spec.name == "anthropic":
+        return None, None, None
+    record = auth_store.get_login(credentials, spec.name)
+    api_key = environment.get(spec.key_env) or record.get("api_key")
+    model_id = record.get("model")
+    if not isinstance(model_id, str) or not model_id.strip():
+        model_id = spec.default_model
+    return spec, api_key, model_id
+
+
+def load_runtime_environment() -> dict[str, str]:
     from dotenv import dotenv_values
 
-    workspace = Path.cwd().resolve()
-    environment = _load_environment(
-        workspace,
-        GLOBAL_SETTINGS_PATH,
-        dict(os.environ),
-        dotenv_values,
+    return _load_environment(
+        Path.cwd().resolve(), GLOBAL_SETTINGS_PATH, dict(os.environ), dotenv_values,
     )
+
+
+def has_local_configuration(credentials_path: Path | None = None) -> bool:
+    """Only inspect local records/settings; never probe the remote API."""
+    data = auth_store.load_credentials(credentials_path or CREDENTIALS_PATH)
+    if auth_store.configured_provider(data):
+        return True
+    environment = load_runtime_environment()
+    return bool(environment.get("MODEL_ID", "").strip() and any(
+        environment.get(key, "").strip() for key in (
+            "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL",
+        )
+    ))
+
+
+def build_default_runtime(*, credentials_path: Path | None = None) -> RuntimeContext:
+    """Load process configuration and construct the production SDK client."""
+    from anthropic import Anthropic
+
+    workspace = Path.cwd().resolve()
+    environment = load_runtime_environment()
+    credentials = auth_store.load_credentials(credentials_path or CREDENTIALS_PATH)
+    spec, provider_key, provider_model = _resolve_active_provider(
+        environment, credentials
+    )
+    if spec is not None:
+        from .adapters.providers import build_client
+
+        client = build_client(spec, provider_key)
+        environment = {**environment, "MODEL_ID": provider_model}
+        config = AppConfig.from_env(INSTALL_ROOT, workspace, environment)
+        return build_runtime(
+            config,
+            client,
+            progress_factory=terminal_progress,
+            provider=spec.name,
+        )
+
     base_url = environment.get("ANTHROPIC_BASE_URL")
-    api_key = environment.get("ANTHROPIC_API_KEY")
+    record = auth_store.get_login(credentials, "anthropic")
+    stored_key = record.get("api_key")
+    if not isinstance(stored_key, str):
+        stored_key = None
+    stored_model = record.get("model")
+    if stored_key and (
+        isinstance(stored_model, str) and stored_model.strip()
+        or not environment.get("MODEL_ID", "").strip()
+    ):
+        from .adapters.providers import get_provider
+
+        environment["MODEL_ID"] = (
+            stored_model.strip() if isinstance(stored_model, str) and stored_model.strip()
+            else get_provider("anthropic").default_model
+        )
+    api_key = environment.get("ANTHROPIC_API_KEY") or stored_key
     auth_token = environment.get("ANTHROPIC_AUTH_TOKEN")
     client_options = {}
     if api_key is not None:
@@ -498,10 +592,10 @@ def build_default_runtime() -> RuntimeContext:
         client_options["base_url"] = base_url
         if api_key is None:
             client_options["api_key"] = ""
-    elif auth_token is not None:
-        client_options["auth_token"] = auth_token
     elif api_key is None:
         client_options["api_key"] = ""
+    if auth_token is not None:
+        client_options["auth_token"] = auth_token
     config = AppConfig.from_env(INSTALL_ROOT, workspace, environment)
     return build_runtime(
         config,
