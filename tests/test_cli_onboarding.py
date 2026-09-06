@@ -199,3 +199,68 @@ def test_hot_anthropic_switch_preserves_custom_url_and_token(tmp_path, monkeypat
             "auth_token": "gateway-token",
         }
     ]
+
+
+def test_provider_menu_switches_selected_provider_and_saved_model(tmp_path):
+    path = tmp_path / "credentials.json"
+    auth.store_login("anthropic", "fake-anthropic", "chosen-claude", path)
+    auth.store_login("deepseek", "fake-deepseek", "chosen-deepseek", path)
+    menus = []
+
+    def choose(title, choices):
+        menus.append((title, choices))
+        assert choices[0][0] == "deepseek"
+        assert "当前" in choices[0][1]
+        assert "未配置" in dict(choices)["moonshot"]
+        return "anthropic"
+
+    r = runtime()
+    options = []
+    cli.handle_slash_command(
+        r,
+        "/provider",
+        credentials_path=path,
+        ui=SimpleNamespace(choose=choose),
+        client_factory=lambda **kw: options.append(kw) or object(),
+    )
+    assert len(menus) == 1
+    assert r.model.snapshot()[:2] == ("anthropic", "chosen-claude")
+    assert options[0]["api_key"] == "fake-anthropic"
+    assert auth.load_credentials(path)["active"] == "anthropic"
+
+
+@pytest.mark.parametrize("command", ["/model", "/provider"])
+def test_cancel_switch_menu_preserves_runtime_and_credentials(tmp_path, command):
+    path = tmp_path / "credentials.json"
+    auth.store_login("deepseek", "fake-key", "selected", path)
+    before = path.read_bytes()
+    r = runtime()
+    selections = []
+
+    def choose(title, choices):
+        selections.append(title)
+        return None
+
+    cli.handle_slash_command(
+        r, command, credentials_path=path, ui=SimpleNamespace(choose=choose)
+    )
+    assert len(selections) == 1
+    assert r.model.snapshot()[:2] == ("deepseek", "selected")
+    assert path.read_bytes() == before
+
+
+def test_provider_menu_unconfigured_option_prompts_login(tmp_path, capsys):
+    path = tmp_path / "credentials.json"
+    auth.store_login("deepseek", "fake-key", "selected", path)
+    before = path.read_bytes()
+    r = runtime()
+    cli.handle_slash_command(
+        r,
+        "/provider",
+        credentials_path=path,
+        ui=SimpleNamespace(choose=lambda *args: "moonshot"),
+        client_factory=lambda **kw: pytest.fail("unconfigured client built"),
+    )
+    assert "/login" in capsys.readouterr().out
+    assert r.model.snapshot()[:2] == ("deepseek", "selected")
+    assert path.read_bytes() == before

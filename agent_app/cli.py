@@ -371,11 +371,21 @@ def handle_slash_command(
         return
 
     if command == "/provider":
+        from .bootstrap import load_runtime_environment
+
+        data = auth.load_credentials(credentials_path)
+        environment = load_runtime_environment()
         if not argument:
-            names = ", ".join(sorted(providers.PROVIDERS))
-            print_fn(f"可用供应商：{names}")
-            print_fn("用法：/provider <name>")
-            return
+            if ui is None:
+                names = ", ".join(sorted(providers.PROVIDERS))
+                print_fn(f"可用供应商：{names}")
+                print_fn("用法：/provider <name>")
+                return
+            from .onboarding import choose_provider
+
+            argument = choose_provider(ui, data, environment, runtime.model.provider)
+            if argument is None:
+                return
         try:
             spec = providers.get_provider(argument)
         except providers.UnknownProviderError:
@@ -384,11 +394,7 @@ def handle_slash_command(
                 f"{', '.join(sorted(providers.PROVIDERS))}"
             )
             return
-        data = auth.load_credentials(credentials_path)
         record = auth.get_login(data, spec.name)
-        from .bootstrap import load_runtime_environment
-
-        environment = load_runtime_environment()
         api_key = environment.get(spec.key_env) or record.get("api_key")
         if spec.requires_key and (not isinstance(api_key, str) or not api_key.strip()):
             print_fn(f"尚未登录 {spec.label}，请先输入 /login 或运行 pamu login {spec.name}")

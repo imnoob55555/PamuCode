@@ -6,6 +6,20 @@ from .adapters import providers
 from .features import auth
 
 
+def choose_provider(ui, credentials, environment, current=None) -> str | None:
+    choices = []
+    specs = sorted(providers.PROVIDERS.values(), key=lambda spec: spec.name != current)
+    for spec in specs:
+        record = auth.get_login(credentials, spec.name)
+        key = environment.get(spec.key_env) or record.get("api_key")
+        configured = isinstance(key, str) and bool(key.strip())
+        state = "已配置" if configured else "未配置 API Key"
+        if spec.name == current:
+            state = "当前"
+        choices.append((spec.name, f"{spec.label} ({spec.name}) · {state}"))
+    return ui.choose("切换 Provider", choices)
+
+
 def choose_model(ui, spec, current=None) -> str | None:
     choices = [(model, model) for model in providers.model_choices(spec, current)]
     choices.append(("", "自定义模型 ID…"))

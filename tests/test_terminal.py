@@ -84,14 +84,14 @@ def test_ctrl_c_aborts_key_entry_instead_of_going_back():
         ("/\x1b[B\t\r", "/status"),
         ("/\x1b[A\t\r", "/help"),
         ("/mo\r", "/model"),
-        ("/mo custom-model\r", "/model custom-model"),
-        ("/prov deepseek\r", "/provider deepseek"),
+        ("/mo custom-model\r", "/model"),
+        ("/prov deepseek\r", "/provider"),
         ("/unknown\r", "/unknown"),
         ("hello\r", "hello"),
         ("/log\x7f\x7f\x7fhelp\r", "/help"),
     ],
 )
-def test_prompt_enter_executes_highlighted_command_and_preserves_arguments(
+def test_prompt_enter_executes_highlighted_menu_command(
     keys, expected
 ):
     with create_pipe_input() as pipe:
@@ -100,8 +100,9 @@ def test_prompt_enter_executes_highlighted_command_and_preserves_arguments(
         assert ui.prompt() == expected
 
 
-def test_login_suggestion_has_no_parameter():
-    assert match_commands("/login")[0].usage == "/login"
+@pytest.mark.parametrize("command", ["/login", "/model", "/provider"])
+def test_menu_command_suggestion_has_no_parameter(command):
+    assert match_commands(command)[0].usage == command
 
 
 def test_slash_hints_redraw_below_input_as_keyword_changes(monkeypatch):

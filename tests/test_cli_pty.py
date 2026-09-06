@@ -12,8 +12,8 @@ import struct
 import termios
 
 
-def _read_until(master_fd, output, marker, deadline):
-    while marker not in output:
+def _read_until(master_fd, output, marker, deadline, start=0):
+    while marker not in output[start:]:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise AssertionError(
@@ -31,7 +31,7 @@ def _read_until(master_fd, output, marker, deadline):
         if not chunk:
             break
         output.extend(chunk)
-    assert marker in output, bytes(output)
+    assert marker in output[start:], bytes(output)
 
 
 def test_cli_fake_stream_spinner_clears_before_text_and_leaves_no_worker(
@@ -164,8 +164,8 @@ main(argv=[], credentials_path=Path(sys.argv[1]))
     )
     output = bytearray()
     deadline = time.monotonic() + 15
-    def wait(marker):
-        _read_until(master, output, marker.encode(), deadline)
+    def wait(marker, start=0):
+        _read_until(master, output, marker.encode(), deadline, start)
     try:
         wait("请输入 /login")
         wait(">> ")
@@ -187,6 +187,26 @@ main(argv=[], credentials_path=Path(sys.argv[1]))
         wait("已选择 DeepSeek · deepseek-v4-pro")
         os.write(master, b"/status\r")
         wait("模型：deepseek-v4-pro")
+
+        # Select /model directly from slash hints, then select a model.
+        start = len(output)
+        os.write(master, b"/\x1b[B\x1b[B\r")
+        wait("选择模型 · DeepSeek", start)
+        os.write(master, b"\x1b[B\r")
+        wait("模型已切换为 deepseek-v4-flash", start)
+
+        data = json.loads(credentials.read_text())
+        data["providers"]["anthropic"] = {
+            "api_key": "fake-second-provider", "model": "claude-sonnet-4-6",
+        }
+        credentials.write_text(json.dumps(data))
+        start = len(output)
+        os.write(master, b"/\x1b[B\x1b[B\x1b[B\r")
+        wait("切换 Provider", start)
+        os.write(master, b"\x1b[B\r")
+        wait("供应商已切换为 Anthropic 官方", start)
+        os.write(master, b"/status\r")
+        wait("模型：claude-sonnet-4-6", start)
         os.write(master, b"q\r")
         process.wait(timeout=5)
         assert process.returncode == 0
@@ -198,8 +218,8 @@ main(argv=[], credentials_path=Path(sys.argv[1]))
             flags[3] &= ~getattr(termios, "PENDIN", 0)
         assert restored_flags == initial_flags
         data = json.loads(credentials.read_text())
-        assert data["active"] == "deepseek"
-        assert data["providers"]["deepseek"]["model"] == "deepseek-v4-pro"
+        assert data["active"] == "anthropic"
+        assert data["providers"]["deepseek"]["model"] == "deepseek-v4-flash"
     finally:
         if process.poll() is None:
             process.kill()

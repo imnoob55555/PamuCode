@@ -170,8 +170,8 @@ REPL 会话内支持热切换，无需重启：
 ```
 /login             列出 provider，配置 API Key 并选择模型
 /status            查看当前供应商、模型与登录状态
-/model [id]        上下键选择模型，或直接指定模型 ID
-/provider <name>   切换供应商（需先登录）
+/model             列出当前 provider 的模型，选择后切换
+/provider          列出 provider，选择后切换（需先配置 Key）
 /help              查看命令列表
 ```
 
@@ -179,6 +179,9 @@ REPL 会话内支持热切换，无需重启：
 会实时过滤。↑↓ 选择建议、Enter 直接执行高亮命令；Tab 只补全，Esc 收起建议。
 `/login` 无需参数，执行后先列出支持 Anthropic 格式 API 的 provider，
 ↑↓ 高亮并按 Enter 选择，再输入 Key、Ctrl+S 保存，最后选择模型。
+`/model` 和 `/provider` 同样无需输入参数：执行命令后显示选项菜单，
+↑↓ 选择、Enter 确认，Esc 取消。provider 菜单标出当前供应商与 Key 配置状态；
+选择尚未配置 Key 的供应商时会提示先执行 `/login`。
 普通文本输入隐藏建议，并保留上下键历史导航。
 
 非交互终端保留普通行输入；`pamu login` 的行输入模式保留原有在线验证行为，
