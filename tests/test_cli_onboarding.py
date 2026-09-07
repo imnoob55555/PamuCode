@@ -36,7 +36,7 @@ def test_first_launch_accepts_help_and_prompts_login_without_runtime(tmp_path, c
     code = cli.main(
         runtime_factory=lambda: calls.append("build"),
         argv=[],
-        ui=ShellUI(["hello", "/help", "/status", "q"]),
+        ui=ShellUI(["hello", "/help", "/status", "/quit"]),
         configuration_check=lambda: False,
         credentials_path=tmp_path / "credentials.json",
         start_threads=lambda r: calls.append("start"),
@@ -67,7 +67,7 @@ def test_login_completes_before_runtime_and_threads_start(tmp_path, monkeypatch)
     cli.main(
         runtime_factory=build,
         argv=[],
-        ui=ShellUI(["/login", "hello", "q"]),
+        ui=ShellUI(["/login", "hello", "/quit"]),
         configuration_check=lambda: False,
         credentials_path=path,
         start_threads=lambda r: events.append("start") or [],
@@ -85,7 +85,7 @@ def test_cancel_login_stays_in_unconfigured_shell(tmp_path, monkeypatch):
     cli.main(
         runtime_factory=lambda: events.append("build"),
         argv=[],
-        ui=ShellUI(["/login", "q"]),
+        ui=ShellUI(["/login", "/quit"]),
         configuration_check=lambda: False,
         credentials_path=tmp_path / "credentials.json",
     )
@@ -230,23 +230,29 @@ def test_provider_menu_switches_selected_provider_and_saved_model(tmp_path):
 
 
 @pytest.mark.parametrize("command", ["/model", "/provider"])
-def test_cancel_switch_menu_preserves_runtime_and_credentials(tmp_path, command):
+def test_cancel_switch_menu_notifies_without_persistent_output(tmp_path, command, capsys):
     path = tmp_path / "credentials.json"
     auth.store_login("deepseek", "fake-key", "selected", path)
     before = path.read_bytes()
     r = runtime()
     selections = []
+    notices = []
 
     def choose(title, choices):
         selections.append(title)
         return None
 
     cli.handle_slash_command(
-        r, command, credentials_path=path, ui=SimpleNamespace(choose=choose)
+        r,
+        command,
+        credentials_path=path,
+        ui=SimpleNamespace(choose=choose, notify=notices.append),
     )
     assert len(selections) == 1
     assert r.model.snapshot()[:2] == ("deepseek", "selected")
     assert path.read_bytes() == before
+    assert len(notices) == 1 and "取消" in notices[0]
+    assert capsys.readouterr().out == ""
 
 
 def test_provider_menu_unconfigured_option_prompts_login(tmp_path, capsys):

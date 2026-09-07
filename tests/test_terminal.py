@@ -13,6 +13,7 @@ def test_slash_matches_names_descriptions_and_hides_for_normal_text():
         "/model",
         "/provider",
         "/help",
+        "/quit",
     }
     assert [item.name for item in match_commands(" /LOG")] == ["/login"]
     assert "/model" in [item.name for item in match_commands("/模型")]
@@ -79,10 +80,10 @@ def test_ctrl_c_aborts_key_entry_instead_of_going_back():
         ("/log\t\r", "/login"),
         ("/\r", "/login"),
         ("/\x1b[B\r", "/status"),
-        ("/\x1b[A\r", "/help"),
+        ("/\x1b[A\r", "/quit"),
         ("/\x1b[B\x1b[B\x1b[B\r", "/provider"),
         ("/\x1b[B\t\r", "/status"),
-        ("/\x1b[A\t\r", "/help"),
+        ("/\x1b[A\t\r", "/quit"),
         ("/mo\r", "/model"),
         ("/mo custom-model\r", "/model"),
         ("/prov deepseek\r", "/provider"),
@@ -98,6 +99,16 @@ def test_prompt_enter_executes_highlighted_menu_command(
         pipe.send_text(keys)
         ui = terminal.TerminalUI(input=pipe, output=DummyOutput())
         assert ui.prompt() == expected
+
+
+def test_prompt_keeps_slash_commands_out_of_input_history():
+    with create_pipe_input() as pipe:
+        ui = terminal.TerminalUI(input=pipe, output=DummyOutput())
+        pipe.send_text("/model custom\r")
+        assert ui.prompt() == "/model"
+        pipe.send_text("普通问题\r")
+        assert ui.prompt() == "普通问题"
+    assert ui.history.get_strings() == ["普通问题"]
 
 
 @pytest.mark.parametrize("command", ["/login", "/model", "/provider"])

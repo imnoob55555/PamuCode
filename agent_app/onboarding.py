@@ -6,6 +6,14 @@ from .adapters import providers
 from .features import auth
 
 
+def _notify_or_print(ui, message):
+    notify = getattr(ui, "notify", None)
+    if callable(notify):
+        notify(message)
+    else:
+        print(message)
+
+
 def choose_provider(ui, credentials, environment, current=None) -> str | None:
     choices = []
     specs = sorted(providers.PROVIDERS.values(), key=lambda spec: spec.name != current)
@@ -39,6 +47,7 @@ def login(ui, path: Path, provider: str | None = None) -> str | None:
             ],
         )
         if name is None:
+            _notify_or_print(ui, "已取消登录。")
             return None
         spec = providers.get_provider(name)
         key = ui.secret(
@@ -46,6 +55,7 @@ def login(ui, path: Path, provider: str | None = None) -> str | None:
             on_save=lambda value: auth.save_key(spec.name, value, path),
         )
         if key is None:
+            _notify_or_print(ui, "已取消登录。")
             if provider:
                 return None
             continue
@@ -54,14 +64,18 @@ def login(ui, path: Path, provider: str | None = None) -> str | None:
         while True:
             model = choose_model(ui, spec, record.get("model"))
             if model is None:
-                print(
+                _notify_or_print(
+                    ui,
                     "已取消模型选择，API Key 已保留；可用 /login 或 /model 继续配置。"
                 )
                 return None
             try:
                 auth.store_login(spec.name, key, model, path)
             except OSError:
-                print("模型保存失败，请检查凭证文件的写入权限或磁盘空间后重试。")
+                _notify_or_print(
+                    ui,
+                    "模型保存失败，请检查凭证文件的写入权限或磁盘空间后重试。",
+                )
                 continue
             print(f"已选择 {spec.label} · {model}。")
             return spec.name

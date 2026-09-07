@@ -255,12 +255,40 @@ def _runtime():
     )
 
 
+def test_run_agent_turn_keeps_slash_commands_out_of_history(monkeypatch):
+    monkeypatch.setattr(cli, "run_agent_loop", lambda _runtime: None)
+    runtime = types.SimpleNamespace(session=types.SimpleNamespace(history=[]))
+
+    cli.run_agent_turn(runtime, "/model glm-4.6")
+    assert runtime.session.history == []
+
+    cli.run_agent_turn(runtime, "普通问题")
+    assert runtime.session.history == [{"role": "user", "content": "普通问题"}]
+
+
 def test_slash_status_shows_provider_and_model(capsys):
     handle_slash_command(_runtime(), "/status")
-
     out = capsys.readouterr().out
     assert "供应商：anthropic" in out
     assert "模型：claude-test" in out
+
+
+def test_unknown_command_is_transient_when_ui_is_available(capsys):
+    notices = []
+    handle_slash_command(
+        None, "/unknown", ui=types.SimpleNamespace(notify=notices.append)
+    )
+    assert capsys.readouterr().out == ""
+    assert len(notices) == 1 and "未知命令" in notices[0]
+
+
+def test_quit_requires_exact_command_and_has_no_argument(capsys):
+    from agent_app.cli_exit import ExitAction
+
+    assert handle_slash_command(None, "/quit") is ExitAction.QUIT
+    assert handle_slash_command(None, "/quite") is None
+    assert handle_slash_command(None, "/quit extra") is None
+    assert "用法：/quit" in capsys.readouterr().out
 
 
 def test_slash_model_switches_current_session_model(tmp_path, capsys):
@@ -367,7 +395,7 @@ def test_main_routes_slash_commands_in_repl(monkeypatch, tmp_path):
     runtime.stop_event = threading.Event()
     runtime.agent_lock = threading.Lock()
     runtime.hooks = types.SimpleNamespace(trigger=lambda *_a: None)
-    queries = iter(["/model switched-model", "q"])
+    queries = iter(["/model switched-model", "/quit"])
     monkeypatch.setattr("builtins.input", lambda _prompt: next(queries))
 
     main(

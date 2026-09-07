@@ -188,3 +188,47 @@ def test_cancel_model_keeps_saved_key_and_previous_active(tmp_path):
     data = auth.load_credentials(path)
     assert data["active"] == "anthropic"
     assert data["providers"]["deepseek"] == {"api_key": "new-key"}
+
+
+def test_cancel_login_provider_menu_notifies_without_stdout(tmp_path, capsys):
+    from agent_app.onboarding import login
+
+    notices = []
+
+    class CancelUI:
+        def choose(self, title, choices):
+            return None
+
+        def notify(self, message):
+            notices.append(message)
+
+    assert login(CancelUI(), tmp_path / "creds.json") is None
+    assert notices and "取消" in notices[0]
+    assert capsys.readouterr().out == ""
+
+
+def test_cancel_secret_after_provider_selection_notifies_before_provider_menu(
+    tmp_path, capsys
+):
+    from agent_app.onboarding import login
+
+    events = []
+    notices = []
+
+    class CancelSecretUI:
+        def choose(self, title, choices):
+            events.append("choose")
+            return "deepseek" if events.count("choose") == 1 else None
+
+        def secret(self, title, *, on_save):
+            events.append("secret")
+            return None
+
+        def notify(self, message):
+            events.append("notify")
+            notices.append(message)
+
+    assert login(CancelSecretUI(), tmp_path / "creds.json") is None
+    assert events == ["choose", "secret", "notify", "choose", "notify"]
+    assert notices == ["已取消登录。", "已取消登录。"]
+    assert capsys.readouterr().out == ""

@@ -114,7 +114,7 @@ def test_cli_fake_stream_spinner_clears_before_text_and_leaves_no_worker(
         _read_until(master_fd, output, "Working".encode(), deadline)
         os.write(release_write, b"1")
         _read_until(master_fd, output, b"FAKE_ASSISTANT_TEXT", deadline)
-        os.write(master_fd, b"q\n")
+        os.write(master_fd, b"/quit\n")
         _read_until(master_fd, output, b"SPINNER_THREADS=0", deadline)
         process.wait(timeout=max(0.1, deadline - time.monotonic()))
     finally:
@@ -207,7 +207,7 @@ main(argv=[], credentials_path=Path(sys.argv[1]))
         wait("供应商已切换为 Anthropic 官方", start)
         os.write(master, b"/status\r")
         wait("模型：claude-sonnet-4-6", start)
-        os.write(master, b"q\r")
+        os.write(master, b"/quit\r")
         process.wait(timeout=5)
         assert process.returncode == 0
         assert b"fake-secret-123" not in output

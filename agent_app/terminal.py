@@ -16,6 +16,7 @@ from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.styles import Style
 
 from .slash_commands import match_commands
+from .cli_exit import ExitGesture, QuitRequested
 
 
 STYLE = Style.from_dict(
@@ -29,14 +30,28 @@ STYLE = Style.from_dict(
 
 
 class TerminalUI:
-    def __init__(self, *, input=None, output=None):
+    def __init__(self, *, input=None, output=None, exit_gesture=None):
         self.input = input
         self.output = output
         self.history = InMemoryHistory()
+        self.exit_gesture = exit_gesture or ExitGesture()
+        self.notice = ""
+        # Standalone `pamu login` keeps its historical one-shot Ctrl+C.
+        # The REPL enables the shared two-press gesture before prompting.
+        self.repl_mode = False
+
+    def notify(self, text):
+        self.notice = text
+
+    def _notice_window(self):
+        return ConditionalContainer(
+            Window(FormattedTextControl(lambda: self.notice), height=1, style="class:error"),
+            Condition(lambda: bool(self.notice)),
+        )
 
     def _run(self, root, bindings, *, focus=None):
         app = Application(
-            layout=Layout(root, focused_element=focus),
+            layout=Layout(HSplit([root, self._notice_window()]), focused_element=focus),
             key_bindings=bindings,
             input=self.input,
             output=self.output,
@@ -73,6 +88,13 @@ class TerminalUI:
         @bindings.add("c-c")
         @bindings.add("c-d")
         def cancel(event):
+            if event.key_sequence[0].key == "c-c" and self.repl_mode:
+                if self.exit_gesture.press():
+                    event.app.exit(exception=QuitRequested())
+                    return
+                self.notify("再次按 Ctrl+C 退出 PamuCode")
+                event.app.exit(result=None)
+                return
             event.app.exit(result=None)
 
         def rows():
@@ -149,6 +171,12 @@ class TerminalUI:
         @bindings.add("c-c")
         @bindings.add("c-d")
         def abort(event):
+            if event.key_sequence[0].key == "c-c" and self.repl_mode:
+                if self.exit_gesture.press():
+                    event.app.exit(exception=QuitRequested())
+                else:
+                    event.app.exit(result=None)
+                return
             event.app.exit(exception=KeyboardInterrupt())
 
         processors = [PasswordProcessor()] if password else []
@@ -191,6 +219,8 @@ class TerminalUI:
         def changed(_):
             nonlocal index, hidden
             index, hidden = 0, False
+            self.exit_gesture.reset()
+            self.notice = ""
 
         buffer.on_text_changed += changed
         visible = Condition(lambda: buffer.text.lstrip().startswith("/") and not hidden)
@@ -231,12 +261,20 @@ class TerminalUI:
         def accept(event):
             if visible():
                 complete_selection(submit=True)
-            buffer.append_to_history()
+            self.exit_gesture.reset()
+            self.notice = ""
+            if not buffer.text.lstrip().startswith("/"):
+                buffer.append_to_history()  # Slash commands stay out of input history.
             event.app.exit(result=buffer.text)
 
         @bindings.add("c-c")
         def interrupt(event):
-            event.app.exit(exception=KeyboardInterrupt())
+            if buffer.text:
+                buffer.text = ""
+            if self.exit_gesture.press():
+                event.app.exit(exception=QuitRequested())
+            else:
+                self.notify("再次按 Ctrl+C 退出 PamuCode")
 
         @bindings.add("c-d")
         def eof(event):

@@ -21,6 +21,7 @@ SLASH_COMMANDS = (
     SlashCommand("/model", "", "选择或切换当前模型"),
     SlashCommand("/provider", "", "选择并切换供应商"),
     SlashCommand("/help", "", "显示命令帮助", ("/h",)),
+    SlashCommand("/quit", "", "退出当前 PamuCode 会话"),
 )
 
 
@@ -45,5 +46,4 @@ def help_text() -> str:
     return (
         "可用命令：\n"
         + "\n".join(f"  {item.usage:<23} {item.description}" for item in SLASH_COMMANDS)
-        + "\n  q / exit / 空行          退出"
     )

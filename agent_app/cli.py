@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import getpass
+import os
+import shutil
 import sys
 import threading
 from pathlib import Path
@@ -10,6 +12,8 @@ from pathlib import Path
 from .adapters import providers
 from .bootstrap import build_default_runtime
 from .config import MissingConfigurationError
+from .branding import render_startup_screen
+from .cli_exit import ExitAction, ExitGesture, QuitRequested
 from .core.loop import run_agent_loop
 from .features import auth
 from .features.scheduler import (
@@ -18,7 +22,7 @@ from .features.scheduler import (
     load_durable_jobs,
 )
 from .logging_setup import get_logger
-from .slash_commands import help_text
+from .slash_commands import SLASH_COMMANDS, help_text
 
 LOGGER = get_logger("pamu.cli")
 COMMANDS = ("login", "logout", "status", "use")
@@ -27,8 +31,17 @@ SLASH_HELP = help_text()
 LOGIN_HINT = "尚未配置 API Key，请输入 /login 选择 provider 并保存 API Key。"
 
 
+def notify_or_print(ui, message: str, *, print_fn=print) -> None:
+    notify = getattr(ui, "notify", None)
+    if callable(notify):
+        notify(message)
+    else:
+        print_fn(message)
+
+
 def run_agent_turn(runtime, user_query: str | None = None) -> None:
-    if user_query:
+    # Slash commands are REPL-local controls; they never join the LLM context.
+    if user_query and not user_query.lstrip().startswith("/"):
         runtime.session.history.append({"role": "user", "content": user_query})
     run_agent_loop(runtime)
     print()
@@ -289,11 +302,28 @@ def handle_slash_command(
     client_factory=None,
     print_fn=print,
     ui=None,
-) -> str | None:
+) -> str | ExitAction | None:
     """Handle one slash command inside the REPL, mutating runtime on switch."""
     credentials_path = credentials_path or auth.CREDENTIALS_PATH
     command, _, rest = query.strip().partition(" ")
     argument = rest.strip()
+
+    known_names = {
+        name for item in SLASH_COMMANDS for name in (item.name, *item.aliases)
+    }
+    if command not in known_names:
+        notify_or_print(
+            ui,
+            f"未知命令：{command}。输入 /help 查看命令。",
+            print_fn=print_fn,
+        )
+        return
+
+    if command == "/quit":
+        if argument:
+            notify_or_print(ui, "用法：/quit", print_fn=print_fn)
+            return
+        return ExitAction.QUIT
 
     if command in ("/help", "/h"):
         print_fn(SLASH_HELP)
@@ -328,10 +358,14 @@ def handle_slash_command(
                     try:
                         auth.store_login(name, record["api_key"], model, credentials_path)
                     except OSError:
-                        print_fn("模型保存失败，请检查凭证文件的写入权限或磁盘空间。")
+                        notify_or_print(
+                            ui,
+                            "模型保存失败，请检查凭证文件的写入权限或磁盘空间。",
+                            print_fn=print_fn,
+                        )
                         return
                     return name
-        print_fn(LOGIN_HINT)
+        notify_or_print(ui, LOGIN_HINT, print_fn=print_fn)
         return
 
     if command == "/status":
@@ -348,14 +382,15 @@ def handle_slash_command(
     if command == "/model":
         if not argument:
             name, model, _ = runtime.model.snapshot()
-            print_fn(f"当前模型：{model}")
             if ui is None:
+                print_fn(f"当前模型：{model}")
                 print_fn("用法：/model <model-id>")
                 return
             from .onboarding import choose_model
 
             argument = choose_model(ui, providers.get_provider(name), model)
             if argument is None:
+                notify_or_print(ui, "已取消模型选择。", print_fn=print_fn)
                 return
         data = auth.load_credentials(credentials_path)
         active = runtime.model.provider
@@ -363,7 +398,11 @@ def handle_slash_command(
             try:
                 auth.set_model(active, argument, credentials_path)
             except OSError:
-                print_fn("模型保存失败，请检查凭证文件的写入权限或磁盘空间。")
+                notify_or_print(
+                    ui,
+                    "模型保存失败，请检查凭证文件的写入权限或磁盘空间。",
+                    print_fn=print_fn,
+                )
                 return
         runtime.model.switch_model(argument)
         LOGGER.info("switch model=%s provider=%s", argument, runtime.model.provider)
@@ -385,19 +424,26 @@ def handle_slash_command(
 
             argument = choose_provider(ui, data, environment, runtime.model.provider)
             if argument is None:
+                notify_or_print(ui, "已取消供应商切换。", print_fn=print_fn)
                 return
         try:
             spec = providers.get_provider(argument)
         except providers.UnknownProviderError:
-            print_fn(
+            notify_or_print(
+                ui,
                 f"未知供应商：{argument}。可用："
-                f"{', '.join(sorted(providers.PROVIDERS))}"
+                f"{', '.join(sorted(providers.PROVIDERS))}",
+                print_fn=print_fn,
             )
             return
         record = auth.get_login(data, spec.name)
         api_key = environment.get(spec.key_env) or record.get("api_key")
         if spec.requires_key and (not isinstance(api_key, str) or not api_key.strip()):
-            print_fn(f"尚未登录 {spec.label}，请先输入 /login 或运行 pamu login {spec.name}")
+            notify_or_print(
+                ui,
+                f"尚未登录 {spec.label}，请先输入 /login 或运行 pamu login {spec.name}",
+                print_fn=print_fn,
+            )
             return
         from .cli_progress import terminal_progress
 
@@ -417,7 +463,7 @@ def handle_slash_command(
         print_fn(f"供应商已切换为 {spec.label}（模型 {model}），并已设为默认。")
         return
 
-    print_fn(f"未知命令：{command}。输入 /help 查看可用命令。")
+    notify_or_print(ui, f"未知命令：{command}。输入 /help 查看可用命令。", print_fn=print_fn)
 
 
 def _create_runtime(runtime_factory, credentials_path):
@@ -456,7 +502,8 @@ def main(
     configuration_check=None,
 ) -> int | None:
     args = list(sys.argv[1:]) if argv is None else list(argv)
-    if ui is None and sys.stdin.isatty() and sys.stdout.isatty():
+    interactive = sys.stdin.isatty() and sys.stdout.isatty()
+    if ui is None and interactive:
         from .terminal import TerminalUI
 
         ui = TerminalUI()
@@ -485,44 +532,87 @@ def main(
             if runtime_factory is build_default_runtime else lambda: True
         )
     runtime = None
+    configuration_error = False
     if ui is None or configuration_check():
         runtime = _create_runtime(runtime_factory, credentials_path)
         if runtime is None:
-            return 2
+            configuration_error = True
+            if not interactive:
+                return 2
     threads = []
+    exit_gesture = ExitGesture()
+    if ui is not None:
+        ui.repl_mode = True
     try:
+        if interactive:
+            if runtime is not None and hasattr(runtime, "model"):
+                provider, model = runtime.model.snapshot()[:2]
+            else:
+                provider, model = None, None
+            try:
+                print(
+                    render_startup_screen(
+                        cwd=str(Path.cwd()),
+                        provider=provider,
+                        model=model,
+                        configuration_error=configuration_error,
+                        color=(
+                            "NO_COLOR" not in os.environ
+                            and os.environ.get("TERM") != "dumb"
+                        ),
+                        width=shutil.get_terminal_size(fallback=(80, 24)).columns,
+                    )
+                )
+            except (OSError, ValueError):
+                print("PamuCode · 输入 /help 查看命令")
         if runtime is not None:
             threads = start_threads(runtime)
-        print("开拓者终于等到你了！欢迎使用Pamu帕！你可以输入 'q'，'exit'或 '空格符' 退出帕！。")
         if runtime is None:
-            print(LOGIN_HINT)
+            notify_or_print(ui, LOGIN_HINT)
         while True:
             try:
                 query = ui.prompt() if ui is not None else input("\033[36m>> \033[0m")
-            except (EOFError, KeyboardInterrupt):
+            except EOFError:
                 break
-            if ui is not None:
-                print(f">> {query}")
-            if query.strip().lower() in ("q", "exit", ""):
+            except QuitRequested:
+                print("Shutting down PamuCode…")
                 break
+            except KeyboardInterrupt:
+                if ui is not None:
+                    continue
+                if exit_gesture.press():
+                    print("Shutting down PamuCode…")
+                    break
+                print("再次按 Ctrl+C 退出 PamuCode")
+                continue
+            if not query.strip():
+                continue
             if query.strip().startswith("/"):
                 try:
                     selected = handle_slash_command(
                         runtime, query, credentials_path=credentials_path,
                         client_factory=client_factory, ui=ui,
                     )
+                except QuitRequested:
+                    print("Shutting down PamuCode…")
+                    break
                 except (EOFError, KeyboardInterrupt):
                     continue
+                if selected is ExitAction.QUIT:
+                    print("Shutting down PamuCode…")
+                    break
                 if runtime is None and selected:
                     runtime = _create_runtime(runtime_factory, credentials_path)
                     if runtime is None:
-                        print(LOGIN_HINT)
+                        notify_or_print(ui, LOGIN_HINT)
                     else:
                         threads = start_threads(runtime)
                 continue
             if runtime is None:
-                print(LOGIN_HINT)
+                notify_or_print(ui, LOGIN_HINT)
                 continue
+            if ui is not None:
+                print(f">> {query}")
             runtime.hooks.trigger("UserPromptSubmit", query)
             with runtime.agent_lock:
                 run_turn(runtime, query)

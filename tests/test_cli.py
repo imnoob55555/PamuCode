@@ -41,7 +41,7 @@ def test_cli_exits_without_agent_turn(monkeypatch):
         seen_runtime.stop_event.set()
         stopped.append(threads)
 
-    monkeypatch.setattr("builtins.input", lambda _prompt: "q")
+    monkeypatch.setattr("builtins.input", lambda _prompt: "/quit")
     main(
         runtime_factory=lambda: runtime,
         run_turn=lambda _runtime, _query=None: calls.append("turn"),
@@ -127,7 +127,7 @@ def test_cli_runs_user_turn_under_runtime_lock(monkeypatch):
         agent_lock=RecordingLock(),
         hooks=SimpleNamespace(trigger=lambda *_args: None),
     )
-    queries = iter(["hello", "q"])
+    queries = iter(["hello", "/quit"])
     seen = []
     monkeypatch.setattr("builtins.input", lambda _prompt: next(queries))
 
@@ -141,6 +141,26 @@ def test_cli_runs_user_turn_under_runtime_lock(monkeypatch):
     )
 
     assert seen == [("hello", 1)]
+
+
+def test_q_exit_and_empty_are_regular_repl_inputs(monkeypatch):
+    runtime = SimpleNamespace(
+        stop_event=threading.Event(),
+        agent_lock=threading.Lock(),
+        hooks=SimpleNamespace(trigger=lambda *_args: None),
+    )
+    queries = iter(["", "q", "exit", "/quit"])
+    seen = []
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(queries))
+
+    main(
+        runtime_factory=lambda: runtime,
+        run_turn=lambda _runtime, query=None: seen.append(query),
+        start_threads=lambda _runtime: [],
+        stop_threads=lambda _runtime, _threads: None,
+    )
+
+    assert seen == ["q", "exit"]
 
 
 def test_stop_runtime_threads_sets_event_and_joins():
@@ -304,7 +324,7 @@ def test_module_cli_starts_without_installed_dependencies(tmp_path):
 
     result = subprocess.run(
         [sys.executable, "-m", "agent_app"],
-        input="q\n",
+        input="/quit\n",
         text=True,
         capture_output=True,
         cwd=workspace,
