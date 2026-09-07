@@ -220,8 +220,7 @@ uv tool install --editable .
 pamu
 ```
 
-The detailed acceptance checklist is available at
-[`docs/ACCEPTANCE.md`](docs/ACCEPTANCE.md).
+The automated acceptance coverage lives in the `tests/` directory.
 
 ## Security and repository hygiene
 
