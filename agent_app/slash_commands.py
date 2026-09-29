@@ -20,6 +20,7 @@ SLASH_COMMANDS = (
     SlashCommand("/status", "", "查看供应商、模型及登录状态"),
     SlashCommand("/model", "", "选择或切换当前模型"),
     SlashCommand("/provider", "", "选择并切换供应商"),
+    SlashCommand("/thinking", "", "选择或切换模型思考程度"),
     SlashCommand("/help", "", "显示命令帮助", ("/h",)),
     SlashCommand("/quit", "", "退出当前 PamuCode 会话"),
 )

@@ -15,11 +15,11 @@ def _block_get(block, key, default=None):
     return getattr(block, key, default)
 
 
-def _block_type(block) -> str:
+def _block_type(block) -> str | None:
     return _block_get(block, "type")
 
 
-def _message_has_tool_use(msg: list) -> bool:
+def _message_has_tool_use(msg: dict) -> bool:
     if msg.get("role") != "assistant":
         return False
     content = msg.get("content")
@@ -28,7 +28,7 @@ def _message_has_tool_use(msg: list) -> bool:
     return any(_block_type(block) == "tool_use" for block in content)
 
 
-def _is_tool_result_message(msg):
+def _is_tool_result_message(msg: dict):
     if msg.get("role") != "user":
         return False
     content = msg.get("content")
@@ -174,9 +174,13 @@ def tool_result_budget(config: AppConfig, messages, max_bytes=20_000):
 
 def write_transcript(config: AppConfig, messages: list) -> Path:
     config.transcripts_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        timestamp = int(time.time())
+    except (OverflowError, ValueError):
+        timestamp = 0
     path = _path_below(
         config.transcripts_dir,
-        f"transcript_{int(time.time())}.jsonl",
+        f"transcript_{timestamp}.jsonl",
     )
     with path.open("w") as transcript:
         for message in messages:

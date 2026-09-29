@@ -7,8 +7,9 @@ Adding a provider means adding one :class:`ProviderSpec` entry.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
 from ..runtime import RuntimeContext
 from .anthropic import AnthropicAdapter
@@ -166,8 +167,13 @@ def apply_provider(
     progress: Callable[[str], Any] | None = None,
     base_url: str | None = None,
     auth_token: str | None = None,
+    thinking: str | None = None,
 ) -> AnthropicAdapter:
-    """Switch a live runtime to ``spec`` by swapping adapter and router."""
+    """Switch a live runtime to ``spec`` by swapping adapter and router.
+
+    ``thinking`` restores the provider's saved thinking level; ``None`` or
+    an unknown value falls back to ``off``.
+    """
     client = build_client(
         spec,
         api_key,
@@ -178,11 +184,15 @@ def apply_provider(
     adapter = (
         AnthropicAdapter(client, progress) if progress else AnthropicAdapter(client)
     )
-    runtime.model.switch(
+    router = runtime.model
+    if router is None:
+        raise RuntimeError("runtime is missing its model router")
+    router.switch(
         spec.name,
         model or spec.default_model,
         None,
         adapter,
+        thinking_level=thinking or "off",
     )
     runtime.llm = adapter
     return adapter

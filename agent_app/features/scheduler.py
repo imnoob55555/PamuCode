@@ -4,9 +4,9 @@ import threading
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
+from typing import Any, cast
 
 from ..config import AppConfig
-
 
 SCHEDULER_TOOL_SCHEMAS = [
     {"name": "schedule_cron",
@@ -34,13 +34,16 @@ SCHEDULER_TOOL_SCHEMAS = [
 ]
 
 
-def register_scheduler_tools(registry, scheduler_state, config) -> None:
+def register_scheduler_tools(registry, scheduler_state: Any, config) -> None:
     """Register cron tools using the supplied scheduler handlers."""
     if isinstance(scheduler_state, Mapping):
         handlers = scheduler_state
     else:
-        def current_state():
-            return scheduler_state() if callable(scheduler_state) else scheduler_state
+        def current_state() -> "SchedulerState":
+            return cast(
+                SchedulerState,
+                scheduler_state() if callable(scheduler_state) else scheduler_state,
+            )
 
         def run_schedule(cron, prompt, recurring=True, durable=True):
             result = schedule_job(
@@ -92,18 +95,32 @@ class SchedulerState:
     lock: threading.Lock = field(default_factory=threading.Lock)
 
 
+def _parse_int(text: str) -> int | None:
+    """Parse ``text`` defensively; oversized digit strings may overflow."""
+    try:
+        return int(text)
+    except ValueError:
+        return None
+
+
 def _cron_field_matches(field: str, value: int) -> bool:
     if field == "*":
         return True
     if field.startswith("*/"):
-        step = int(field[2:])
-        return step > 0 and value % step == 0
+        step = _parse_int(field[2:])
+        return step is not None and step > 0 and value % step == 0
     if "," in field:
         return any(_cron_field_matches(part.strip(), value) for part in field.split(","))
     if "-" in field:
         low, high = field.split("-", 1)
-        return int(low) <= value <= int(high)
-    return value == int(field)
+        low_value, high_value = _parse_int(low), _parse_int(high)
+        return (
+            low_value is not None
+            and high_value is not None
+            and low_value <= value <= high_value
+        )
+    parsed = _parse_int(field)
+    return parsed is not None and value == parsed
 
 
 def cron_matches(cron_expr: str, dt: datetime) -> bool:
@@ -139,7 +156,9 @@ def _validate_cron_field(field: str, low: int, high: int) -> str | None:
         step_string = field[2:]
         if not step_string.isdigit():
             return f"Invalid step: {field}"
-        step = int(step_string)
+        step = _parse_int(step_string)
+        if step is None:
+            return f"Invalid step: {field}"
         if step <= 0:
             return f"Step must be > 0: {field}"
         return None
@@ -153,7 +172,9 @@ def _validate_cron_field(field: str, low: int, high: int) -> str | None:
         parts = field.split("-", 1)
         if not parts[0].isdigit() or not parts[1].isdigit():
             return f"Invalid range: {field}"
-        start, end = int(parts[0]), int(parts[1])
+        start, end = _parse_int(parts[0]), _parse_int(parts[1])
+        if start is None or end is None:
+            return f"Invalid range: {field}"
         if start < low or start > high or end < low or end > high:
             return f"Range {field} out of bounds [{low}-{high}]"
         if start > end:
@@ -161,7 +182,9 @@ def _validate_cron_field(field: str, low: int, high: int) -> str | None:
         return None
     if not field.isdigit():
         return f"Invalid field: {field}"
-    value = int(field)
+    value = _parse_int(field)
+    if value is None:
+        return f"Invalid field: {field}"
     if value < low or value > high:
         return f"Value {value} out of bounds [{low}-{high}]"
     return None
@@ -173,8 +196,8 @@ def validate_cron(cron_expr: str) -> str | None:
         return f"Expected 5 fields, got {len(fields)}"
     bounds = [(0, 59), (0, 23), (1, 31), (1, 12), (0, 6)]
     names = ["minute", "hour", "day-of-month", "month", "day-of-week"]
-    for field, (low, high), name in zip(fields, bounds, names):
-        error = _validate_cron_field(field, low, high)
+    for cron_field, (low, high), name in zip(fields, bounds, names, strict=True):
+        error = _validate_cron_field(cron_field, low, high)
         if error:
             return f"{name}: {error}"
     return None
@@ -207,7 +230,7 @@ def load_durable_jobs(state: SchedulerState, config: AppConfig):
         if valid:
             print(f"  \033[35m[cron] loaded {len(valid)} durable job(s)\033[0m")
     except Exception:
-        pass
+        ...  # malformed durable file is ignored
 
 
 def schedule_job(
@@ -222,7 +245,7 @@ def schedule_job(
     if error:
         return error
     job = CronJob(
-        id=f"cron_{random.randint(0, 999999):06d}",
+        id=f"cron_{random.randint(0, 999999):06d}",  # noqa: S311 - job id, not a secret
         cron=cron,
         prompt=prompt,
         recurring=recurring,

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
-from typing import Any, Callable, ContextManager
+from typing import Any
 
 from ..core.recovery import PartialStreamError
 
@@ -19,14 +21,14 @@ class _NullProgress:
         return False
 
 
-def _null_progress(_label: str) -> ContextManager:
+def _null_progress(_label: str) -> AbstractContextManager:
     return _NullProgress()
 
 
 @dataclass(frozen=True, slots=True)
 class AnthropicAdapter:
     client: Any
-    progress: Callable[[str], ContextManager] = _null_progress
+    progress: Callable[[str], AbstractContextManager] = _null_progress
 
     def create(
         self,
@@ -36,6 +38,7 @@ class AnthropicAdapter:
         model,
         max_tokens,
         tools,
+        thinking=None,
     ):
         request = {
             "model": model,
@@ -46,6 +49,8 @@ class AnthropicAdapter:
             request["system"] = system
         if tools is not None:
             request["tools"] = tools
+        if thinking is not None:
+            request["thinking"] = thinking
         return self.client.messages.create(**request)
 
     def create_streaming(
@@ -56,17 +61,23 @@ class AnthropicAdapter:
         model,
         max_tokens,
         tools,
+        thinking=None,
     ):
+        request = {
+            "model": model,
+            "system": system,
+            "messages": messages,
+            "tools": tools,
+            "max_tokens": max_tokens,
+        }
+        if thinking is not None:
+            request["thinking"] = thinking
         chunks = []
         try:
-            with self.progress("Working") as progress:
-                with self.client.messages.stream(
-                    model=model,
-                    system=system,
-                    messages=messages,
-                    tools=tools,
-                    max_tokens=max_tokens,
-                ) as stream:
+            with (
+                self.progress("Working") as progress,
+                self.client.messages.stream(**request) as stream,
+            ):
                     for chunk in stream.text_stream:
                         if not chunk:
                             continue

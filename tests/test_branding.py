@@ -1,13 +1,14 @@
 from agent_app.branding import render_startup_screen
 
 
-def test_ready_screen_uses_actual_state_without_ansi():
+def test_ready_screen_uses_actual_state_without_ansi(tmp_path):
+    cwd = str(tmp_path / "project")
     text = render_startup_screen(
-        cwd="/tmp/project", provider="deepseek", model="chosen-model", color=False
+        cwd=cwd, provider="deepseek", model="chosen-model", color=False
     )
     for value in (
         "PamuCode",
-        "/tmp/project",
+        cwd,
         "deepseek",
         "chosen-model",
         "已准备就绪",
@@ -18,10 +19,10 @@ def test_ready_screen_uses_actual_state_without_ansi():
     assert "\x1b" not in text
 
 
-def test_unconfigured_and_error_states_are_not_ready():
+def test_unconfigured_and_error_states_are_not_ready(tmp_path):
     for failed in (False, True):
         text = render_startup_screen(
-            cwd="/tmp/project",
+            cwd=str(tmp_path / "project"),
             provider=None,
             model=None,
             configuration_error=failed,
@@ -31,9 +32,11 @@ def test_unconfigured_and_error_states_are_not_ready():
         assert ("配置异常" if failed else "尚未配置") in text
 
 
-def test_branding_sanitizes_control_characters_and_shrinks_on_narrow_terminals():
+def test_branding_sanitizes_control_characters_and_shrinks_on_narrow_terminals(
+    tmp_path,
+):
     text = render_startup_screen(
-        cwd="/tmp/\x1b[31mproject",
+        cwd=str(tmp_path / "\x1b[31mproject"),
         provider="deepseek",
         model="model\x1b[0m",
         width=30,

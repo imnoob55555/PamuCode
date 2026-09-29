@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Callable
 from xml.sax.saxutils import escape
 
 from ..tools.executor import execute_tool

@@ -1,15 +1,15 @@
 import errno
+import fcntl
+import json
 import os
-from pathlib import Path
 import pty
 import select
+import struct
 import subprocess
 import sys
-import time
-import json
-import fcntl
-import struct
 import termios
+import time
+from pathlib import Path
 
 
 def _read_until(master_fd, output, marker, deadline, start=0):
@@ -94,7 +94,7 @@ def test_cli_fake_stream_spinner_clears_before_text_and_leaves_no_worker(
     master_fd, slave_fd = pty.openpty()
     # One PTY intentionally merges stdout and stderr so cross-stream ordering
     # between the spinner clear and assistant text can be asserted reliably.
-    process = subprocess.Popen(
+    process = subprocess.Popen(  # noqa: S603 - fixed interpreter and script
         [sys.executable, "-c", command],
         stdin=slave_fd,
         stdout=slave_fd,
@@ -111,7 +111,7 @@ def test_cli_fake_stream_spinner_clears_before_text_and_leaves_no_worker(
     try:
         _read_until(master_fd, output, b">> ", deadline)
         os.write(master_fd, b"hello\n")
-        _read_until(master_fd, output, "Working".encode(), deadline)
+        _read_until(master_fd, output, b"Working", deadline)
         os.write(release_write, b"1")
         _read_until(master_fd, output, b"FAKE_ASSISTANT_TEXT", deadline)
         os.write(master_fd, b"/quit\n")
@@ -125,7 +125,7 @@ def test_cli_fake_stream_spinner_clears_before_text_and_leaves_no_worker(
             process.wait(timeout=2)
 
     merged = bytes(output)
-    spinner_at = merged.index("Working".encode())
+    spinner_at = merged.index(b"Working")
     clear_at = merged.index(b"\r\x1b[2K", spinner_at)
     text_at = merged.index(b"FAKE_ASSISTANT_TEXT", clear_at)
     assert spinner_at < clear_at < text_at
@@ -158,7 +158,7 @@ main(argv=[], credentials_path=Path(sys.argv[1]))
     master, slave = pty.openpty()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 110, 0, 0))
     initial_flags = termios.tcgetattr(slave)
-    process = subprocess.Popen(
+    process = subprocess.Popen(  # noqa: S603 - fixed interpreter and script
         [sys.executable, "-c", script, str(credentials)],
         stdin=slave, stdout=slave, stderr=slave, cwd=tmp_path, env=environment,
     )

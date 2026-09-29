@@ -5,9 +5,9 @@ import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any, cast
 
 from .tasks import TaskStore, _save_task_unlocked, load_task
-
 
 VALID_WT_NAME = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 
@@ -33,16 +33,22 @@ WORKTREE_TOOL_SCHEMAS = [
 ]
 
 
-def register_worktree_tools(registry, worktree_state, task_store) -> None:
+def register_worktree_tools(registry, worktree_state: Any, task_store: Any) -> None:
     """Register worktree lifecycle tools."""
     if isinstance(worktree_state, Mapping):
         handlers = worktree_state
     else:
-        def current_worktree_state():
-            return worktree_state() if callable(worktree_state) else worktree_state
+        def current_worktree_state() -> "WorktreeState":
+            return cast(
+                WorktreeState,
+                worktree_state() if callable(worktree_state) else worktree_state,
+            )
 
-        def current_task_store():
-            return task_store() if callable(task_store) else task_store
+        def current_task_store() -> TaskStore | None:
+            return cast(
+                TaskStore | None,
+                task_store() if callable(task_store) else task_store,
+            )
 
         handlers = {
             "create_worktree": lambda name, task_id="": create_worktree(

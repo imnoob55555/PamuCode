@@ -2,22 +2,35 @@
 
 from __future__ import annotations
 
+import asyncio
+from pathlib import Path
+from time import monotonic
+from typing import Any, cast
+
 from prompt_toolkit.application import Application
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.data_structures import Point
 from prompt_toolkit.filters import Condition
 from prompt_toolkit.history import InMemoryHistory
 from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.layout import HSplit, Layout, Window, ConditionalContainer
+from prompt_toolkit.layout import ConditionalContainer, HSplit, Layout, Window
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.layout.dimension import Dimension
-from prompt_toolkit.layout.processors import BeforeInput, PasswordProcessor
+from prompt_toolkit.layout.processors import BeforeInput, PasswordProcessor, Processor
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.styles import Style
 
-from .slash_commands import match_commands
 from .cli_exit import ExitGesture, QuitRequested
-
+from .file_mentions import (
+    MATCH_LIMIT,
+    complete_mention,
+    match_entries,
+    mention_token,
+    render_matches,
+    workspace_entries,
+)
+from .slash_commands import match_commands
+from .thinking import THINKING_COLORS, style_class
 
 STYLE = Style.from_dict(
     {
@@ -25,33 +38,80 @@ STYLE = Style.from_dict(
         "muted": "#888888",
         "prompt": "#00aaaa",
         "error": "#ff6666",
+        **{f"thinking-{level}": color for level, color in THINKING_COLORS.items()},
     }
 )
+NOTICE_SECONDS = 3.0
 
 
 class TerminalUI:
-    def __init__(self, *, input=None, output=None, exit_gesture=None):
+    def __init__(self, *, input=None, output=None, exit_gesture=None, workdir=None):
         self.input = input
         self.output = output
         self.history = InMemoryHistory()
         self.exit_gesture = exit_gesture or ExitGesture()
+        self.thinking_level = "off"
+        self.workdir = Path(workdir) if workdir is not None else None
+        self._entry_index = None
         self.notice = ""
+        self._notice_deadline = 0.0
+        self._notice_timer = None
+        self._active_app = None
         # Standalone `pamu login` keeps its historical one-shot Ctrl+C.
         # The REPL enables the shared two-press gesture before prompting.
         self.repl_mode = False
 
     def notify(self, text):
         self.notice = text
+        self._notice_deadline = monotonic() + NOTICE_SECONDS
+        if self._active_app is not None:
+            self._schedule_notice_expiry()
+            self._active_app.invalidate()
+
+    def _cancel_notice_timer(self):
+        if self._notice_timer is not None:
+            self._notice_timer.cancel()
+            self._notice_timer = None
+
+    def _schedule_notice_expiry(self):
+        self._cancel_notice_timer()
+        if not self.notice:
+            return
+        remaining = self._notice_deadline - monotonic()
+        if remaining <= 0:
+            self._expire_notice()
+        else:
+            self._notice_timer = asyncio.get_running_loop().call_later(
+                remaining, self._expire_notice
+            )
+
+    def _expire_notice(self):
+        self.notice = ""
+        self._notice_timer = None
+        if self._active_app is not None:
+            self._active_app.invalidate()
+
+    def _workspace_entries(self):
+        if self.workdir is None:
+            return []
+        if self._entry_index is None:
+            self._entry_index = workspace_entries(self.workdir)
+        return self._entry_index
 
     def _notice_window(self):
         return ConditionalContainer(
-            Window(FormattedTextControl(lambda: self.notice), height=1, style="class:error"),
+            Window(
+                FormattedTextControl(lambda: self.notice),
+                dont_extend_height=True,
+                style="class:error",
+                wrap_lines=True,
+            ),
             Condition(lambda: bool(self.notice)),
         )
 
     def _run(self, root, bindings, *, focus=None):
         app = Application(
-            layout=Layout(HSplit([root, self._notice_window()]), focused_element=focus),
+            layout=Layout(HSplit([self._notice_window(), root]), focused_element=focus),
             key_bindings=bindings,
             input=self.input,
             output=self.output,
@@ -61,13 +121,29 @@ class TerminalUI:
         )
         # Bare Escape remains usable without slowing down arrow sequences.
         app.ttimeoutlen = 0.05
-        with patch_stdout(raw=True):
-            return app.run()
+        def start_notice_timer():
+            self._active_app = app
+            self._schedule_notice_expiry()
 
-    def choose(self, title: str, choices: list[tuple[str, str]]) -> str | None:
+        app.pre_run_callables.append(start_notice_timer)
+        try:
+            with patch_stdout(raw=True):
+                return app.run()
+        finally:
+            self._cancel_notice_timer()
+            self._active_app = None
+
+    def choose(
+        self,
+        title: str,
+        choices: list[tuple[str, str]],
+        *,
+        initial: str | None = None,
+    ) -> str | None:
         if not choices:
             return None
-        index = 0
+        keys = [key for key, _ in choices]
+        index = keys.index(initial) if initial in keys else 0
         bindings = KeyBindings()
 
         @bindings.add("up")
@@ -140,21 +216,19 @@ class TerminalUI:
 
     def _read(self, title, *, password=False, on_save=None):
         buffer = Buffer(multiline=False)
-        error = ""
         bindings = KeyBindings()
 
         @bindings.add("c-s" if password else "enter")
         def accept(event):
-            nonlocal error
             value = buffer.text.strip()
             if not value:
-                error = "请输入 API Key。" if password else "请输入模型 ID。"
+                self.notify("请输入 API Key。" if password else "请输入模型 ID。")
                 return
             try:
                 if on_save:
                     on_save(value)
             except OSError:
-                error = "保存失败，请检查凭证文件的写入权限或磁盘空间后重试。"
+                self.notify("保存失败，请检查凭证文件的写入权限或磁盘空间后重试。")
                 return
             event.app.exit(result=value)
 
@@ -179,7 +253,7 @@ class TerminalUI:
                 return
             event.app.exit(exception=KeyboardInterrupt())
 
-        processors = [PasswordProcessor()] if password else []
+        processors: list[Processor] = [PasswordProcessor()] if password else []
         processors.append(BeforeInput("API Key: " if password else "Model ID: "))
         control = BufferControl(buffer, input_processors=processors)
         root = HSplit(
@@ -195,14 +269,6 @@ class TerminalUI:
                     height=1,
                     style="class:muted",
                 ),
-                ConditionalContainer(
-                    Window(
-                        FormattedTextControl(lambda: error),
-                        height=2,
-                        style="class:error",
-                    ),
-                    Condition(lambda: bool(error)),
-                ),
             ]
         )
         try:
@@ -214,16 +280,74 @@ class TerminalUI:
         buffer = Buffer(multiline=False, history=self.history)
         index = 0
         hidden = False
+        mention_index = 0
+        mention_hidden = False
+        self._entry_index = None
         bindings = KeyBindings()
 
         def changed(_):
-            nonlocal index, hidden
+            nonlocal index, hidden, mention_index, mention_hidden
             index, hidden = 0, False
+            mention_index, mention_hidden = 0, False
             self.exit_gesture.reset()
-            self.notice = ""
+
+        def cursor_changed(_):
+            nonlocal mention_index
+            mention_index = 0
 
         buffer.on_text_changed += changed
-        visible = Condition(lambda: buffer.text.lstrip().startswith("/") and not hidden)
+        buffer.on_cursor_position_changed += cursor_changed
+
+        def slash_command():
+            return buffer.text.lstrip().startswith("/")
+
+        visible = Condition(lambda: slash_command() and not hidden)
+
+        mention_cache: dict[str, Any] = {"key": None, "value": None}
+
+        def mention_state():
+            key = (buffer.text, buffer.cursor_position, mention_hidden)
+            if mention_cache["key"] == key:
+                return mention_cache["value"]
+            state = None
+            if not mention_hidden and not slash_command():
+                token = mention_token(buffer.text, buffer.cursor_position)
+                if token is not None:
+                    ranked = match_entries(token.query, self._workspace_entries())
+                    if ranked:
+                        state = (ranked[:MATCH_LIMIT], len(ranked))
+            mention_cache["key"] = key
+            mention_cache["value"] = state
+            return state
+
+        mention_visible = Condition(lambda: mention_state() is not None)
+
+        @bindings.add("up", filter=mention_visible)
+        @bindings.add("down", filter=mention_visible)
+        def move_mention(event):
+            nonlocal mention_index
+            state = mention_state()
+            if state is not None:
+                mention_index = (
+                    mention_index
+                    + (-1 if event.key_sequence[0].key == "up" else 1)
+                ) % len(state[0])
+
+        def apply_mention():
+            state = mention_state()
+            if state is None:
+                return
+            matches, _ = state
+            path = matches[mention_index % len(matches)]
+            text, position = complete_mention(
+                buffer.text, buffer.cursor_position, path
+            )
+            buffer.text = text
+            buffer.cursor_position = position
+
+        @bindings.add("tab", filter=mention_visible)
+        def complete_file(event):
+            apply_mention()
 
         @bindings.add("up", filter=visible)
         @bindings.add("down", filter=visible)
@@ -254,11 +378,17 @@ class TerminalUI:
 
         @bindings.add("escape")
         def hide(event):
-            nonlocal hidden
-            hidden = True
+            nonlocal hidden, mention_hidden
+            if mention_state() is not None:
+                mention_hidden = True
+            else:
+                hidden = True
 
         @bindings.add("enter")
         def accept(event):
+            if mention_visible():
+                apply_mention()
+                return
             if visible():
                 complete_selection(submit=True)
             self.exit_gesture.reset()
@@ -280,7 +410,11 @@ class TerminalUI:
         def eof(event):
             event.app.exit(exception=EOFError())
 
-        def hints():
+        def hints() -> list[tuple[str, str]]:
+            state = mention_state()
+            if state is not None:
+                matches, total = state
+                return render_matches(matches, total, mention_index)
             items = match_commands(buffer.text)
             if not items:
                 return [("class:muted", "  无匹配命令")]
@@ -300,13 +434,19 @@ class TerminalUI:
         control = BufferControl(
             buffer, input_processors=[BeforeInput([("class:prompt", ">> ")])]
         )
+        border_style = style_class(self.thinking_level)
         return self._run(
             HSplit(
                 [
+                    Window(char="─", height=1, style=border_style),
                     Window(control, height=1),
+                    Window(char="─", height=1, style=border_style),
                     ConditionalContainer(
-                        Window(FormattedTextControl(hints), dont_extend_height=True),
-                        visible,
+                        Window(
+                            FormattedTextControl(cast(Any, hints)),
+                            dont_extend_height=True,
+                        ),
+                        Condition(lambda: visible() or mention_state() is not None),
                     ),
                 ]
             ),

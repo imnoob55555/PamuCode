@@ -30,7 +30,6 @@ def get_status_code(exc):
 
 
 def is_rate_limit_error(exc):
-    name = type(exc).__name__.lower()
     message = str(exc).lower()
 
     return (
@@ -93,7 +92,7 @@ def retry_delay(
         return retry_after
 
     base = min(base_delay_ms * (2 ** attempt), 32000) / 1000
-    jitter = random.uniform(0, base * 0.25)
+    jitter = random.uniform(0, base * 0.25)  # noqa: S311 - retry jitter only
     return base + jitter
 
 

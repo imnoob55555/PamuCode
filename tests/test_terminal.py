@@ -12,6 +12,7 @@ def test_slash_matches_names_descriptions_and_hides_for_normal_text():
         "/status",
         "/model",
         "/provider",
+        "/thinking",
         "/help",
         "/quit",
     }
@@ -133,7 +134,7 @@ def test_slash_hints_redraw_below_input_as_keyword_changes(monkeypatch):
                 if app.is_done or app.current_buffer.text != expected:
                     return
                 windows = app.layout.visible_windows
-                assert windows[0].content.buffer is app.current_buffer
+                assert windows[1].content.buffer is app.current_buffer
                 rows = [
                     "".join(t[1] for t in to_formatted_text(window.content.text))
                     for window in windows[1:]
@@ -155,3 +156,279 @@ def test_slash_hints_redraw_below_input_as_keyword_changes(monkeypatch):
     assert "/login" in filtered and "配置 API Key 并选择模型" in filtered
     assert "/status" not in filtered and "/help" not in filtered
     assert "/status" in snapshots[3][1]  # Backspace restores the full list.
+
+
+def test_notice_above_input_expires_without_keystrokes(monkeypatch, capsys):
+    import asyncio
+    from time import monotonic
+
+    from prompt_toolkit.application import Application
+
+    original_run = Application.run
+    rendered_at = []
+    elapsed = []
+    with create_pipe_input() as pipe:
+        ui = terminal.TerminalUI(input=pipe, output=DummyOutput())
+        ui.notify("已取消模型选择。")
+
+        def run(app):
+            watchdog = None
+
+            def after_render(_):
+                nonlocal watchdog
+                if app.is_done:
+                    return
+                windows = app.layout.visible_windows
+                if not rendered_at:
+                    assert windows[0].content.text() == "已取消模型选择。"
+                    assert windows[2].content.buffer is app.current_buffer
+                    rendered_at.append(monotonic())
+                    watchdog = asyncio.get_running_loop().call_later(
+                        5, lambda: app.exit(exception=AssertionError("notice did not expire"))
+                    )
+                elif not ui.notice and not elapsed:
+                    elapsed.append(monotonic() - rendered_at[0])
+                    assert windows[1].content.buffer is app.current_buffer
+                    pipe.send_text("hello\r")
+
+            app.after_render += after_render
+            try:
+                return original_run(app)
+            finally:
+                if watchdog is not None:
+                    watchdog.cancel()
+
+        monkeypatch.setattr(Application, "run", run)
+        assert ui.prompt() == "hello"
+
+    assert len(elapsed) == 1 and 2.8 <= elapsed[0] < 4.5
+    assert ui.history.get_strings() == ["hello"]
+    assert ui._notice_timer is None and ui._active_app is None
+    assert capsys.readouterr().out == ""
+
+
+def test_new_notice_restarts_timer_and_typing_keeps_notice(monkeypatch):
+    import asyncio
+
+    from prompt_toolkit.application import Application
+
+    original_run = Application.run
+    monkeypatch.setattr(terminal, "NOTICE_SECONDS", 0.12)
+    with create_pipe_input() as pipe:
+        ui = terminal.TerminalUI(input=pipe, output=DummyOutput())
+        ui.notify("first")
+        timers = []
+        observed = []
+
+        def run(app):
+            handles = []
+
+            def after_render(_):
+                if app.is_done or timers:
+                    return
+                timers.append(ui._notice_timer)
+                loop = asyncio.get_running_loop()
+                handles.append(loop.call_later(0.06, lambda: ui.notify("second")))
+
+                def type_before_expiry():
+                    observed.append(ui.notice)
+                    pipe.send_text("draft")
+
+                def check_after_typing():
+                    observed.append((ui.notice, app.current_buffer.text))
+
+                def submit_after_expiry():
+                    observed.append(ui.notice)
+                    pipe.send_text("\r")
+
+                handles.append(loop.call_later(0.14, type_before_expiry))
+                handles.append(loop.call_later(0.16, check_after_typing))
+                handles.append(loop.call_later(0.24, submit_after_expiry))
+
+            app.after_render += after_render
+            try:
+                return original_run(app)
+            finally:
+                for handle in handles:
+                    handle.cancel()
+
+        monkeypatch.setattr(Application, "run", run)
+        assert ui.prompt() == "draft"
+    assert timers[0].cancelled()
+    assert observed == ["second", ("second", "draft"), ""]
+    assert ui.notice == ""
+
+
+def test_notice_timer_is_cancelled_when_prompt_exits(monkeypatch):
+    from prompt_toolkit.application import Application
+
+    original_run = Application.run
+    timers = []
+    with create_pipe_input() as pipe:
+        ui = terminal.TerminalUI(input=pipe, output=DummyOutput())
+        ui.notify("temporary")
+
+        def run(app):
+            def after_render(_):
+                if not app.is_done and not timers:
+                    timers.append(ui._notice_timer)
+                    pipe.send_text("\x04")
+
+            app.after_render += after_render
+            return original_run(app)
+
+        monkeypatch.setattr(Application, "run", run)
+        with pytest.raises(EOFError):
+            ui.prompt()
+    assert timers[0].cancelled()
+    assert ui._notice_timer is None and ui._active_app is None
+
+
+def test_prompt_mention_enter_completes_without_submitting(tmp_path):
+    (tmp_path / "terminal.py").write_text("")
+    with create_pipe_input() as pipe:
+        pipe.send_text("@terminal\r\r")
+        ui = terminal.TerminalUI(workdir=tmp_path, input=pipe, output=DummyOutput())
+        assert ui.prompt() == "@terminal.py "
+
+
+def test_prompt_mention_arrow_down_selects_second_match(tmp_path):
+    (tmp_path / "terminal.py").write_text("")
+    (tmp_path / "terminal_extra.py").write_text("")
+    with create_pipe_input() as pipe:
+        pipe.send_text("@terminal\x1b[B\r\r")
+        ui = terminal.TerminalUI(workdir=tmp_path, input=pipe, output=DummyOutput())
+        assert ui.prompt() == "@terminal_extra.py "
+
+
+def test_prompt_mention_without_workdir_stays_plain_text():
+    with create_pipe_input() as pipe:
+        pipe.send_text("@terminal\r")
+        ui = terminal.TerminalUI(input=pipe, output=DummyOutput())
+        assert ui.prompt() == "@terminal"
+
+
+def test_prompt_mention_ignores_email_addresses(tmp_path):
+    (tmp_path / "example.com").write_text("")
+    with create_pipe_input() as pipe:
+        pipe.send_text("user@example.com\r\r")
+        ui = terminal.TerminalUI(workdir=tmp_path, input=pipe, output=DummyOutput())
+        assert ui.prompt() == "user@example.com"
+
+
+def test_prompt_mention_escape_hides_menu(monkeypatch, tmp_path):
+    from prompt_toolkit.application import Application
+    from prompt_toolkit.formatted_text import to_formatted_text
+    from prompt_toolkit.layout.controls import FormattedTextControl
+
+    (tmp_path / "terminal.py").write_text("")
+    original_run = Application.run
+    snapshots = []
+
+    def menu_text(app):
+        rows = []
+        for window in app.layout.visible_windows[1:]:
+            if isinstance(window.content, FormattedTextControl):
+                rows.append(
+                    "".join(
+                        part[1] for part in to_formatted_text(window.content.text)
+                    )
+                )
+        return "\n".join(rows)
+
+    with create_pipe_input() as pipe:
+        pipe.send_text("@terminal")
+
+        def run(app):
+            def after_render(_):
+                if app.is_done or app.current_buffer.text != "@terminal":
+                    return
+                text = menu_text(app)
+                if not snapshots:
+                    snapshots.append(text)
+                    pipe.send_text("\x1b")
+                elif text == "" and snapshots[-1] != "":
+                    snapshots.append(text)
+                    pipe.send_text("\r")
+
+            app.after_render += after_render
+            return original_run(app)
+
+        monkeypatch.setattr(Application, "run", run)
+        ui = terminal.TerminalUI(workdir=tmp_path, input=pipe, output=DummyOutput())
+        assert ui.prompt() == "@terminal"
+
+    assert "terminal.py" in snapshots[0]
+    assert snapshots[-1] == ""
+
+
+def test_prompt_mention_quotes_paths_with_spaces(tmp_path):
+    (tmp_path / "my file.md").write_text("")
+    with create_pipe_input() as pipe:
+        pipe.send_text("@my\r\r")
+        ui = terminal.TerminalUI(workdir=tmp_path, input=pipe, output=DummyOutput())
+        assert ui.prompt() == '@"my file.md" '
+
+
+def test_prompt_mention_at_sign_lists_current_directory(tmp_path):
+    (tmp_path / "alpha.py").write_text("")
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "beta.py").write_text("")
+    with create_pipe_input() as pipe:
+        pipe.send_text("@\r\r")
+        ui = terminal.TerminalUI(workdir=tmp_path, input=pipe, output=DummyOutput())
+        assert ui.prompt() == "@alpha.py "
+
+
+def test_prompt_mention_directory_completion_drills_down(tmp_path):
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "beta.py").write_text("")
+    with create_pipe_input() as pipe:
+        pipe.send_text("@sub\r\r\r")
+        ui = terminal.TerminalUI(workdir=tmp_path, input=pipe, output=DummyOutput())
+        assert ui.prompt() == "@sub/beta.py "
+
+
+@pytest.mark.parametrize("level", ["off", "minimal", "low", "medium", "high"])
+def test_prompt_border_color_follows_thinking_level(monkeypatch, level):
+    from prompt_toolkit.application import Application
+
+    original_run = Application.run
+    borders = []
+    with create_pipe_input() as pipe:
+
+        def run(app):
+            def after_render(_):
+                if app.is_done or borders:
+                    return
+                borders.extend(
+                    (window.char, window.style)
+                    for window in app.layout.visible_windows
+                    if window.char == "─"
+                )
+                pipe.send_text("hello\r")
+
+            app.after_render += after_render
+            return original_run(app)
+
+        monkeypatch.setattr(Application, "run", run)
+        ui = terminal.TerminalUI(input=pipe, output=DummyOutput())
+        ui.thinking_level = level
+        assert ui.prompt() == "hello"
+
+    style = f"class:thinking-{level}"
+    assert borders == [("─", style), ("─", style)]
+
+
+def test_choice_honours_initial_selection():
+    with create_pipe_input() as pipe:
+        pipe.send_text("\r")
+        ui = terminal.TerminalUI(input=pipe, output=DummyOutput())
+        assert (
+            ui.choose(
+                "provider",
+                [("first", "First"), ("second", "Second")],
+                initial="second",
+            )
+            == "second"
+        )

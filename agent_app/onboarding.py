@@ -50,9 +50,13 @@ def login(ui, path: Path, provider: str | None = None) -> str | None:
             _notify_or_print(ui, "已取消登录。")
             return None
         spec = providers.get_provider(name)
+
+        def save_key(value, _spec=spec):
+            auth.save_key(_spec.name, value, path)
+
         key = ui.secret(
             f"{spec.label} · 输入 API Key",
-            on_save=lambda value: auth.save_key(spec.name, value, path),
+            on_save=save_key,
         )
         if key is None:
             _notify_or_print(ui, "已取消登录。")

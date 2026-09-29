@@ -4,7 +4,6 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-
 MEMORY_TYPES = ["user", "feedback", "project", "reference"]
 CONSOLIDATE_THRESHOLD = 10
 
@@ -96,7 +95,7 @@ def list_memory_files(store: MemoryStore) -> list[dict]:
 
 def is_internal_reminder_text(text: str) -> bool:
     text = text.strip().lower()
-    return text.startswith("<reminder>") or text.startswith("</reminder>")
+    return text.startswith(("<reminder>", "</reminder>"))
 
 
 def select_relevant_memories(
@@ -150,7 +149,7 @@ def select_relevant_memories(
                         break
             return selected
     except Exception:
-        pass
+        ...  # fall back to keyword matching below
     keywords = [word.lower() for word in recent.split() if len(word) > 3]
     selected = []
     for file in files:
@@ -192,7 +191,7 @@ def extract_memories(store: MemoryStore, messages: list, summarize) -> list[dict
             dialogue_parts.append(f"{role}: {content}")
     dialogue = "\n".join(dialogue_parts)
     if not dialogue.strip():
-        return
+        return []
     existing = list_memory_files(store)
     existing_description = (
         "\n".join(f"- {item['name']}: {item['description']}" for item in existing)
@@ -214,10 +213,10 @@ def extract_memories(store: MemoryStore, messages: list, summarize) -> list[dict
         text = summarize(prompt, 800).strip()
         match = re.search(r"\[.*\]", text, re.DOTALL)
         if not match:
-            return
+            return []
         items = json.loads(match.group())
         if not items:
-            return
+            return []
         count = 0
         for memory in items:
             name = memory.get("name", f"memory_{int(time.time())}")
@@ -230,7 +229,8 @@ def extract_memories(store: MemoryStore, messages: list, summarize) -> list[dict
         if count:
             print(f"\n\033[33m[Memory: extracted {count} new memories]\033[0m")
     except Exception:
-        pass
+        return []
+    return []
 
 
 def consolidate_memories(store: MemoryStore, summarize):
@@ -271,7 +271,7 @@ def consolidate_memories(store: MemoryStore, summarize):
             f"\n\033[33m[Memory: consolidated {len(files)} → {len(items)} memories]\033[0m"
         )
     except Exception:
-        pass
+        return
 
 
 def find_latest_text_user_message(messages: list) -> int | None:

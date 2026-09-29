@@ -84,7 +84,7 @@ def test_environment_loading_does_not_mutate_process_and_allows_missing_files(
 def test_global_settings_path_uses_home_pamu_directory():
     import agent_app.bootstrap as bootstrap
 
-    assert bootstrap.GLOBAL_SETTINGS_PATH == Path.home() / ".pamu" / ".settings"
+    assert Path.home() / ".pamu" / ".settings" == bootstrap.GLOBAL_SETTINGS_PATH
 
 
 def test_environment_loader_never_requests_legacy_env_paths(tmp_path):
@@ -373,8 +373,8 @@ def test_build_default_runtime_owns_environment_and_sdk_creation(
 
     fake_anthropic = types.ModuleType("anthropic")
     fake_dotenv = types.ModuleType("dotenv")
-    fake_anthropic.Anthropic = FakeAnthropic
-    fake_dotenv.dotenv_values = lambda path: (
+    vars(fake_anthropic)["Anthropic"] = FakeAnthropic
+    vars(fake_dotenv)["dotenv_values"] = lambda path: (
         calls.append(("dotenv", path)),
         {},
     )[1]
@@ -435,8 +435,8 @@ def test_default_runtimes_do_not_leak_project_environment_between_workspaces(
 
     fake_anthropic = types.ModuleType("anthropic")
     fake_dotenv = types.ModuleType("dotenv")
-    fake_anthropic.Anthropic = FakeAnthropic
-    fake_dotenv.dotenv_values = read_values
+    vars(fake_anthropic)["Anthropic"] = FakeAnthropic
+    vars(fake_dotenv)["dotenv_values"] = read_values
     monkeypatch.setitem(sys.modules, "anthropic", fake_anthropic)
     monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
     monkeypatch.setattr(bootstrap, "GLOBAL_SETTINGS_PATH", tmp_path / "missing-global")
@@ -495,8 +495,8 @@ def test_default_runtime_passes_both_supported_credentials_without_base_url(
 
     fake_anthropic = types.ModuleType("anthropic")
     fake_dotenv = types.ModuleType("dotenv")
-    fake_anthropic.Anthropic = FakeAnthropic
-    fake_dotenv.dotenv_values = lambda _path: {}
+    vars(fake_anthropic)["Anthropic"] = FakeAnthropic
+    vars(fake_dotenv)["dotenv_values"] = lambda _path: {}
     monkeypatch.setitem(sys.modules, "anthropic", fake_anthropic)
     monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
     monkeypatch.setattr(bootstrap, "GLOBAL_SETTINGS_PATH", tmp_path / "missing-global")

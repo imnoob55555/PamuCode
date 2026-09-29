@@ -2,9 +2,8 @@ import pytest
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 
-from agent_app.cli_exit import ExitGesture
+from agent_app.cli_exit import ExitGesture, QuitRequested
 from agent_app.terminal import TerminalUI
-from agent_app.cli_exit import QuitRequested
 
 
 @pytest.mark.parametrize("delta, expected", [(0.2, True), (1.0, True), (1.01, False)])

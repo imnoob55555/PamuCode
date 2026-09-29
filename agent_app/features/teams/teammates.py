@@ -6,10 +6,10 @@ import json
 import re
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from functools import partial
 from pathlib import Path
-from typing import Callable
-
 
 TEAM_TOOLS = [
     {"name": "bash", "description": "Run a shell command.",
@@ -98,7 +98,12 @@ def idle_poll(
     poll_interval: float,
     timeout: float,
 ) -> str:
-    polls = int(timeout // poll_interval) if poll_interval else 0
+    polls = 0
+    if poll_interval:
+        try:
+            polls = int(timeout // poll_interval)
+        except (OverflowError, ValueError):
+            polls = 0
     for _ in range(polls):
         sleep(poll_interval)
         inbox = bus.read_inbox(agent_name)
@@ -174,7 +179,7 @@ def spawn_teammate_thread(
     )
 
     def run():
-        messages = [{"role": "user", "content": prompt}]
+        messages: list[dict] = [{"role": "user", "content": prompt}]
         summary = "Stopped after 10 teammate rounds."
         deferred_inbox: list[dict] = []
         worktree_context = {"path": None}
@@ -221,7 +226,7 @@ def spawn_teammate_thread(
                         summary = "\n".join(getattr(block, "text", "") for block in response.content if getattr(block, "type", None) == "text") or summary
                         work_completed = True
                         break
-                    results = []
+                    results: list[dict] = []
                     for block in response.content:
                         if getattr(block, "type", None) != "tool_use":
                             continue
@@ -237,7 +242,7 @@ def spawn_teammate_thread(
                                 output = f"Invalid plan submission response: {output}"
                         elif block.name in guarded_tools:
                             cwd = Path(worktree_context["path"]) if worktree_context["path"] else None
-                            scoped_handler = lambda **input: handler(**input, cwd=cwd)
+                            scoped_handler = partial(handler, cwd=cwd)
                             output, is_error = guarded_tool(name, block, deferred_inbox, scoped_handler, cwd)
                             if not is_error:
                                 hooks.trigger("PostToolUse", block, output)

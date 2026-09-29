@@ -260,3 +260,84 @@ def test_tool_only_stream_keeps_progress_until_final_message():
 
     assert result is final_message
     assert events == ["enter", "final", "stop", "exit"]
+
+
+def test_adapter_forwards_thinking_payload():
+    captured = {}
+
+    def create(**kwargs):
+        captured.update(kwargs)
+        return object()
+
+    client = SimpleNamespace(messages=SimpleNamespace(create=create))
+    adapter = AnthropicAdapter(client)
+    payload = {"type": "enabled", "budget_tokens": 1024}
+
+    adapter.create(
+        system=None,
+        messages=[],
+        model="model",
+        max_tokens=4096,
+        tools=None,
+        thinking=payload,
+    )
+
+    assert captured["thinking"] == payload
+
+
+def test_adapter_omits_thinking_by_default():
+    captured = {}
+
+    def create(**kwargs):
+        captured.update(kwargs)
+        return object()
+
+    client = SimpleNamespace(messages=SimpleNamespace(create=create))
+    adapter = AnthropicAdapter(client)
+
+    adapter.create(
+        system=None,
+        messages=[],
+        model="model",
+        max_tokens=100,
+        tools=None,
+    )
+
+    assert "thinking" not in captured
+
+
+def test_streaming_adapter_forwards_thinking_payload():
+    captured = {}
+
+    class SuccessfulStream:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        @property
+        def text_stream(self):
+            return iter(())
+
+        def get_final_message(self):
+            return object()
+
+    def stream(**kwargs):
+        captured.update(kwargs)
+        return SuccessfulStream()
+
+    client = SimpleNamespace(messages=SimpleNamespace(stream=stream))
+    adapter = AnthropicAdapter(client)
+    payload = {"type": "enabled", "budget_tokens": 2048}
+
+    adapter.create_streaming(
+        system=None,
+        messages=[],
+        model="model",
+        max_tokens=8192,
+        tools=None,
+        thinking=payload,
+    )
+
+    assert captured["thinking"] == payload

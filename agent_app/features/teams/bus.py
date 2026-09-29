@@ -9,7 +9,6 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-
 AGENT_NAME_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,31}$")
 ALLOWED_MESSAGE_TYPES = {
     "message",

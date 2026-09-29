@@ -192,11 +192,12 @@ def test_worker_originated_stop_exits_and_clears_exactly_once():
     stopped_inside_write = threading.Event()
 
     class SelfStoppingStream(FakeStream):
-        spinner = None
+        spinner: TerminalSpinner | None = None
 
         def write(self, value):
             super().write(value)
             if value != "\r\033[2K" and not stopped_inside_write.is_set():
+                assert self.spinner is not None
                 self.spinner.stop()
                 stopped_inside_write.set()
 

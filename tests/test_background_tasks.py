@@ -1,6 +1,7 @@
 import threading
 import time
 import types
+from typing import cast
 
 import pytest
 
@@ -35,8 +36,10 @@ def test_background_state_and_handler_snapshot_are_isolated():
 
     entered, release = threading.Event(), threading.Event()
     def original(**_input):
-        entered.set(); assert release.wait(1); return "original"
-    handlers = {"bash": original}
+        entered.set()
+        assert release.wait(1)
+        return "original"
+    handlers: dict = {"bash": original}
     background_id = background.start_background_task(
         second, tool_block("snapshot", "pytest"), handlers,
         post_tool=lambda *_args: None, persist_output=lambda _id, output: output,
@@ -141,7 +144,9 @@ def test_background_output_persistence_and_notification_escaping(tmp_path, monke
     background_id = background.start_background_task(
         state, tool_block("large", "pytest"), {"bash": lambda **_input: output},
         post_tool=lambda *_args: None,
-        persist_output=lambda tool_id, text: persist_large_output(config, tool_id, text),
+        persist_output=lambda tool_id, text: persist_large_output(
+            cast(AppConfig, config), tool_id, text
+        ),
     )
     wait_for(state, background_id)
     notice = background.collect_background_results(state)[0]

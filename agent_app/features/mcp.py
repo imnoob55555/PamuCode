@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import re
 import threading
+from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import Any, cast
 
 
 class MCPClient:
@@ -45,10 +46,12 @@ MCP_CONNECTION_TOOL_SCHEMA = {
 }
 
 
-def register_mcp_connection_tool(registry, mcp_state) -> None:
+def register_mcp_connection_tool(registry, mcp_state: Any) -> None:
     """Register the explicit MCP connection entry point, not discovered tools."""
-    def current_state():
-        return mcp_state() if callable(mcp_state) else mcp_state
+    def current_state() -> MCPState:
+        return cast(
+            MCPState, mcp_state() if callable(mcp_state) else mcp_state
+        )
 
     registry.register(
         MCP_CONNECTION_TOOL_SCHEMA,
@@ -118,7 +121,7 @@ def snapshot_mcp_tools(
     handlers = dict(builtin_handlers)
     metadata: dict[str, dict] = {}
     with state.lock:
-        clients = list(sorted(state.clients.items()))
+        clients = sorted(state.clients.items())
     for server_name, client in clients:
         for tool_def in sorted(client.tools, key=lambda item: item["name"]):
             original_name = tool_def["name"]

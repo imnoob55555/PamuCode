@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from typing import Callable
-
+from collections.abc import Callable, Mapping
 
 TASK_TOOL_SCHEMA = {
     "name": "task",
@@ -65,7 +63,7 @@ def spawn_subagent(
     """Run a fresh, bounded subagent conversation using only supplied tools."""
     active_model = model or config.primary_model
     print("\n\033[35m[Subagent spawned]\033[0m")
-    messages = [{"role": "user", "content": description}]
+    messages: list[dict] = [{"role": "user", "content": description}]
 
     for _ in range(30):
         try:
@@ -83,7 +81,7 @@ def spawn_subagent(
         messages.append({"role": "assistant", "content": response.content})
         if not has_tool_use(response.content):
             break
-        results = []
+        results: list[dict] = []
         for block in response.content:
             if getattr(block, "type", None) != "tool_use":
                 continue

@@ -6,7 +6,23 @@ import copy
 import json
 import time
 
+from ..features.background import (
+    collect_background_results,
+    start_background_task,
+)
+from ..features.mcp import snapshot_mcp_tools
+from ..features.memory import (
+    build_request_messages_with_memories,
+    consolidate_memories,
+    extract_memories,
+)
+from ..features.scheduler import consume_cron_queue
+from ..features.teams.protocol import collect_lead_inbox
 from ..logging_setup import get_logger
+from ..runtime import RuntimeContext
+from ..thinking import plan_request, strip_thinking_blocks
+from ..tools.builtin import resolve_tool_cwd
+from ..tools.executor import execute_tool, should_run_background
 from .compaction import (
     compact_history,
     estimate_size,
@@ -24,22 +40,6 @@ from .recovery import (
     is_prompt_too_long_error,
     with_retry,
 )
-from ..features.background import (
-    collect_background_results,
-    start_background_task,
-)
-from ..features.mcp import snapshot_mcp_tools
-from ..features.memory import (
-    build_request_messages_with_memories,
-    consolidate_memories,
-    extract_memories,
-)
-from ..features.scheduler import consume_cron_queue
-from ..features.teams.protocol import collect_lead_inbox
-from ..runtime import RuntimeContext
-from ..tools.builtin import resolve_tool_cwd
-from ..tools.executor import execute_tool, should_run_background
-
 
 CONTINUATION_PROMPT = (
     "Output token limit hit. Resume directly — "
@@ -68,6 +68,8 @@ def _extract_text(content) -> str:
 
 
 def _summarize(runtime: RuntimeContext, payload, max_tokens: int = 2_000) -> str:
+    router = runtime.model
+    assert router is not None
     if isinstance(payload, list):
         conversation = json.dumps(payload, default=str)[:80_000]
         prompt = (
@@ -79,7 +81,7 @@ def _summarize(runtime: RuntimeContext, payload, max_tokens: int = 2_000) -> str
     else:
         prompt = str(payload)
     response = runtime.llm.create(
-        model=runtime.model.primary_model,
+        model=router.primary_model,
         system=None,
         messages=[{"role": "user", "content": prompt}],
         max_tokens=max_tokens,
@@ -152,7 +154,9 @@ def run_agent_loop(runtime: RuntimeContext) -> None:
     """Run one agent turn, mutating only the supplied runtime's owned state."""
     session = runtime.session
     messages = session.history
-    provider, primary_model, fallback_model = runtime.model.snapshot()
+    router = runtime.model
+    assert router is not None
+    provider, primary_model, fallback_model = router.snapshot()
     LOGGER.info(
         "turn start provider=%s model=%s fallback=%s rounds=%d",
         provider,
@@ -165,9 +169,9 @@ def run_agent_loop(runtime: RuntimeContext) -> None:
         fallback_model=fallback_model,
     )
     max_tokens = runtime.config.default_max_tokens
-    summarize = lambda payload, max_tokens=2_000: _summarize(
-        runtime, payload, max_tokens
-    )
+
+    def summarize(payload, max_tokens=2_000):
+        return _summarize(runtime, payload, max_tokens)
 
     while True:
         fired_jobs = consume_cron_queue(runtime.scheduler)
@@ -206,16 +210,33 @@ def run_agent_loop(runtime: RuntimeContext) -> None:
         request_messages = build_request_messages_with_memories(
             runtime.memory, messages, summarize
         )
+        thinking, request_max_tokens = plan_request(
+            router.thinking_snapshot(),
+            max_tokens,
+            runtime.config.escalated_max_tokens,
+        )
+        if thinking is None:
+            request_messages = strip_thinking_blocks(request_messages)
+
+        def request_call(
+            system=system,
+            request_messages=request_messages,
+            request_max_tokens=request_max_tokens,
+            thinking=thinking,
+            tools=tools,
+        ):
+            return runtime.llm.create_streaming(
+                system=system,
+                messages=request_messages,
+                model=state.current_model,
+                max_tokens=request_max_tokens,
+                tools=tools,
+                thinking=thinking,
+            )
 
         try:
             response = with_retry(
-                lambda: runtime.llm.create_streaming(
-                    system=system,
-                    messages=request_messages,
-                    model=state.current_model,
-                    max_tokens=max_tokens,
-                    tools=tools,
-                ),
+                request_call,
                 state,
                 max_transient_retries=runtime.config.max_transient_retries,
                 max_consecutive_529=runtime.config.max_consecutive_529,

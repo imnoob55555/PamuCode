@@ -53,7 +53,7 @@ class AppConfig:
         repo_root: Path,
         workdir: Path | None = None,
         environ: Mapping[str, str] | None = None,
-    ) -> "AppConfig":
+    ) -> AppConfig:
         environment = os.environ if environ is None else environ
         model_id = environment.get("MODEL_ID")
         if model_id is None or not model_id.strip():

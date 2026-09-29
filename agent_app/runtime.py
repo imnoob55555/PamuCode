@@ -1,7 +1,14 @@
+# ruff: noqa: E402
+# The imports at the bottom of this module are late on purpose: features
+# modules import RuntimeContext/SessionState from here, so hoisting them
+# would create an import cycle.
 from __future__ import annotations
 
 import threading
 from dataclasses import dataclass, field
+from typing import Any
+
+from .thinking import DEFAULT_THINKING_LEVEL, normalize_level
 
 
 @dataclass(slots=True)
@@ -17,13 +24,24 @@ class ModelRouter:
     provider: str = "anthropic"
     primary_model: str = ""
     fallback_model: str | None = None
-    llm: object | None = None
+    llm: Any = None
+    thinking_level: str = "off"
     lock: threading.Lock = field(default_factory=threading.Lock)
 
     def snapshot(self) -> tuple[str, str, str | None]:
         """Return (provider, primary_model, fallback_model) atomically."""
         with self.lock:
             return self.provider, self.primary_model, self.fallback_model
+
+    def thinking_snapshot(self) -> str:
+        """Return the active thinking level atomically."""
+        with self.lock:
+            return self.thinking_level
+
+    def switch_thinking(self, level: str) -> None:
+        """Change only the thinking level for the current provider."""
+        with self.lock:
+            self.thinking_level = normalize_level(level) or DEFAULT_THINKING_LEVEL
 
     def switch_model(self, model: str) -> None:
         """Keep the provider and adapter, change only the model ids."""
@@ -36,6 +54,7 @@ class ModelRouter:
         primary_model: str,
         fallback_model: str | None = None,
         llm: object | None = None,
+        thinking_level: str | None = None,
     ) -> None:
         """Switch provider and model together, optionally the adapter."""
         with self.lock:
@@ -44,6 +63,10 @@ class ModelRouter:
             self.fallback_model = fallback_model
             if llm is not None:
                 self.llm = llm
+            if thinking_level is not None:
+                self.thinking_level = (
+                    normalize_level(thinking_level) or DEFAULT_THINKING_LEVEL
+                )
 
 
 @dataclass(slots=True)
@@ -54,7 +77,6 @@ class SessionState:
     rounds_since_todo: int = 0
 
 
-from .adapters.anthropic import AnthropicAdapter
 from .config import AppConfig
 from .core.prompt import PromptBuilder
 from .features.background import BackgroundState
@@ -74,7 +96,7 @@ from .tools.registry import ToolRegistry
 @dataclass(slots=True)
 class RuntimeContext:
     config: AppConfig
-    llm: AnthropicAdapter
+    llm: Any
     session: SessionState
     prompt_builder: PromptBuilder
     tools: ToolRegistry

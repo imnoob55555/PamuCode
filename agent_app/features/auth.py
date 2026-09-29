@@ -139,3 +139,17 @@ def set_model(
     data["providers"][provider] = record
     save_credentials(data, path)
     return data
+
+
+def set_thinking(
+    provider: str, level: str, path: Path = CREDENTIALS_PATH
+) -> dict[str, Any]:
+    """Persist the thinking level of a logged-in provider."""
+    data = load_credentials(path)
+    record = get_login(data, provider)
+    if not record:
+        return data
+    record["thinking"] = level
+    data["providers"][provider] = record
+    save_credentials(data, path)
+    return data

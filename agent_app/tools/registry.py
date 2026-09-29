@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import copy
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Callable
 
 
 @dataclass(slots=True)

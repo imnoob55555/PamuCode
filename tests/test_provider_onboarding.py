@@ -3,11 +3,13 @@
 import stat
 import sys
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 
-from agent_app.features import auth
 from agent_app.adapters import providers
+from agent_app.config import AppConfig
+from agent_app.features import auth
 
 
 def test_saved_provider_ignores_corrupt_and_blank_records():
@@ -82,7 +84,7 @@ def test_saved_anthropic_model_boots_without_model_env(tmp_path, monkeypatch):
         "ANTHROPIC_BASE_URL",
     ):
         monkeypatch.delenv(key, raising=False)
-    config = bootstrap.build_default_runtime()
+    config = cast(AppConfig, bootstrap.build_default_runtime())
     assert config.primary_model == "chosen-model"
     assert calls == [{"api_key": "saved-key"}]
 
@@ -102,7 +104,7 @@ def test_anthropic_selected_model_takes_priority_over_legacy_model_setting(
     path = tmp_path / "credentials.json"
     auth.store_login("anthropic", "saved-key", "chosen-model", path)
     assert (
-        bootstrap.build_default_runtime(credentials_path=path).primary_model
+        cast(AppConfig, bootstrap.build_default_runtime(credentials_path=path)).primary_model
         == "chosen-model"
     )
 

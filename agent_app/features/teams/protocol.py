@@ -5,9 +5,10 @@ from __future__ import annotations
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from types import SimpleNamespace
-from typing import Callable
+from typing import cast
 
 from .bus import MessageBus
 
@@ -117,7 +118,7 @@ def process_permission_request(
     sleep: Callable[[float], None],
 ) -> None:
     del store, clock, sleep
-    requester = message.get("from")
+    requester = cast(str, message.get("from"))
     request = message.get("content", {})
     cwd_valid = True
     tool_cwd = None

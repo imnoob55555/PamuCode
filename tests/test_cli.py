@@ -1,9 +1,10 @@
 import os
-from pathlib import Path
 import subprocess
 import sys
 import threading
+from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 
@@ -248,7 +249,7 @@ def test_start_runtime_threads_loads_jobs_and_starts_both_workers(monkeypatch):
         "cron-queue-processor",
     ]
     assert all(item[2] is True for item in created)
-    assert all(thread.started for thread in threads)
+    assert all(thread.started for thread in cast(list, threads))
 
 
 def test_start_runtime_threads_cleans_up_partial_start(monkeypatch):

@@ -1,5 +1,4 @@
 import json
-import threading
 import types
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -12,7 +11,12 @@ from agent_app.bootstrap import build_runtime
 from agent_app.config import AppConfig
 from agent_app.features.teams import teammates
 from agent_app.features.teams.bus import MessageBus
-from agent_app.features.teams.protocol import ProtocolState, ProtocolStore, match_response, process_permission_request
+from agent_app.features.teams.protocol import (
+    ProtocolState,
+    ProtocolStore,
+    match_response,
+    process_permission_request,
+)
 from agent_app.tools.hooks import HookRegistry
 
 
@@ -108,7 +112,7 @@ def test_teammate_owner_validates_lifecycle_and_nonrecursive_tools(bus, tmp_path
     class Thread:
         def __init__(self, *, target, daemon): self.target, self.daemon = target, daemon
         def start(self): created.append(self)
-    kwargs = dict(workdir=tmp_path, handlers={}, hooks=HookRegistry(), validate_name=lambda name, **_kwargs: (_ for _ in ()).throw(ValueError("reserved")) if name == "lead" else name, guarded_tools=set(), guarded_tool=lambda *_args: ("", False), idle=lambda *_args: "timeout", max_tokens=100, thread_factory=Thread)
+    kwargs: dict = {"workdir": tmp_path, "handlers": {}, "hooks": HookRegistry(), "validate_name": lambda name, **_kwargs: (_ for _ in ()).throw(ValueError("reserved")) if name == "lead" else name, "guarded_tools": set(), "guarded_tool": lambda *_args: ("", False), "idle": lambda *_args: "timeout", "max_tokens": 100, "thread_factory": Thread}
     assert "Invalid" in teammates.spawn_teammate_thread(state, bus, lambda **_kwargs: text_response(), name="lead", role="r", prompt="p", **kwargs)
     kwargs["validate_name"] = lambda name, **_kwargs: name
     result = teammates.spawn_teammate_thread(state, bus, lambda **_kwargs: text_response(), name="worker", role="reviewer", prompt="inspect", **kwargs)
@@ -127,7 +131,8 @@ def test_teammate_owner_injects_inbox_and_post_hook_once(bus, tmp_path):
     class Immediate:
         def __init__(self, *, target, daemon): self.target = target
         def start(self): self.target()
-    hooks = HookRegistry(); hooks.register("PostToolUse", lambda block, output: events.append((block, output)))
+    hooks = HookRegistry()
+    hooks.register("PostToolUse", lambda block, output: events.append((block, output)))
     teammates.spawn_teammate_thread(state, bus, lambda **kwargs: (calls.append(kwargs), next(responses))[1], name="worker", role="reviewer", prompt="inspect", workdir=tmp_path, handlers={"bash": lambda command, cwd=None: "guarded output"}, hooks=hooks, validate_name=lambda name, **_kwargs: name, guarded_tools={"bash"}, guarded_tool=lambda _agent, used, _inbox, handler, _cwd: (handler(**used.input), False), idle=lambda *_args: "timeout", max_tokens=100, thread_factory=Immediate)
     assert "Focus parser tests" in json.dumps(calls[0]["messages"])
     assert events == [(block, "guarded output")]
@@ -243,19 +248,19 @@ def test_teammate_error_and_round_limit_send_result_and_cleanup(bus, tmp_path):
         def start(self):
             self.target()
 
-    common = dict(
-        role="reviewer",
-        prompt="inspect",
-        workdir=tmp_path,
-        handlers={},
-        hooks=HookRegistry(),
-        validate_name=lambda name, **_kwargs: name,
-        guarded_tools=set(),
-        guarded_tool=lambda *_args: ("", False),
-        idle=lambda *_args: "timeout",
-        max_tokens=100,
-        thread_factory=ImmediateThread,
-    )
+    common: dict = {
+        "role": "reviewer",
+        "prompt": "inspect",
+        "workdir": tmp_path,
+        "handlers": {},
+        "hooks": HookRegistry(),
+        "validate_name": lambda name, **_kwargs: name,
+        "guarded_tools": set(),
+        "guarded_tool": lambda *_args: ("", False),
+        "idle": lambda *_args: "timeout",
+        "max_tokens": 100,
+        "thread_factory": ImmediateThread,
+    }
 
     error_state = teammates.TeamState()
     teammates.spawn_teammate_thread(

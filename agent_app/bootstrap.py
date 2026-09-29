@@ -15,17 +15,26 @@ from pathlib import Path
 from .adapters.anthropic import AnthropicAdapter
 from .cli_progress import terminal_progress
 from .config import AppConfig
-from .core.compaction import persist_large_output
 from .core.prompt import PromptBuilder
 from .core.recovery import RecoveryState, with_retry
-from .features import background, mcp, memory, scheduler, skills
-from .features import subagents, tasks, todos, worktrees
 from .features import auth as auth_store
+from .features import (
+    background,
+    mcp,
+    memory,
+    scheduler,
+    skills,
+    subagents,
+    tasks,
+    todos,
+    worktrees,
+)
 from .features.teams import bus as team_bus
 from .features.teams import protocol as team_protocol
 from .features.teams import teammates
 from .logging_setup import setup_logging
 from .runtime import ModelRouter, RuntimeContext, SessionState
+from .thinking import DEFAULT_THINKING_LEVEL, normalize_level
 from .tools import builtin
 from .tools.hooks import (
     HookRegistry,
@@ -37,7 +46,6 @@ from .tools.hooks import (
     make_summary_hook,
 )
 from .tools.registry import ToolRegistry
-
 
 INSTALL_ROOT = Path(__file__).resolve().parents[1]
 GLOBAL_SETTINGS_PATH = Path.home() / ".pamu" / ".settings"
@@ -178,8 +186,8 @@ def _create_storage_roots(config: AppConfig) -> None:
 
 def _run_git(config: AppConfig, args: list[str]) -> tuple[bool, str]:
     try:
-        result = subprocess.run(
-            ["git", *args],
+        result = subprocess.run(  # noqa: S603 - fixed git argv, no user shell
+            ["git", *args],  # noqa: S607 - git is resolved from PATH on purpose
             cwd=config.workdir,
             capture_output=True,
             text=True,
@@ -211,6 +219,7 @@ def build_runtime(
     *,
     progress_factory=None,
     provider: str = "anthropic",
+    thinking_level: str = DEFAULT_THINKING_LEVEL,
 ) -> RuntimeContext:
     """Build one completely independent runtime from explicit dependencies."""
     _create_storage_roots(config)
@@ -225,6 +234,7 @@ def build_runtime(
         primary_model=config.primary_model,
         fallback_model=config.fallback_model,
         llm=llm,
+        thinking_level=normalize_level(thinking_level) or DEFAULT_THINKING_LEVEL,
     )
 
     session = SessionState()
@@ -248,21 +258,20 @@ def build_runtime(
     _register_default_hooks(hooks, config, mcp_state)
     registry = ToolRegistry()
 
-    run_bash = lambda command, run_in_background=False, cwd=None: builtin.run_bash(
-        config.workdir, command, run_in_background, cwd
-    )
-    run_read = lambda path, offset=0, limit=None, cwd=None: builtin.run_read(
-        config.workdir, path, offset, limit, cwd
-    )
-    run_write = lambda path, content, cwd=None: builtin.run_write(
-        config.workdir, path, content, cwd
-    )
-    run_edit = lambda path, old_text, new_text, cwd=None: builtin.run_edit(
-        config.workdir, path, old_text, new_text, cwd
-    )
-    run_glob = lambda pattern, cwd=None: builtin.run_glob(
-        config.workdir, pattern, cwd
-    )
+    def run_bash(command, run_in_background=False, cwd=None):
+        return builtin.run_bash(config.workdir, command, run_in_background, cwd)
+
+    def run_read(path, offset=0, limit=None, cwd=None):
+        return builtin.run_read(config.workdir, path, offset, limit, cwd)
+
+    def run_write(path, content, cwd=None):
+        return builtin.run_write(config.workdir, path, content, cwd)
+
+    def run_edit(path, old_text, new_text, cwd=None):
+        return builtin.run_edit(config.workdir, path, old_text, new_text, cwd)
+
+    def run_glob(pattern, cwd=None):
+        return builtin.run_glob(config.workdir, pattern, cwd)
     builtin_handlers = {
         "bash": run_bash,
         "read_file": run_read,
@@ -499,6 +508,11 @@ def build_runtime(
     )
 
 
+def _saved_thinking(record: dict) -> str:
+    """Return the validated thinking level stored for one provider."""
+    return normalize_level(record.get("thinking")) or DEFAULT_THINKING_LEVEL
+
+
 def _resolve_active_provider(
     environment: dict[str, str],
     credentials: dict,
@@ -565,6 +579,9 @@ def build_default_runtime(*, credentials_path: Path | None = None) -> RuntimeCon
             client,
             progress_factory=terminal_progress,
             provider=spec.name,
+            thinking_level=_saved_thinking(
+                auth_store.get_login(credentials, spec.name)
+            ),
         )
 
     base_url = environment.get("ANTHROPIC_BASE_URL")
@@ -601,4 +618,5 @@ def build_default_runtime(*, credentials_path: Path | None = None) -> RuntimeCon
         config,
         Anthropic(**client_options),
         progress_factory=terminal_progress,
+        thinking_level=_saved_thinking(record),
     )

@@ -1,8 +1,7 @@
 import pytest
+
 from agent_app.bootstrap import build_runtime
 from agent_app.config import AppConfig
-from agent_app.tools.registry import ToolRegistry
-from agent_app.tools import builtin as builtin_tools
 from agent_app.features import mcp as mcp_feature
 from agent_app.features import scheduler as scheduler_feature
 from agent_app.features import subagents as subagent_runtime
@@ -10,6 +9,8 @@ from agent_app.features import tasks as tasks_feature
 from agent_app.features import todos as todos_feature
 from agent_app.features import worktrees as worktrees_feature
 from agent_app.features.teams import teammates as teammate_runtime
+from agent_app.tools import builtin as builtin_tools
+from agent_app.tools.registry import ToolRegistry
 
 
 class FakeSDKClient:

@@ -5,7 +5,8 @@ from __future__ import annotations
 import itertools
 import sys
 import threading
-
+from collections.abc import Callable
+from typing import Any
 
 DEFAULT_FRAMES = tuple("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
 
@@ -20,8 +21,8 @@ class TerminalSpinner:
         stream=None,
         frames=DEFAULT_FRAMES,
         interval: float = 0.08,
-        event_factory=threading.Event,
-        thread_factory=threading.Thread,
+        event_factory: Callable[[], Any] = threading.Event,
+        thread_factory: Callable[..., Any] = threading.Thread,
     ) -> None:
         self.label = label
         self.stream = sys.stderr if stream is None else stream
@@ -29,8 +30,8 @@ class TerminalSpinner:
         self.interval = interval
         self._event_factory = event_factory
         self._thread_factory = thread_factory
-        self._event = None
-        self._thread = None
+        self._event: Any = None
+        self._thread: Any = None
         self._lifecycle_lock = threading.Lock()
         self._write_lock = threading.Lock()
         self._started = False

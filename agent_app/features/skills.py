@@ -10,7 +10,7 @@ class SkillState:
     registry: dict[str, dict] = field(default_factory=dict)
 
 
-def _parse_skill_frontmatter(text: str) -> dict:
+def _parse_skill_frontmatter(text: str) -> tuple[dict, str]:
     if not text.startswith("---"):
         return {}, text
     parts = text.split("---", 2)

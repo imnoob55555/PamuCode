@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import difflib
 import logging
+from collections.abc import Callable, Mapping
 from contextlib import nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Mapping
+from typing import Any
 
 from ..logging_setup import get_logger
 from .builtin import safe_path
@@ -47,7 +48,7 @@ def make_permission_hook(
     *,
     mcp_state=None,
 ):
-    def resolve(value, default):
+    def resolve(value, default) -> Any:
         if value is None:
             return default
         return value() if callable(value) else value

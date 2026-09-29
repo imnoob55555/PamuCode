@@ -13,7 +13,6 @@ from agent_app.features.todos import run_todo_write
 from agent_app.runtime import SessionState
 from agent_app.tools.registry import ToolRegistry
 
-
 REQUIRED_TASK_TOOLS = {
     "create_task": {"subject"},
     "list_tasks": set(),
@@ -288,7 +287,7 @@ def test_state_machine_rejects_invalid_transitions_and_preserves_owner(
 
 @pytest.mark.parametrize(
     "task_id",
-    ["../outside", "/tmp/outside", "task_bad/child", ".."],
+    ["../outside", "/etc/outside", "task_bad/child", ".."],
 )
 def test_invalid_task_ids_cannot_escape_task_directory(task_store, task_id):
     with pytest.raises(ValueError):

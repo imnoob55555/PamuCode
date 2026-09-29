@@ -6,7 +6,6 @@ import json
 from dataclasses import dataclass
 from datetime import datetime
 
-
 PROMPT_SECTIONS = {
     "identity": "You are a coding agent. Act, don't explain.",
     "workspace": "Working directory: ",
@@ -28,6 +27,13 @@ def assemble_system_prompt(context: dict) -> str:
     if not current_time:
         current_time = datetime.now().isoformat(timespec="seconds")
     sections.append(f"Current time: {current_time}")
+
+    sections.append(
+        "File mentions:\n"
+        "A user message may contain @path mentions of files in the workspace.\n"
+        "Read a mentioned file with read_file before editing it; never assume "
+        "its contents."
+    )
 
     sections.append(
         "Coordination rules:\n"

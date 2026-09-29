@@ -1,5 +1,6 @@
 import threading
 from types import SimpleNamespace
+
 import pytest
 
 from agent_app import cli
@@ -120,7 +121,9 @@ def test_existing_local_record_needs_no_online_verification(tmp_path, monkeypatc
 
 def test_fresh_settings_template_still_prompts_for_login(tmp_path, monkeypatch):
     from pathlib import Path
+
     from dotenv import dotenv_values
+
     import agent_app.bootstrap as bootstrap
 
     example = Path(__file__).resolve().parents[1] / ".settings.example"

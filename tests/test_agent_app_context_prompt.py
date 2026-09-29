@@ -2,7 +2,7 @@ import copy
 from types import SimpleNamespace
 
 from agent_app.config import AppConfig
-from agent_app.core.context import build_context, append_user_text_blocks
+from agent_app.core.context import append_user_text_blocks, build_context
 from agent_app.core.prompt import PromptBuilder
 from agent_app.features.mcp import MCPState
 from agent_app.features.memory import MemoryStore

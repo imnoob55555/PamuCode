@@ -11,9 +11,9 @@ from pathlib import Path
 
 from .adapters import providers
 from .bootstrap import build_default_runtime
-from .config import MissingConfigurationError
 from .branding import render_startup_screen
 from .cli_exit import ExitAction, ExitGesture, QuitRequested
+from .config import MissingConfigurationError
 from .core.loop import run_agent_loop
 from .features import auth
 from .features.scheduler import (
@@ -23,6 +23,7 @@ from .features.scheduler import (
 )
 from .logging_setup import get_logger
 from .slash_commands import SLASH_COMMANDS, help_text
+from .thinking import THINKING_LABELS, THINKING_LEVELS, normalize_level
 
 LOGGER = get_logger("pamu.cli")
 COMMANDS = ("login", "logout", "status", "use")
@@ -119,7 +120,10 @@ def _pick_provider_interactively(input_fn) -> str | None:
     if not choice:
         return None
     if choice.isdigit():
-        position = int(choice) - 1
+        try:
+            position = int(choice) - 1
+        except ValueError:
+            return None
         if 0 <= position < len(names):
             return names[position]
         return None
@@ -373,6 +377,7 @@ def handle_slash_command(
         print_fn(f"供应商：{provider}")
         print_fn(f"模型：{model}")
         print_fn(f"降级模型：{fallback or '（无）'}")
+        print_fn(f"思考程度：{runtime.model.thinking_snapshot()}")
         data = auth.load_credentials(credentials_path)
         if data.get("providers"):
             names = ", ".join(sorted(data["providers"]))
@@ -407,6 +412,46 @@ def handle_slash_command(
         runtime.model.switch_model(argument)
         LOGGER.info("switch model=%s provider=%s", argument, runtime.model.provider)
         print_fn(f"模型已切换为 {argument}（当前会话立即生效）。")
+        return
+
+    if command == "/thinking":
+        level = runtime.model.thinking_snapshot()
+        if not argument:
+            if ui is None:
+                print_fn(f"当前思考程度：{level}（{THINKING_LABELS[level]}）")
+                print_fn("用法：/thinking <" + "|".join(THINKING_LEVELS) + ">")
+                return
+            argument = ui.choose(
+                "思考程度",
+                [(name, THINKING_LABELS[name]) for name in THINKING_LEVELS],
+                initial=level,
+            )
+            if argument is None:
+                notify_or_print(ui, "已取消思考程度选择。", print_fn=print_fn)
+                return
+        selected = normalize_level(argument)
+        if selected is None:
+            notify_or_print(
+                ui,
+                f"未知思考程度：{argument}。可用：{', '.join(THINKING_LEVELS)}",
+                print_fn=print_fn,
+            )
+            return
+        provider = runtime.model.provider
+        data = auth.load_credentials(credentials_path)
+        if provider and auth.get_login(data, provider):
+            try:
+                auth.set_thinking(provider, selected, credentials_path)
+            except OSError:
+                notify_or_print(
+                    ui,
+                    "思考程度保存失败，请检查凭证文件的写入权限或磁盘空间。",
+                    print_fn=print_fn,
+                )
+                return
+        runtime.model.switch_thinking(selected)
+        LOGGER.info("switch thinking=%s provider=%s", selected, provider)
+        print_fn(f"思考程度已切换为 {selected}（{THINKING_LABELS[selected]}）。")
         return
 
     if command == "/provider":
@@ -456,6 +501,7 @@ def handle_slash_command(
             progress=terminal_progress,
             base_url=environment.get("ANTHROPIC_BASE_URL") if spec.name == "anthropic" else None,
             auth_token=environment.get("ANTHROPIC_AUTH_TOKEN") if spec.name == "anthropic" else None,
+            thinking=record.get("thinking"),
         )
         auth.set_active(spec.name, credentials_path)
         LOGGER.info("switch provider=%s", spec.name)
@@ -506,7 +552,7 @@ def main(
     if ui is None and interactive:
         from .terminal import TerminalUI
 
-        ui = TerminalUI()
+        ui = TerminalUI(workdir=Path.cwd())
     if args and args[0] in COMMANDS:
         if args[0] == "login" and ui is not None:
             from .onboarding import login
@@ -570,6 +616,8 @@ def main(
         if runtime is None:
             notify_or_print(ui, LOGIN_HINT)
         while True:
+            if ui is not None and runtime is not None:
+                ui.thinking_level = runtime.model.thinking_snapshot()
             try:
                 query = ui.prompt() if ui is not None else input("\033[36m>> \033[0m")
             except EOFError:

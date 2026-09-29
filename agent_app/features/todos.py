@@ -4,7 +4,6 @@ from collections.abc import Mapping
 
 from ..runtime import SessionState
 
-
 TODO_TOOL_SCHEMA = {
     "name": "todo_write",
     "description": "Create and manage a task list for your current coding session.",
@@ -17,7 +16,8 @@ def register_todo_tools(registry, session) -> None:
     if isinstance(session, Mapping):
         handler = session["todo_write"]
     else:
-        handler = lambda todos: run_todo_write(session, todos)
+        def handler(todos):
+            return run_todo_write(session, todos)
     registry.register(TODO_TOOL_SCHEMA, handler)
 
 
@@ -53,10 +53,10 @@ def format_current_todos(session: SessionState) -> str:
 
 
 def run_todo_write(session: SessionState, todos: list) -> str:
-    todos, error = _normalize_todos(todos)
+    normalized, error = _normalize_todos(todos)
     if error:
         return error
-    session.todos = todos
+    session.todos = normalized or []
     lines = ["\n\033[33m## Current Tasks\033[0m"]
     for todo in session.todos:
         icon = {

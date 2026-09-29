@@ -5,15 +5,14 @@ from __future__ import annotations
 import logging
 import stat
 from logging.handlers import RotatingFileHandler
-from pathlib import Path
 
 import pytest
 
 from agent_app.config import AppConfig
 from agent_app.logging_setup import (
     get_logger,
-    resolve_level,
     reset_logging,
+    resolve_level,
     setup_logging,
 )
 from agent_app.tools.hooks import HookRegistry, make_log_hook
@@ -156,6 +155,7 @@ def test_agent_loop_logs_turn_lifecycle(tmp_path, monkeypatch, caplog):
             )
 
     # 与 test_agent_app_loop 相同的最小 runtime 组装
+    from agent_app.core.prompt import PromptBuilder
     from agent_app.features.background import BackgroundState
     from agent_app.features.mcp import MCPState
     from agent_app.features.memory import MemoryStore
@@ -166,9 +166,7 @@ def test_agent_loop_logs_turn_lifecycle(tmp_path, monkeypatch, caplog):
     from agent_app.features.teams.protocol import ProtocolStore
     from agent_app.features.teams.teammates import TeamState
     from agent_app.features.worktrees import WorktreeState
-    from agent_app.tools.hooks import HookRegistry
     from agent_app.tools.registry import ToolRegistry
-    from agent_app.core.prompt import PromptBuilder
 
     runtime = RuntimeContext(
         config=config,

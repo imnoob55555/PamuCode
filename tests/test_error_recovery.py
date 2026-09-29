@@ -5,6 +5,8 @@ import pytest
 from agent_app import bootstrap
 from agent_app.config import AppConfig
 from agent_app.core import recovery
+
+
 class FakeSDKClient:
     def __init__(self):
         self.messages = types.SimpleNamespace(create=None, stream=None)

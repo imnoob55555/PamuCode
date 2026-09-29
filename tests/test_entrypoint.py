@@ -14,4 +14,4 @@ def test_module_entrypoint_delegates_to_cli(monkeypatch):
 
 
 def test_install_root_is_the_standalone_project_root():
-    assert INSTALL_ROOT == Path(__file__).resolve().parents[1]
+    assert Path(__file__).resolve().parents[1] == INSTALL_ROOT

@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import types
+from typing import cast
 
 import pytest
 
 from agent_app.adapters import providers
 from agent_app.config import AppConfig
-from agent_app.runtime import ModelRouter
+from agent_app.runtime import ModelRouter, RuntimeContext
 
 
 class FakeSDKClient:
@@ -94,7 +95,7 @@ def test_apply_provider_swaps_adapter_model_and_runtime_llm(tmp_path, monkeypatc
     )
 
     adapter = providers.apply_provider(
-        runtime,
+        cast(RuntimeContext, runtime),
         _spec("moonshot"),
         "sk-ms",
         "kimi-custom",
@@ -126,9 +127,9 @@ def test_bootstrap_uses_logged_in_provider_on_default_runtime(
             self.messages = FakeSDKClient(**kwargs).messages
 
     fake_anthropic = types.ModuleType("anthropic")
-    fake_anthropic.Anthropic = FakeAnthropic
+    vars(fake_anthropic)["Anthropic"] = FakeAnthropic
     fake_dotenv = types.ModuleType("dotenv")
-    fake_dotenv.dotenv_values = lambda _path: {}
+    vars(fake_dotenv)["dotenv_values"] = lambda _path: {}
     import sys
 
     monkeypatch.setitem(sys.modules, "anthropic", fake_anthropic)
@@ -150,6 +151,7 @@ def test_bootstrap_uses_logged_in_provider_on_default_runtime(
             "api_key": "sk-ds",
         }
     ]
+    assert runtime.model is not None
     assert runtime.model.snapshot()[:2] == ("deepseek", "deepseek-reasoner")
     assert runtime.config.primary_model == "deepseek-reasoner"
 
@@ -166,9 +168,9 @@ def test_bootstrap_provider_env_key_overrides_stored_key(tmp_path, monkeypatch):
             self.messages = FakeSDKClient(**kwargs).messages
 
     fake_anthropic = types.ModuleType("anthropic")
-    fake_anthropic.Anthropic = FakeAnthropic
+    vars(fake_anthropic)["Anthropic"] = FakeAnthropic
     fake_dotenv = types.ModuleType("dotenv")
-    fake_dotenv.dotenv_values = lambda _path: {}
+    vars(fake_dotenv)["dotenv_values"] = lambda _path: {}
     import sys
 
     monkeypatch.setitem(sys.modules, "anthropic", fake_anthropic)
@@ -205,9 +207,9 @@ def test_bootstrap_falls_back_to_anthropic_env_mode_without_login(
             self.messages = FakeSDKClient(**kwargs).messages
 
     fake_anthropic = types.ModuleType("anthropic")
-    fake_anthropic.Anthropic = FakeAnthropic
+    vars(fake_anthropic)["Anthropic"] = FakeAnthropic
     fake_dotenv = types.ModuleType("dotenv")
-    fake_dotenv.dotenv_values = lambda _path: {}
+    vars(fake_dotenv)["dotenv_values"] = lambda _path: {}
     import sys
 
     monkeypatch.setitem(sys.modules, "anthropic", fake_anthropic)
@@ -226,4 +228,5 @@ def test_bootstrap_falls_back_to_anthropic_env_mode_without_login(
 
     assert client_calls == [{"api_key": "env-key"}]
     assert runtime.config.primary_model == "claude-test"
+    assert runtime.model is not None
     assert runtime.model.snapshot()[:2] == ("anthropic", "claude-test")

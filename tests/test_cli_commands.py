@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import threading
 import types
-from pathlib import Path
+
 import pytest
 
 import agent_app.cli as cli
@@ -16,7 +16,7 @@ from agent_app.runtime import ModelRouter
 @pytest.fixture(autouse=True)
 def isolated_provider_settings(monkeypatch):
     import agent_app.bootstrap as bootstrap
-    monkeypatch.setattr(bootstrap, "load_runtime_environment", lambda: {})
+    monkeypatch.setattr(bootstrap, "load_runtime_environment", dict)
 
 
 class FakeClient:
@@ -373,7 +373,7 @@ def test_slash_unknown_command_hints_help(capsys):
 # ---------------------------------------------------------------------------
 
 
-def test_main_dispatches_commands_without_entering_repl(monkeypatch):
+def test_main_dispatches_commands_without_entering_repl(monkeypatch, tmp_path):
     def unexpected_factory():
         raise AssertionError("REPL must not start for account commands")
 
@@ -383,7 +383,7 @@ def test_main_dispatches_commands_without_entering_repl(monkeypatch):
     code = main(
         runtime_factory=unexpected_factory,
         argv=["status"],
-        credentials_path=Path("/tmp/pamu-missing-creds.json"),
+        credentials_path=tmp_path / "pamu-missing-creds.json",
         verify=ok_verify,
         client_factory=None,
     )
@@ -410,11 +410,11 @@ def test_main_routes_slash_commands_in_repl(monkeypatch, tmp_path):
     assert runtime.model.snapshot()[1] == "switched-model"
 
 
-def test_run_command_rejects_unknown_command():
+def test_run_command_rejects_unknown_command(tmp_path):
     assert (
         run_command(
             ["frobnicate"],
-            credentials_path=Path("/tmp/none.json"),
+            credentials_path=tmp_path / "none.json",
             verify=ok_verify,
             client_factory=None,
             input_fn=input,
@@ -422,3 +422,60 @@ def test_run_command_rejects_unknown_command():
         )
         == 2
     )
+
+
+def test_slash_thinking_switches_level_and_persists(tmp_path, capsys):
+    path = tmp_path / "credentials.json"
+    store_login("anthropic", "sk-ant", "claude-test", path)
+    runtime = _runtime()
+    runtime.model.switch("anthropic", "claude-test", None, object())
+
+    handle_slash_command(runtime, "/thinking high", credentials_path=path)
+
+    assert runtime.model.thinking_snapshot() == "high"
+    assert load_credentials(path)["providers"]["anthropic"]["thinking"] == "high"
+    assert "high" in capsys.readouterr().out
+
+
+def test_slash_thinking_rejects_unknown_level(tmp_path, capsys):
+    runtime = _runtime()
+
+    handle_slash_command(
+        runtime, "/thinking turbo", credentials_path=tmp_path / "creds.json"
+    )
+
+    assert runtime.model.thinking_snapshot() == "off"
+    assert "未知思考程度" in capsys.readouterr().out
+
+
+def test_slash_thinking_without_argument_uses_menu(tmp_path):
+    path = tmp_path / "credentials.json"
+    store_login("anthropic", "sk-ant", "claude-test", path)
+    runtime = _runtime()
+    runtime.model.switch("anthropic", "claude-test", None, object())
+    runtime.model.switch_thinking("low")
+    seen = []
+
+    def choose(title, choices, *, initial=None):
+        seen.append((title, [key for key, _ in choices], initial))
+        return "medium"
+
+    handle_slash_command(
+        runtime,
+        "/thinking",
+        credentials_path=path,
+        ui=types.SimpleNamespace(choose=choose),
+    )
+
+    assert runtime.model.thinking_snapshot() == "medium"
+    assert load_credentials(path)["providers"]["anthropic"]["thinking"] == "medium"
+    assert seen == [("思考程度", ["off", "minimal", "low", "medium", "high"], "low")]
+
+
+def test_slash_status_shows_thinking_level(capsys):
+    runtime = _runtime()
+    runtime.model.switch_thinking("high")
+
+    handle_slash_command(runtime, "/status")
+
+    assert "思考程度：high" in capsys.readouterr().out

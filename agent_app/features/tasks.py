@@ -6,15 +6,14 @@ from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-
 TASK_ID_PATTERN = re.compile(r"^task_[A-Za-z0-9_-]+$")
 
 
 TASK_TOOL_SCHEMAS = [
-    {"name": "create_task", "description": "Create a new task with optinal blockedBy dependencies.",
+    {"name": "create_task", "description": "Create a new task with optional blockedBy dependencies.",
      "input_schema": {"type": "object", "properties": {"subject": {"type": "string"}, "description": {"type": "string"}, "blockedBy": {"type": "array", "items": {"type": "string"}}}, "required": ["subject"]}},
     {"name": "list_tasks",
-     "description": "List all tasks with status, owner, and denpendencies.",
+     "description": "List all tasks with status, owner, and dependencies.",
      "input_schema": {"type": "object", "properties": {},
                       "required": []}},
     {"name": "get_task",
@@ -164,7 +163,10 @@ def save_task(store: TaskStore, task: Task):
 
 
 def load_task(store: TaskStore, task_id: str) -> Task:
-    data = json.loads(task_path(store, task_id).read_text(encoding="utf-8"))
+    try:
+        data = json.loads(task_path(store, task_id).read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        raise
     return Task(**data)
 
 

@@ -78,12 +78,17 @@ def _make_runtime(tmp_path, monkeypatch, adapter):
     )
 
 
+def _router(runtime):
+    assert runtime.model is not None
+    return runtime.model
+
+
 def test_router_defaults_are_derived_from_config(tmp_path, monkeypatch):
     adapter = RecordingAdapter()
     runtime = _make_runtime(tmp_path, monkeypatch, adapter)
 
-    assert runtime.model.snapshot() == ("anthropic", "test-model", None)
-    assert runtime.model.llm is adapter
+    assert _router(runtime).snapshot() == ("anthropic", "test-model", None)
+    assert _router(runtime).llm is adapter
 
 
 def test_model_switch_takes_effect_on_next_turn(tmp_path, monkeypatch):
@@ -92,7 +97,7 @@ def test_model_switch_takes_effect_on_next_turn(tmp_path, monkeypatch):
 
     runtime.session.history.append({"role": "user", "content": "one"})
     run_agent_loop(runtime)
-    runtime.model.switch_model("deepseek-chat")
+    _router(runtime).switch_model("deepseek-chat")
     runtime.session.history.append({"role": "user", "content": "two"})
     run_agent_loop(runtime)
 
@@ -101,7 +106,7 @@ def test_model_switch_takes_effect_on_next_turn(tmp_path, monkeypatch):
     ]
     assert streaming_models[0] == "test-model"
     assert streaming_models[-1] == "deepseek-chat"
-    assert runtime.model.snapshot()[1] == "deepseek-chat"
+    assert _router(runtime).snapshot()[1] == "deepseek-chat"
 
 
 def test_provider_switch_keeps_router_and_llm_consistent(tmp_path, monkeypatch):
@@ -127,12 +132,12 @@ def test_provider_switch_keeps_router_and_llm_consistent(tmp_path, monkeypatch):
     finally:
         providers.build_client = original_build
     # 用可观测的假 adapter 替换，验证 router/llm 同步语义与下一轮请求路由
-    runtime.model.switch("deepseek", "deepseek-chat", None, new_adapter)
+    _router(runtime).switch("deepseek", "deepseek-chat", None, new_adapter)
     runtime.llm = new_adapter
 
     assert runtime.llm is new_adapter
-    assert runtime.model.llm is new_adapter
-    assert runtime.model.snapshot()[:2] == ("deepseek", "deepseek-chat")
+    assert _router(runtime).llm is new_adapter
+    assert _router(runtime).snapshot()[:2] == ("deepseek", "deepseek-chat")
 
     runtime.session.history.append({"role": "user", "content": "hi"})
     run_agent_loop(runtime)
@@ -165,3 +170,62 @@ def test_router_switch_is_atomic_under_contention():
         index = primary[1:]
         assert fallback == f"f{index}"
         assert provider == ("a" if int(index) % 2 else "b")
+
+
+def test_thinking_level_switches_and_normalizes():
+    router = ModelRouter(provider="a", primary_model="m1")
+
+    assert router.thinking_snapshot() == "off"
+    router.switch_thinking(" High ")
+    assert router.thinking_snapshot() == "high"
+    router.switch_thinking("turbo")
+    assert router.thinking_snapshot() == "off"
+    router.switch_thinking("medium")
+    router.switch("b", "m2", None, object())
+    assert router.thinking_snapshot() == "medium"  # None keeps the level
+    router.switch("b", "m2", None, object(), thinking_level="bogus")
+    assert router.thinking_snapshot() == "off"
+
+
+def test_run_agent_loop_sends_thinking_payload_and_extra_tokens(tmp_path, monkeypatch):
+    adapter = RecordingAdapter()
+    runtime = _make_runtime(tmp_path, monkeypatch, adapter)
+    _router(runtime).switch_thinking("medium")
+    runtime.session.history.append({"role": "user", "content": "hi"})
+
+    run_agent_loop(runtime)
+
+    request = adapter.requests[0]
+    assert request["thinking"] == {"type": "enabled", "budget_tokens": 8192}
+    assert request["max_tokens"] == runtime.config.default_max_tokens + 8192
+
+
+def test_run_agent_loop_strips_thinking_history_when_disabled(tmp_path, monkeypatch):
+    adapter = RecordingAdapter()
+    runtime = _make_runtime(tmp_path, monkeypatch, adapter)
+    runtime.session.history.extend(
+        [
+            {"role": "user", "content": "hi"},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "thinking", "thinking": "..."},
+                    {"type": "text", "text": "hello"},
+                ],
+            },
+            {"role": "user", "content": "again"},
+        ]
+    )
+
+    run_agent_loop(runtime)
+
+    request = adapter.requests[0]
+    assert request["thinking"] is None
+    sent_types = [
+        block["type"]
+        for message in request["messages"]
+        if isinstance(message.get("content"), list)
+        for block in message["content"]
+        if isinstance(block, dict)
+    ]
+    assert "thinking" not in sent_types

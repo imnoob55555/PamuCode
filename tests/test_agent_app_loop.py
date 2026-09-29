@@ -88,7 +88,7 @@ def runtime_factory(tmp_path, monkeypatch):
     config.mailbox_dir.mkdir(parents=True)
     config.worktrees_dir.mkdir(parents=True)
 
-    def make_runtime(responses):
+    def make_runtime(responses) -> RuntimeContext:
         return RuntimeContext(
             config=config,
             llm=FakeAdapter(responses),

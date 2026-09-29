@@ -150,7 +150,8 @@ Inside the REPL:
 
 Slash commands are local controls. They do not enter the model context or the
 up/down input history. Successful command output remains visible in the
-terminal; cancelled or unknown commands use temporary feedback. Empty input is
+terminal; cancelled or unsuccessful commands show temporary feedback above the
+input area that disappears automatically after three seconds. Empty input is
 ignored, `q` and `exit` are ordinary prompts, and pressing `Ctrl+C` twice within
 one second shuts down the session.
 

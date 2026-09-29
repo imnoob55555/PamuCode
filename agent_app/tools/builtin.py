@@ -10,7 +10,6 @@ import glob
 import subprocess
 from pathlib import Path
 
-
 BUILTIN_TOOL_SCHEMAS = [
     {"name": "bash",
      "description": "Run a shell command.",
@@ -73,9 +72,9 @@ def run_bash(
 ) -> str:
     try:
         base = resolve_tool_cwd(workdir, cwd)
-        result = subprocess.run(
+        result = subprocess.run(  # noqa: S602 - the bash tool runs shell commands by design
             command,
-            shell=True,
+            shell=True,  # nosemgrep: python.lang.security.audit.subprocess-shell-true.subprocess-shell-true
             cwd=base,
             capture_output=True,
             text=True,
