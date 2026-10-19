@@ -617,9 +617,11 @@ def main(
             notify_or_print(ui, LOGIN_HINT)
         while True:
             if ui is not None and runtime is not None:
+                _provider, ui.model_name = runtime.model.snapshot()[:2]
                 ui.thinking_level = runtime.model.thinking_snapshot()
             try:
-                query = ui.prompt() if ui is not None else input("\033[36m>> \033[0m")
+                # Non-interactive fallback reads a line without a prompt marker.
+                query = ui.prompt() if ui is not None else input("")
             except EOFError:
                 break
             except QuitRequested:
@@ -660,7 +662,7 @@ def main(
                 notify_or_print(ui, LOGIN_HINT)
                 continue
             if ui is not None:
-                print(f">> {query}")
+                print(query)
             runtime.hooks.trigger("UserPromptSubmit", query)
             with runtime.agent_lock:
                 run_turn(runtime, query)

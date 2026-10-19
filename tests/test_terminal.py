@@ -432,3 +432,85 @@ def test_choice_honours_initial_selection():
             )
             == "second"
         )
+
+
+@pytest.mark.parametrize(
+    "model,level,expected",
+    [
+        ("claude-sonnet-4-6", "high", "claude-sonnet-4-6 • high"),
+        ("claude-sonnet-4-6", "medium", "claude-sonnet-4-6 • medium"),
+        ("claude-sonnet-4-6", "off", "claude-sonnet-4-6 • thinking off"),
+        ("claude-sonnet-4-6", "bogus", "claude-sonnet-4-6 • thinking off"),
+        ("", "high", ""),
+    ],
+)
+def test_model_status_matches_pi_footer(model, level, expected):
+    assert terminal.model_status(model, level) == expected
+
+
+def test_prompt_puts_model_status_below_the_bottom_rule(monkeypatch):
+    from prompt_toolkit.application import Application
+    from prompt_toolkit.layout.containers import WindowAlign
+    from prompt_toolkit.layout.controls import DummyControl
+
+    original_run = Application.run
+    captured = []
+    with create_pipe_input() as pipe:
+        ui = terminal.TerminalUI(input=pipe, output=DummyOutput())
+        ui.model_name = "claude-sonnet-4-6"
+        ui.thinking_level = "low"
+
+        def run(app):
+            def after_render(_):
+                if app.is_done or captured:
+                    return
+                windows = app.layout.visible_windows
+                statuses = [w for w in windows if w.style == "class:muted"]
+                assert len(statuses) == 1
+                status = statuses[0]
+                assert status.align == WindowAlign.RIGHT
+                assert status.content.text() == "claude-sonnet-4-6 • low"
+                rows = [w for w in windows if not isinstance(w.content, DummyControl)]
+                assert rows[-1] is status
+                captured.append(status)
+                pipe.send_text("hello\r")
+
+            app.after_render += after_render
+            return original_run(app)
+
+        monkeypatch.setattr(Application, "run", run)
+        assert ui.prompt() == "hello"
+    assert captured
+
+
+def _plain_rows(rendered: str) -> list[str]:
+    """Rebuild logical rows from PlainTextOutput's carriage-return fragments."""
+    rows = []
+    for chunk in rendered.split("\r\n"):
+        parts = chunk.split("\r")
+        rows.append(parts[0] + "".join(part.lstrip(" ") for part in parts[1:]))
+    return rows
+
+
+def test_prompt_flushes_model_status_to_the_right_edge():
+    import io
+
+    from prompt_toolkit.output.plain_text import PlainTextOutput
+
+    rendered = io.StringIO()
+    output = PlainTextOutput(rendered)
+    with create_pipe_input() as pipe:
+        ui = terminal.TerminalUI(input=pipe, output=output)
+        ui.model_name = "claude-sonnet-4-6"
+        ui.thinking_level = "high"
+        pipe.send_text("hello\r")
+        assert ui.prompt() == "hello"
+    rows = _plain_rows(rendered.getvalue())
+    status = next(row for row in rows if "•" in row)
+    assert status.strip() == "claude-sonnet-4-6 • high"
+    assert len(status) == output.get_size().columns
+    assert any(
+        rows[index + 1] == status
+        for index, row in enumerate(rows[:-1])
+        if row and set(row.strip()) == {"─"}
+    )

@@ -13,7 +13,13 @@ from prompt_toolkit.data_structures import Point
 from prompt_toolkit.filters import Condition
 from prompt_toolkit.history import InMemoryHistory
 from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.layout import ConditionalContainer, HSplit, Layout, Window
+from prompt_toolkit.layout import (
+    ConditionalContainer,
+    HSplit,
+    Layout,
+    Window,
+    WindowAlign,
+)
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.processors import BeforeInput, PasswordProcessor, Processor
@@ -30,18 +36,30 @@ from .file_mentions import (
     workspace_entries,
 )
 from .slash_commands import match_commands
-from .thinking import THINKING_COLORS, style_class
+from .thinking import (
+    DEFAULT_THINKING_LEVEL,
+    THINKING_COLORS,
+    normalize_level,
+    style_class,
+)
 
 STYLE = Style.from_dict(
     {
         "selected": "bg:#164e63 #ffffff bold",
         "muted": "#888888",
-        "prompt": "#00aaaa",
         "error": "#ff6666",
         **{f"thinking-{level}": color for level, color in THINKING_COLORS.items()},
     }
 )
 NOTICE_SECONDS = 3.0
+
+
+def model_status(model: str, level: str) -> str:
+    """Footer label under the prompt box, formatted like pi's status line."""
+    if not model:
+        return ""
+    level = normalize_level(level) or DEFAULT_THINKING_LEVEL
+    return f"{model} • {'thinking off' if level == 'off' else level}"
 
 
 class TerminalUI:
@@ -50,6 +68,7 @@ class TerminalUI:
         self.output = output
         self.history = InMemoryHistory()
         self.exit_gesture = exit_gesture or ExitGesture()
+        self.model_name = ""
         self.thinking_level = "off"
         self.workdir = Path(workdir) if workdir is not None else None
         self._entry_index = None
@@ -60,6 +79,10 @@ class TerminalUI:
         # Standalone `pamu login` keeps its historical one-shot Ctrl+C.
         # The REPL enables the shared two-press gesture before prompting.
         self.repl_mode = False
+
+    def status_text(self) -> str:
+        """Right-aligned model and thinking level under the prompt box."""
+        return model_status(self.model_name, self.thinking_level)
 
     def notify(self, text):
         self.notice = text
@@ -431,9 +454,7 @@ class TerminalUI:
             result.append(("class:muted", "  ↑↓ 选择 · Enter 执行选中命令 · Tab 补全"))
             return result
 
-        control = BufferControl(
-            buffer, input_processors=[BeforeInput([("class:prompt", ">> ")])]
-        )
+        control = BufferControl(buffer)
         border_style = style_class(self.thinking_level)
         return self._run(
             HSplit(
@@ -441,6 +462,15 @@ class TerminalUI:
                     Window(char="─", height=1, style=border_style),
                     Window(control, height=1),
                     Window(char="─", height=1, style=border_style),
+                    ConditionalContainer(
+                        Window(
+                            FormattedTextControl(self.status_text),
+                            height=1,
+                            align=WindowAlign.RIGHT,
+                            style="class:muted",
+                        ),
+                        Condition(lambda: bool(self.model_name)),
+                    ),
                     ConditionalContainer(
                         Window(
                             FormattedTextControl(cast(Any, hints)),

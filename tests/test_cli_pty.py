@@ -109,7 +109,8 @@ def test_cli_fake_stream_spinner_clears_before_text_and_leaves_no_worker(
     output = bytearray()
     deadline = time.monotonic() + 10.0
     try:
-        _read_until(master_fd, output, b">> ", deadline)
+        # The prompt box top rule marks the frame that accepts input.
+        _read_until(master_fd, output, "─".encode(), deadline)
         os.write(master_fd, b"hello\n")
         _read_until(master_fd, output, b"Working", deadline)
         os.write(release_write, b"1")
@@ -168,7 +169,7 @@ main(argv=[], credentials_path=Path(sys.argv[1]))
         _read_until(master, output, marker.encode(), deadline, start)
     try:
         wait("请输入 /login")
-        wait(">> ")
+        wait("─")
         assert "选择 Provider".encode() not in output
         os.write(master, b"/")
         wait("配置 API Key 并选择模型")
