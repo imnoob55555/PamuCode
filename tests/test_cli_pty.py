@@ -209,6 +209,8 @@ main(argv=[], credentials_path=Path(sys.argv[1]))
         os.write(master, b"/status\r")
         wait("模型：claude-sonnet-4-6", start)
         os.write(master, b"/quit\r")
+        # Drain redraw/shutdown output so the child cannot block on a full PTY.
+        wait("Shutting down PamuCode…", start)
         process.wait(timeout=5)
         assert process.returncode == 0
         assert b"fake-secret-123" not in output
