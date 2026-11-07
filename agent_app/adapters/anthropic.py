@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..core.recovery import PartialStreamError
+from .common import anthropic_history, scope_anthropic
 
 
 class _NullProgress:
@@ -29,6 +30,7 @@ def _null_progress(_label: str) -> AbstractContextManager:
 class AnthropicAdapter:
     client: Any
     progress: Callable[[str], AbstractContextManager] = _null_progress
+    origin: str = ""
 
     def create(
         self,
@@ -42,7 +44,7 @@ class AnthropicAdapter:
     ):
         request = {
             "model": model,
-            "messages": messages,
+            "messages": anthropic_history(messages, origin=self.origin, model=model),
             "max_tokens": max_tokens,
         }
         if system is not None:
@@ -51,7 +53,7 @@ class AnthropicAdapter:
             request["tools"] = tools
         if thinking is not None:
             request["thinking"] = thinking
-        return self.client.messages.create(**request)
+        return scope_anthropic(self.client.messages.create(**request), self.origin, model)
 
     def create_streaming(
         self,
@@ -66,7 +68,7 @@ class AnthropicAdapter:
         request = {
             "model": model,
             "system": system,
-            "messages": messages,
+            "messages": anthropic_history(messages, origin=self.origin, model=model),
             "tools": tools,
             "max_tokens": max_tokens,
         }
@@ -85,7 +87,7 @@ class AnthropicAdapter:
                             progress.stop()
                         chunks.append(chunk)
                         print(chunk, end="", flush=True)
-                    return stream.get_final_message()
+                    return scope_anthropic(stream.get_final_message(), self.origin, model)
         except Exception as exc:
             if chunks:
                 raise PartialStreamError("".join(chunks), exc) from exc
