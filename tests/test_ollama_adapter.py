@@ -101,3 +101,14 @@ def test_length_is_mapped_to_max_tokens(streaming):
     value = answer(reason='length')
     adapter, _ = make([ndjson(value) if streaming else value])
     assert request(adapter,streaming=streaming).stop_reason == 'max_tokens'
+
+
+@pytest.mark.parametrize('streaming', [False, True])
+@pytest.mark.parametrize('arguments', ['{', {'path': 'a'}])
+def test_length_discards_unfinished_calls_and_native_replay(streaming, arguments):
+    value = answer('partial', calls=[call(arguments)], thinking='private', reason='length')
+    adapter, _ = make([ndjson(value) if streaming else value])
+    result = request(adapter, streaming=streaming)
+    assert result.stop_reason == 'max_tokens'
+    assert [b.type for b in result.content] == ['text']
+    assert result.content[0].replay is None

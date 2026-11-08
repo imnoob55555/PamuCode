@@ -62,6 +62,18 @@ def test_cross_protocol_conversion_omits_native_reasoning_and_metadata():
         assert 'c1' in str(wire)
 
 
+def test_unscoped_anthropic_signatures_are_not_replayed():
+    from agent_app.adapters.common import anthropic_history
+    history = [{'role': 'assistant', 'content': [
+        {'type': 'thinking', 'thinking': 'private', 'signature': 'old'},
+        {'type': 'redacted_thinking', 'data': 'old'},
+        {'type': 'text', 'text': 'visible'},
+    ]}]
+    assert anthropic_history(history, origin='other', model='new') == [
+        {'role': 'assistant', 'content': [{'type': 'text', 'text': 'visible'}]},
+    ]
+
+
 @pytest.mark.parametrize('protocol', ['responses','chat','ollama'])
 def test_stream_progress_stops_before_print_and_exits_on_completion(protocol,monkeypatch):
     from tests.test_agent_app_anthropic_adapter import RecordingProgress

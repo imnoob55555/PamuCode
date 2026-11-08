@@ -16,7 +16,7 @@ class SlashCommand:
 
 
 SLASH_COMMANDS = (
-    SlashCommand("/login", "", "配置 API Key 并选择模型"),
+    SlashCommand("/login", "", "配置模型服务与认证"),
     SlashCommand("/status", "", "查看供应商、模型及登录状态"),
     SlashCommand("/model", "", "选择或切换当前模型"),
     SlashCommand("/provider", "", "选择并切换供应商"),

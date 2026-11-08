@@ -41,6 +41,22 @@ class ModelResponse:
     stop_reason: str
 
 
+class ProtocolResponseError(ValueError):
+    """Structured error delivered inside a successful HTTP/SSE response."""
+
+    def __init__(self, error, message):
+        code = value(error, 'code') or value(error, 'type')
+        self.code = code if isinstance(code, str) else ''
+        self.status_code = {
+            'rate_limit_exceeded': 429, 'overloaded_error': 529,
+            'invalid_api_key': 401, 'authentication_error': 401,
+            'server_error': 500,
+        }.get(self.code)
+        # Keep only a bounded machine-readable code, not raw service details.
+        safe_code = self.code if self.code.replace('_', '').isalnum() and len(self.code) <= 80 else 'unknown'
+        super().__init__(f'{message}（{safe_code}）')
+
+
 def value(obj, key, default=None):
     return obj.get(key, default) if isinstance(obj, dict) else getattr(obj, key, default)
 
@@ -227,7 +243,7 @@ def anthropic_history(messages, *, origin='', model=''):
             kind = value(block, 'type')
             if kind in ('thinking', 'redacted_thinking'):
                 scope = value(block, '_pamu_scope')
-                if scope is None or tuple(scope) == ('anthropic_messages', origin, model):
+                if isinstance(scope, (list, tuple)) and tuple(scope) == ('anthropic_messages', origin, model):
                     blocks.append(plain(block))
             else:
                 blocks.extend(generic_blocks([block]))

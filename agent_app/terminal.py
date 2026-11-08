@@ -245,7 +245,7 @@ class TerminalUI:
         def accept(event):
             value = buffer.text.strip()
             if not value:
-                self.notify("请输入 API Key。" if password else "请输入模型 ID。")
+                self.notify("请输入 API Key。" if password else "请输入内容。")
                 return
             try:
                 if on_save:
@@ -277,7 +277,7 @@ class TerminalUI:
             event.app.exit(exception=KeyboardInterrupt())
 
         processors: list[Processor] = [PasswordProcessor()] if password else []
-        processors.append(BeforeInput("API Key: " if password else "Model ID: "))
+        processors.append(BeforeInput("API Key: " if password else "输入: "))
         control = BufferControl(buffer, input_processors=processors)
         root = HSplit(
             [

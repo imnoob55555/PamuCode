@@ -34,8 +34,8 @@ def _is_tool_result_message(msg: dict):
     content = msg.get("content")
     if not isinstance(content, list):
         return False
-    return all(
-        isinstance(block, dict) and block.get("type") == "tool_result"
+    return any(
+        _block_type(block) == "tool_result"
         for block in content
     )
 

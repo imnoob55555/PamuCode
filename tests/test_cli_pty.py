@@ -172,7 +172,7 @@ main(argv=[], credentials_path=Path(sys.argv[1]))
         wait("─")
         assert "选择 Provider".encode() not in output
         os.write(master, b"/")
-        wait("配置 API Key 并选择模型")
+        wait("配置模型服务与认证")
         wait("显示命令帮助")
         # /login is already highlighted: Enter must execute it immediately.
         os.write(master, b"\r")

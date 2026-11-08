@@ -27,6 +27,9 @@ class ModelRouter:
     llm: Any = None
     thinking_level: str = "off"
     lock: threading.Lock = field(default_factory=threading.Lock)
+    protocol: str = "anthropic_messages"
+    base_url: str = ""
+    model_source: str = "运行时配置"
 
     def snapshot(self) -> tuple[str, str, str | None]:
         """Return (provider, primary_model, fallback_model) atomically."""
@@ -38,6 +41,11 @@ class ModelRouter:
         with self.lock:
             return self.thinking_level
 
+    def request_snapshot(self) -> tuple[str, str, str | None, Any]:
+        """Keep a delegated conversation's model and adapter from one selection."""
+        with self.lock:
+            return self.provider, self.primary_model, self.fallback_model, self.llm
+
     def switch_thinking(self, level: str) -> None:
         """Change only the thinking level for the current provider."""
         with self.lock:
@@ -47,6 +55,7 @@ class ModelRouter:
         """Keep the provider and adapter, change only the model ids."""
         with self.lock:
             self.primary_model = model
+            self.model_source = "当前会话选择"
 
     def switch(
         self,
@@ -55,6 +64,10 @@ class ModelRouter:
         fallback_model: str | None = None,
         llm: object | None = None,
         thinking_level: str | None = None,
+        *,
+        protocol: str | None = None,
+        base_url: str | None = None,
+        model_source: str | None = None,
     ) -> None:
         """Switch provider and model together, optionally the adapter."""
         with self.lock:
@@ -63,6 +76,12 @@ class ModelRouter:
             self.fallback_model = fallback_model
             if llm is not None:
                 self.llm = llm
+            if protocol is not None:
+                self.protocol = protocol
+            if base_url is not None:
+                self.base_url = base_url
+            if model_source is not None:
+                self.model_source = model_source
             if thinking_level is not None:
                 self.thinking_level = (
                     normalize_level(thinking_level) or DEFAULT_THINKING_LEVEL

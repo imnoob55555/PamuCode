@@ -216,9 +216,11 @@ def spawn_teammate_thread(
                         sleep(plan_poll_interval)
                         continue
                     try:
-                        response = llm(system=system, messages=messages[-20:], tools=TEAM_TOOLS, max_tokens=max_tokens)
+                        from ...core.compaction import snip_compact
+                        response = llm(system=system, messages=list(snip_compact(messages, max_messages=20)), tools=TEAM_TOOLS, max_tokens=max_tokens)
                     except Exception as exc:
-                        summary = f"Teammate error: {type(exc).__name__}: {exc}"
+                        from ...core.recovery import describe_model_error
+                        summary = f"Teammate error: {type(exc).__name__}: {describe_model_error(exc)}"
                         lifecycle_done = True
                         break
                     messages.append({"role": "assistant", "content": response.content})
@@ -280,7 +282,8 @@ def spawn_teammate_thread(
                     continue
                 break
         except Exception as exc:
-            summary = f"Teammate error: {type(exc).__name__}: {exc}"
+            from ...core.recovery import describe_model_error
+            summary = f"Teammate error: {type(exc).__name__}: {describe_model_error(exc)}"
         finally:
             try:
                 bus.send(name, "lead", summary, "result")

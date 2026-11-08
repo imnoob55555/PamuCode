@@ -6,7 +6,7 @@ from typing import Any
 from .common import (
     TextBlock, arguments, attach_replay, check_thinking, finish, function_tools,
     generic_blocks, native_replay, null_progress, output_text, tool_block,
-    value, visible_stream,
+    value, visible_stream, ProtocolResponseError,
 )
 
 
@@ -15,6 +15,7 @@ class OpenAIResponsesAdapter:
     client: Any
     progress: Any = null_progress
     origin: str = ''
+    omit_auth: bool = False
 
     def _request(self, system, messages, model, max_tokens, tools, thinking):
         check_thinking(thinking)
@@ -45,11 +46,14 @@ class OpenAIResponsesAdapter:
             request['instructions'] = output_text(system)
         if tools is not None:
             request['tools'] = function_tools(tools, responses=True)
+        if self.omit_auth:
+            from openai import omit
+            request['extra_headers'] = {'Authorization': omit}
         return request
 
     def _response(self, response, model):
         if value(response, 'error'):
-            raise ValueError('Responses 请求返回错误')
+            raise ProtocolResponseError(value(response, 'error'), 'Responses 请求返回错误')
         status = value(response, 'status')
         reason = 'end_turn'
         if status == 'incomplete' and value(value(response, 'incomplete_details'), 'reason') == 'max_output_tokens':
@@ -151,7 +155,8 @@ class OpenAIResponsesAdapter:
                 for event in stream:
                     kind = value(event, 'type')
                     if kind in ('error', 'response.failed', 'response.error', 'response.cancelled'):
-                        raise ValueError('Responses 流式请求失败')
+                        error = value(value(event, 'response'), 'error') or value(event, 'error') or event
+                        raise ProtocolResponseError(error, 'Responses 流式请求失败')
                     if terminal is not None:
                         raise ValueError('Responses 结束事件后仍有内容')
                     if kind == 'response.output_text.delta':

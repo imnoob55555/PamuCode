@@ -52,6 +52,41 @@ def test_bus_protocol_and_team_states_are_isolated(bus):
     assert teammates.TeamState().active == {}
 
 
+def test_teammate_history_window_keeps_tool_results_with_their_calls(bus, tmp_path):
+    from agent_app.adapters.common import ToolUseBlock, chat_history
+
+    class ImmediateThread:
+        def __init__(self, target, **kwargs): self.target = target
+        def start(self): self.target()
+
+    idle_calls = []
+    requests = []
+    def idle(name, messages, *args):
+        if idle_calls:
+            return 'timeout'
+        idle_calls.append(True)
+        messages.extend([
+            {'role': 'assistant', 'content': [ToolUseBlock('previous', 'read_file', {'path': 'a'})]},
+            {'role': 'user', 'content': [{'type': 'tool_result', 'tool_use_id': 'previous', 'content': 'contents'}]},
+            *[{'role': 'user', 'content': f'update {i}'} for i in range(19)],
+        ])
+        return 'work'
+
+    def llm(**kwargs):
+        requests.append(kwargs)
+        chat_history(kwargs['system'], kwargs['messages'])
+        return text_response('done')
+
+    teammates.spawn_teammate_thread(
+        teammates.TeamState(), bus, llm, name='worker', role='reviewer', prompt='inspect',
+        workdir=tmp_path, handlers={}, hooks=HookRegistry(), validate_name=lambda *a, **kw: None,
+        guarded_tools=set(), guarded_tool=lambda *a: ('', False), idle=idle, max_tokens=100,
+        thread_factory=ImmediateThread,
+    )
+    assert len(requests) == 2
+    assert bus.read_inbox('lead')[-1]['content'] == 'done'
+
+
 def test_protocol_routes_only_matching_response_and_permission(bus, tmp_path):
     store = ProtocolStore()
     store.pending["shutdown"] = ProtocolState("shutdown", "shutdown", "lead", "worker", "pending", "")

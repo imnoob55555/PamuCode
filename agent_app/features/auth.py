@@ -76,9 +76,16 @@ def configured_provider(data: dict[str, Any]) -> str | None:
     active = data.get("active")
     names = ([active] if isinstance(active, str) else []) + list(PROVIDERS)
     for name in names:
-        key = get_login(data, name).get("api_key")
-        if name in PROVIDERS and isinstance(key, str) and key.strip():
-            return name
+        if name not in PROVIDERS:
+            continue
+        record = get_login(data, name)
+        key = record.get("api_key")
+        if PROVIDERS[name].requires_key:
+            if isinstance(key, str) and key.strip():
+                return name
+        elif isinstance(record.get("model"), str) and record["model"].strip():
+            if name != "openai-compatible" or record.get("base_url"):
+                return name
     return None
 
 
@@ -96,6 +103,9 @@ def store_login(
     api_key: str,
     model: str | None = None,
     path: Path = CREDENTIALS_PATH,
+    *,
+    base_url: str | None = None,
+    protocol: str | None = None,
 ) -> dict[str, Any]:
     """Store a verified credential and make it the active provider."""
     data = load_credentials(path)
@@ -103,6 +113,10 @@ def store_login(
     record["api_key"] = api_key
     if model:
         record["model"] = model
+    if base_url is not None:
+        record["base_url"] = base_url
+    if protocol is not None:
+        record["protocol"] = protocol
     data["providers"][provider] = record
     data["active"] = provider
     save_credentials(data, path)

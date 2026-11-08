@@ -40,6 +40,27 @@ def request(adapter, messages=None, streaming=False, model='m'):
 def history(first):
     return [{'role':'user','content':'read file'}, {'role':'assistant','content':first.content}, {'role':'user','content':[{'type':'tool_result','tool_use_id':b.id,'content':'contents'} for b in first.content if b.type == 'tool_use']}]
 
+
+@pytest.mark.parametrize('code,check', [
+    ('rate_limit_exceeded', 'is_rate_limit_error'),
+    ('context_length_exceeded', 'is_prompt_too_long_error'),
+])
+@pytest.mark.parametrize('kind', ['error', 'response.failed', 'nonstream'])
+def test_protocol_error_category_survives_sse_and_failed_responses(code, check, kind):
+    from agent_app.core import recovery
+    error = {'code': code, 'message': 'server details'}
+    if kind == 'nonstream':
+        response = {'status': 'failed', 'error': error, 'output': []}
+    elif kind == 'error':
+        from openai.types.responses import ResponseErrorEvent
+        response = Stream([ResponseErrorEvent(type='error', sequence_number=1, **error)])
+    else:
+        response = Stream([{'type': 'response.failed', 'response': {'status': 'failed', 'error': error, 'output': []}}])
+    with pytest.raises(ValueError) as caught:
+        request(make(Client(response)), streaming=kind != 'nonstream')
+    assert getattr(recovery, check)(caught.value)
+    assert 'server details' not in str(caught.value)
+
 def test_roundtrip_multiple_calls_replays_reasoning_without_adapter_cache():
     c2 = dict(CALL, id='fc2', call_id='c2', arguments='{}')
     client = Client(answer([REASON, CALL, c2]), answer([text('unrelated')]), answer([text('finished')]))

@@ -153,7 +153,7 @@ def test_slash_hints_redraw_below_input_as_keyword_changes(monkeypatch):
     all_hints = snapshots[1][1]
     filtered = snapshots[2][1]
     assert "/status" in all_hints and "显示命令帮助" in all_hints
-    assert "/login" in filtered and "配置 API Key 并选择模型" in filtered
+    assert "/login" in filtered and "配置模型服务与认证" in filtered
     assert "/status" not in filtered and "/help" not in filtered
     assert "/status" in snapshots[3][1]  # Backspace restores the full list.
 
@@ -216,7 +216,6 @@ def test_new_notice_restarts_timer_and_typing_keeps_notice(monkeypatch):
     monkeypatch.setattr(terminal, "NOTICE_SECONDS", 0.12)
     with create_pipe_input() as pipe:
         ui = terminal.TerminalUI(input=pipe, output=DummyOutput())
-        ui.notify("first")
         timers = []
         observed = []
 
@@ -226,6 +225,9 @@ def test_new_notice_restarts_timer_and_typing_keeps_notice(monkeypatch):
             def after_render(_):
                 if app.is_done or timers:
                     return
+                # Start both deadlines after UI construction/rendering, so
+                # startup latency cannot expire the first notice prematurely.
+                ui.notify("first")
                 timers.append(ui._notice_timer)
                 loop = asyncio.get_running_loop()
                 handles.append(loop.call_later(0.06, lambda: ui.notify("second")))

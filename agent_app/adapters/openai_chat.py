@@ -10,12 +10,16 @@ class OpenAIChatAdapter:
     client: Any
     progress: Any = null_progress
     origin: str = ''
+    omit_auth: bool = False
 
     def _request(self, system, messages, model, max_tokens, tools, thinking):
         check_thinking(thinking)
         request = {'model': model, 'messages': chat_history(system, messages), 'max_completion_tokens': max_tokens}
         if tools is not None:
             request['tools'] = function_tools(tools)
+        if self.omit_auth:
+            from openai import omit
+            request['extra_headers'] = {'Authorization': omit}
         return request
 
     def _response(self, message, reason):

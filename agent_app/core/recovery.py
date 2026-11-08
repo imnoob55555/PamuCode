@@ -153,9 +153,31 @@ def with_retry(
     raise RuntimeError("unreachable")
 
 
+def describe_model_error(exc):
+    """Keep status-based recovery intact and give users an actionable message."""
+    status = get_status_code(exc)
+    if status in (401, 403):
+        return "服务认证失败，请检查当前供应商的 API Key 或访问权限。"
+    if status == 404:
+        return "模型或接口不存在，请检查模型 ID、服务地址及协议；Ollama 请确认模型已安装。"
+    if status in (400, 422):
+        return "服务拒绝了请求，请检查接口协议、模型的工具调用能力及请求参数。"
+    if status == 429:
+        return "服务限流或额度不足，请稍后重试并检查账户额度。"
+    if status and status >= 500:
+        return "模型服务暂时不可用，请检查服务状态后重试。"
+    name = type(exc).__name__.lower()
+    if "timeout" in name:
+        return "模型请求超时，请检查服务状态、网络和本地模型运行情况。"
+    if "connect" in name:
+        return "无法连接模型服务，请检查服务地址、网络及服务是否已启动。"
+    return str(exc)[:300]
+
+
 def append_unrecoverable_error(messages, exc):
     name = type(exc).__name__
-    text = f"[Error] {type(exc).__name__}: {str(exc)[:300]}"
+    detail = describe_model_error(exc)
+    text = f"[Error] {name}: {detail}"
 
     messages.append({
         "role": "assistant",
@@ -165,4 +187,4 @@ def append_unrecoverable_error(messages, exc):
         }],
     })
 
-    print(f"  \033[31m[unrecoverable] {name}: {str(exc)[:100]}\033[0m")
+    print(f"  \033[31m[unrecoverable] {name}: {detail[:100]}\033[0m")

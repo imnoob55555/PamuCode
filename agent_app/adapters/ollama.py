@@ -33,11 +33,12 @@ class OllamaAdapter:
             if not isinstance(text, str):
                 raise ValueError('Ollama 文本响应格式无效')
             blocks.append(TextBlock(text))
-        for call in value(message, 'tool_calls', []) or []:
+        for call in (value(message, 'tool_calls', []) or []) if reason != 'length' else []:
             fn = value(call, 'function')
             blocks.append(tool_block('ollama_' + uuid4().hex, value(fn, 'name'), value(fn, 'arguments')))
         result = finish(blocks, 'max_tokens' if reason == 'length' else 'tool_use' if any(b.type == 'tool_use' for b in blocks) else 'end_turn')
-        attach_replay(result.content, 'ollama', self.origin, model, message)
+        if reason != 'length':
+            attach_replay(result.content, 'ollama', self.origin, model, message)
         return result
 
     def create(self, *, system, messages, model, max_tokens, tools, thinking=None):

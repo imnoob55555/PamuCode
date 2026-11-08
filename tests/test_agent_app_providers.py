@@ -139,7 +139,7 @@ def test_bootstrap_uses_logged_in_provider_on_default_runtime(
     store_login("deepseek", "sk-ds", "deepseek-reasoner", credentials)
     monkeypatch.setattr(bootstrap, "CREDENTIALS_PATH", credentials)
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("MODEL_ID", "should-be-overridden")
+    monkeypatch.setenv("MODEL_ID", "explicit-model")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "legacy-key")
     monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://legacy.invalid")
 
@@ -152,8 +152,8 @@ def test_bootstrap_uses_logged_in_provider_on_default_runtime(
         }
     ]
     assert runtime.model is not None
-    assert runtime.model.snapshot()[:2] == ("deepseek", "deepseek-reasoner")
-    assert runtime.config.primary_model == "deepseek-reasoner"
+    assert runtime.model.snapshot()[:2] == ("deepseek", "explicit-model")
+    assert runtime.config.primary_model == "explicit-model"
 
 
 def test_bootstrap_provider_env_key_overrides_stored_key(tmp_path, monkeypatch):
@@ -180,7 +180,7 @@ def test_bootstrap_provider_env_key_overrides_stored_key(tmp_path, monkeypatch):
     store_login("zhipu", "stored-key", "glm-4.6", credentials)
     monkeypatch.setattr(bootstrap, "CREDENTIALS_PATH", credentials)
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setenv("MODEL_ID", "ignored")
+    monkeypatch.setenv("MODEL_ID", "explicit-model")
     monkeypatch.setenv("ZHIPU_API_KEY", "env-key")
     for name in ("ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN"):
         monkeypatch.delenv(name, raising=False)
@@ -191,7 +191,7 @@ def test_bootstrap_provider_env_key_overrides_stored_key(tmp_path, monkeypatch):
         "base_url": "https://open.bigmodel.cn/api/anthropic",
         "api_key": "env-key",
     }
-    assert runtime.config.primary_model == "glm-4.6"
+    assert runtime.config.primary_model == "explicit-model"
 
 
 def test_bootstrap_falls_back_to_anthropic_env_mode_without_login(

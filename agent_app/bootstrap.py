@@ -220,11 +220,15 @@ def build_runtime(
     progress_factory=None,
     provider: str = "anthropic",
     thinking_level: str = DEFAULT_THINKING_LEVEL,
+    adapter=None,
+    protocol: str = "anthropic_messages",
+    base_url: str = "",
+    model_source: str = "运行时配置",
 ) -> RuntimeContext:
     """Build one completely independent runtime from explicit dependencies."""
     _create_storage_roots(config)
     setup_logging(config.logs_dir, config.log_level)
-    llm = (
+    llm = adapter if adapter is not None else (
         AnthropicAdapter(sdk_client, progress_factory)
         if progress_factory is not None
         else AnthropicAdapter(sdk_client)
@@ -235,6 +239,9 @@ def build_runtime(
         fallback_model=config.fallback_model,
         llm=llm,
         thinking_level=normalize_level(thinking_level) or DEFAULT_THINKING_LEVEL,
+        protocol=protocol,
+        base_url=base_url,
+        model_source=model_source,
     )
 
     session = SessionState()
@@ -347,12 +354,12 @@ def build_runtime(
         )
 
     def spawn_teammate(name: str, role: str, prompt: str) -> str:
-        _provider, primary, fallback = model_router.snapshot()
+        _provider, primary, fallback, task_adapter = model_router.request_snapshot()
         recovery = RecoveryState(primary, fallback)
 
         def teammate_llm(**kwargs):
             return with_retry(
-                lambda: model_router.llm.create(
+                lambda: task_adapter.create(
                     model=recovery.current_model, **kwargs
                 ),
                 recovery,
@@ -459,12 +466,12 @@ def build_runtime(
     ]
 
     def spawn_subagent(description: str) -> str:
-        _provider, primary, fallback = model_router.snapshot()
+        _provider, primary, fallback, task_adapter = model_router.request_snapshot()
         recovery = RecoveryState(primary, fallback)
 
         def subagent_llm(**kwargs):
             return with_retry(
-                lambda: model_router.llm.create(
+                lambda: task_adapter.create(
                     **{**kwargs, "model": recovery.current_model}
                 ),
                 recovery,
@@ -513,30 +520,6 @@ def _saved_thinking(record: dict) -> str:
     return normalize_level(record.get("thinking")) or DEFAULT_THINKING_LEVEL
 
 
-def _resolve_active_provider(
-    environment: dict[str, str],
-    credentials: dict,
-) -> tuple:
-    """Return (spec, api_key, model_id) for the active non-anthropic provider.
-
-    Returns (None, None, None) when the classic Anthropic/env flow should
-    be used instead. Environment keys win over stored credentials so an
-    explicitly exported variable keeps overriding stored logins.
-    """
-    from .adapters.providers import PROVIDERS
-
-    active = auth_store.configured_provider(credentials)
-    spec = PROVIDERS.get(active) if isinstance(active, str) else None
-    if spec is None or spec.name == "anthropic":
-        return None, None, None
-    record = auth_store.get_login(credentials, spec.name)
-    api_key = environment.get(spec.key_env) or record.get("api_key")
-    model_id = record.get("model")
-    if not isinstance(model_id, str) or not model_id.strip():
-        model_id = spec.default_model
-    return spec, api_key, model_id
-
-
 def load_runtime_environment() -> dict[str, str]:
     from dotenv import dotenv_values
 
@@ -547,76 +530,35 @@ def load_runtime_environment() -> dict[str, str]:
 
 def has_local_configuration(credentials_path: Path | None = None) -> bool:
     """Only inspect local records/settings; never probe the remote API."""
+    from .provider_config import resolve_provider_config
+
     data = auth_store.load_credentials(credentials_path or CREDENTIALS_PATH)
-    if auth_store.configured_provider(data):
-        return True
-    environment = load_runtime_environment()
-    return bool(environment.get("MODEL_ID", "").strip() and any(
-        environment.get(key, "").strip() for key in (
-            "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL",
-        )
-    ))
+    try:
+        resolve_provider_config(load_runtime_environment(), data)
+    except ValueError:
+        return False
+    return True
 
 
 def build_default_runtime(*, credentials_path: Path | None = None) -> RuntimeContext:
-    """Load process configuration and construct the production SDK client."""
-    from anthropic import Anthropic
+    """Resolve configuration and wire the selected protocol into all model calls."""
+    from .provider_config import resolve_provider_config
+    from .adapters.providers import build_client, build_adapter
 
-    workspace = Path.cwd().resolve()
     environment = load_runtime_environment()
     credentials = auth_store.load_credentials(credentials_path or CREDENTIALS_PATH)
-    spec, provider_key, provider_model = _resolve_active_provider(
-        environment, credentials
-    )
-    if spec is not None:
-        from .adapters.providers import build_client
-
-        client = build_client(spec, provider_key)
-        environment = {**environment, "MODEL_ID": provider_model}
-        config = AppConfig.from_env(INSTALL_ROOT, workspace, environment)
-        return build_runtime(
-            config,
-            client,
-            progress_factory=terminal_progress,
-            provider=spec.name,
-            thinking_level=_saved_thinking(
-                auth_store.get_login(credentials, spec.name)
-            ),
-        )
-
-    base_url = environment.get("ANTHROPIC_BASE_URL")
-    record = auth_store.get_login(credentials, "anthropic")
-    stored_key = record.get("api_key")
-    if not isinstance(stored_key, str):
-        stored_key = None
-    stored_model = record.get("model")
-    if stored_key and (
-        isinstance(stored_model, str) and stored_model.strip()
-        or not environment.get("MODEL_ID", "").strip()
-    ):
-        from .adapters.providers import get_provider
-
-        environment["MODEL_ID"] = (
-            stored_model.strip() if isinstance(stored_model, str) and stored_model.strip()
-            else get_provider("anthropic").default_model
-        )
-    api_key = environment.get("ANTHROPIC_API_KEY") or stored_key
-    auth_token = environment.get("ANTHROPIC_AUTH_TOKEN")
-    client_options = {}
-    if api_key is not None:
-        client_options["api_key"] = api_key
-    if base_url:
-        client_options["base_url"] = base_url
-        if api_key is None:
-            client_options["api_key"] = ""
-    elif api_key is None:
-        client_options["api_key"] = ""
-    if auth_token is not None:
-        client_options["auth_token"] = auth_token
-    config = AppConfig.from_env(INSTALL_ROOT, workspace, environment)
+    resolved = resolve_provider_config(environment, credentials)
+    spec = resolved.spec
+    # Omit the official Anthropic URL to retain its established SDK injection API.
+    client_url = None if spec.name == "anthropic" and resolved.base_url == spec.base_url else resolved.base_url
+    client = build_client(spec, resolved.api_key, base_url=client_url, auth_token=resolved.auth_token)
+    adapter = build_adapter(spec, client, progress=terminal_progress, base_url=resolved.base_url, keyless=not resolved.api_key)
+    config = AppConfig.from_env(INSTALL_ROOT, Path.cwd().resolve(),
+                                {**environment, "MODEL_ID": resolved.model})
+    thinking = _saved_thinking(auth_store.get_login(credentials, spec.name))
     return build_runtime(
-        config,
-        Anthropic(**client_options),
-        progress_factory=terminal_progress,
-        thinking_level=_saved_thinking(record),
+        config, client, progress_factory=terminal_progress, provider=spec.name,
+        thinking_level=thinking if spec.protocol == "anthropic_messages" else "off",
+        adapter=adapter, protocol=resolved.protocol, base_url=resolved.base_url,
+        model_source=resolved.model_source,
     )

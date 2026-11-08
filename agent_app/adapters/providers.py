@@ -1,9 +1,4 @@
-"""Model provider registry, client construction, and runtime switching.
-
-Every provider below exposes an Anthropic-compatible Messages API, so
-they all reuse :class:`agent_app.adapters.anthropic.AnthropicAdapter`.
-Adding a provider means adding one :class:`ProviderSpec` entry.
-"""
+"""Explicit provider protocols, client construction, and runtime switching."""
 
 from __future__ import annotations
 
@@ -23,6 +18,8 @@ class ProviderSpec:
     default_model: str = ""
     label: str = ""
     requires_key: bool = True
+    protocol: str = "anthropic_messages"
+    base_url_env: str = ""
 
 
 PROVIDERS: dict[str, ProviderSpec] = {
@@ -60,6 +57,18 @@ PROVIDERS: dict[str, ProviderSpec] = {
         "OPENROUTER_API_KEY",
         "z-ai/glm-4.6",
         "OpenRouter",
+    ),
+    "openai": ProviderSpec(
+        "openai", "https://api.openai.com/v1", "OPENAI_API_KEY", "",
+        "OpenAI 官方", True, "openai_responses", "OPENAI_BASE_URL",
+    ),
+    "openai-compatible": ProviderSpec(
+        "openai-compatible", "", "OPENAI_COMPATIBLE_API_KEY", "",
+        "OpenAI 兼容服务", False, "openai_chat", "OPENAI_COMPATIBLE_BASE_URL",
+    ),
+    "ollama": ProviderSpec(
+        "ollama", "http://localhost:11434", "", "",
+        "Ollama 本地模型", False, "ollama", "OLLAMA_BASE_URL",
     ),
 }
 
@@ -119,14 +128,29 @@ def build_client(
     anthropic_factory: Callable[..., Any] | None = None,
     base_url: str | None = None,
     auth_token: str | None = None,
+    openai_factory: Callable[..., Any] | None = None,
+    httpx_factory: Callable[..., Any] | None = None,
 ) -> Any:
-    """Construct an Anthropic SDK client pointed at the provider."""
+    """Construct the selected SDK/HTTP client, without making a request."""
+    custom_anthropic = spec.name == "anthropic" and base_url and base_url != spec.base_url
+    if spec.requires_key and not (api_key or auth_token or custom_anthropic):
+        raise MissingApiKeyError(spec)
+    options: dict[str, Any] = {"base_url": base_url or spec.base_url}
+    if spec.protocol in ("openai_responses", "openai_chat"):
+        from openai import OpenAI
+
+        # Satisfy SDK constructor validation while sending no auth header for
+        # keyless services. Never let the SDK discover another provider's key.
+        return (openai_factory or OpenAI)(**options, api_key=api_key or "pamu-keyless", max_retries=0)
+    if spec.protocol == "ollama":
+        import httpx
+
+        return (httpx_factory or httpx.Client)(**options, timeout=600.0)
     from anthropic import Anthropic
 
     factory = anthropic_factory or Anthropic
-    if spec.requires_key and not (api_key or auth_token):
-        raise MissingApiKeyError(spec)
-    options: dict[str, Any] = {"base_url": base_url or spec.base_url}
+    if spec.name == "anthropic" and not base_url and spec.base_url == PROVIDERS["anthropic"].base_url:
+        options.pop("base_url")
     if spec.name == "openrouter":
         options.update(api_key="", auth_token=api_key)
     elif api_key:
@@ -134,7 +158,28 @@ def build_client(
     if auth_token is not None:
         options["auth_token"] = auth_token
         options.setdefault("api_key", "")
-    return factory(**options)
+    options.setdefault("api_key", "")
+    client = factory(**options)
+    if hasattr(client, "max_retries"):
+        client.max_retries = 0
+    return client
+
+
+def build_adapter(spec, client, *, progress=None, base_url=None, keyless=False):
+    from .common import null_progress
+    from .openai_responses import OpenAIResponsesAdapter
+    from .openai_chat import OpenAIChatAdapter
+    from .ollama import OllamaAdapter
+
+    adapters = {
+        "anthropic_messages": AnthropicAdapter,
+        "openai_responses": OpenAIResponsesAdapter,
+        "openai_chat": OpenAIChatAdapter,
+        "ollama": OllamaAdapter,
+    }
+    origin = f"{spec.name}@{(base_url or spec.base_url).rstrip('/')}"
+    options = {"omit_auth": keyless} if spec.protocol in ("openai_responses", "openai_chat") else {}
+    return adapters[spec.protocol](client, progress or null_progress, origin=origin, **options)
 
 
 def verify_login(
@@ -144,16 +189,23 @@ def verify_login(
     anthropic_factory: Callable[..., Any] | None = None,
     model: str | None = None,
 ) -> bool:
-    """Validate credentials with a minimal one-token live request."""
+    """Validate the selected protocol/model with a bounded live request."""
+    client = None
     try:
         client = build_client(spec, api_key, anthropic_factory=anthropic_factory)
-        client.messages.create(
-            model=model or spec.default_model,
-            messages=[{"role": "user", "content": "ping"}],
-            max_tokens=1,
-        )
+        kwargs = dict(model=model or spec.default_model,
+                      messages=[{"role": "user", "content": "ping"}],
+                      max_tokens=1 if spec.protocol == "anthropic_messages" else 256)
+        if spec.protocol == "anthropic_messages":
+            client.messages.create(**kwargs)
+        else:
+            build_adapter(spec, client, keyless=not api_key).create(system=None, tools=None, **kwargs)
     except Exception:
         return False
+    finally:
+        close = getattr(client, "close", None)
+        if callable(close):
+            close()
     return True
 
 
@@ -168,7 +220,10 @@ def apply_provider(
     base_url: str | None = None,
     auth_token: str | None = None,
     thinking: str | None = None,
-) -> AnthropicAdapter:
+    openai_factory: Callable[..., Any] | None = None,
+    httpx_factory: Callable[..., Any] | None = None,
+    model_source: str = "运行时配置",
+) -> Any:
     """Switch a live runtime to ``spec`` by swapping adapter and router.
 
     ``thinking`` restores the provider's saved thinking level; ``None`` or
@@ -180,10 +235,10 @@ def apply_provider(
         anthropic_factory=anthropic_factory,
         base_url=base_url,
         auth_token=auth_token,
+        openai_factory=openai_factory,
+        httpx_factory=httpx_factory,
     )
-    adapter = (
-        AnthropicAdapter(client, progress) if progress else AnthropicAdapter(client)
-    )
+    adapter = build_adapter(spec, client, progress=progress, base_url=base_url, keyless=not api_key)
     router = runtime.model
     if router is None:
         raise RuntimeError("runtime is missing its model router")
@@ -192,7 +247,10 @@ def apply_provider(
         model or spec.default_model,
         None,
         adapter,
-        thinking_level=thinking or "off",
+        thinking_level=(thinking or "off") if spec.protocol == "anthropic_messages" else "off",
+        protocol=spec.protocol,
+        base_url=base_url or spec.base_url,
+        model_source=model_source,
     )
     runtime.llm = adapter
     return adapter

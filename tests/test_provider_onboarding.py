@@ -56,8 +56,11 @@ def test_model_menu_preserves_custom_saved_model_and_has_choices():
     for spec in providers.PROVIDERS.values():
         choices = providers.model_choices(spec, "private-model")
         assert choices[0] == "private-model"
-        assert spec.default_model in choices
-        assert len(choices) >= 3
+        if spec.default_model:
+            assert spec.default_model in choices
+            assert len(choices) >= 3
+        else:
+            assert choices == ("private-model",)
         assert len(choices) == len(set(choices))
 
 
@@ -89,7 +92,7 @@ def test_saved_anthropic_model_boots_without_model_env(tmp_path, monkeypatch):
     assert calls == [{"api_key": "saved-key"}]
 
 
-def test_anthropic_selected_model_takes_priority_over_legacy_model_setting(
+def test_explicit_model_setting_takes_priority_over_saved_anthropic_model(
     tmp_path, monkeypatch
 ):
     import agent_app.bootstrap as bootstrap
@@ -105,7 +108,7 @@ def test_anthropic_selected_model_takes_priority_over_legacy_model_setting(
     auth.store_login("anthropic", "saved-key", "chosen-model", path)
     assert (
         cast(AppConfig, bootstrap.build_default_runtime(credentials_path=path)).primary_model
-        == "chosen-model"
+        == "legacy-model"
     )
 
 

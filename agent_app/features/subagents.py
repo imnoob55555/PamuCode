@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from ..core.recovery import describe_model_error
 
 TASK_TOOL_SCHEMA = {
     "name": "task",
@@ -75,7 +76,7 @@ def spawn_subagent(
                 max_tokens=config.default_max_tokens,
             )
         except Exception as exc:
-            error = f"[Subagent error] {type(exc).__name__}: {str(exc)[:300]}"
+            error = f"[Subagent error] {type(exc).__name__}: {describe_model_error(exc)}"
             print(f"  \033[31m{error}\033[0m")
             return error
         messages.append({"role": "assistant", "content": response.content})

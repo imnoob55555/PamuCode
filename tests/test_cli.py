@@ -318,6 +318,9 @@ def test_module_cli_starts_without_installed_dependencies(tmp_path):
     environment.update(
         {
             "MODEL_ID": "test-model",
+            "ANTHROPIC_API_KEY": "fake-smoke-key",
+            "PAMU_PROVIDER": "anthropic",
+            "HOME": str(tmp_path / "home"),
             "PYTHONPATH": f"{project_root}{os.pathsep}{tmp_path}",
             "PAMU_TEST_CWD_FILE": str(cwd_file),
         }

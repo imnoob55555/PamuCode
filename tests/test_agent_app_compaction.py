@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+import pytest
 
 from agent_app.config import AppConfig
 from agent_app.core.compaction import (
@@ -65,3 +66,25 @@ def test_persist_large_output_writes_below_configured_root(
     assert path.is_relative_to(config.tool_result_dir)
     assert path.read_text(encoding="utf-8") == output
     assert str(path) in persisted
+
+
+@pytest.mark.parametrize('mode', ['snip', 'reactive'])
+def test_compaction_keeps_tool_pair_when_result_includes_notification(tmp_path, mode):
+    from agent_app.adapters.common import ToolUseBlock, chat_history
+    from agent_app.core.compaction import reactive_compact
+    messages = [
+        *[{'role': 'user', 'content': f'old {i}'} for i in range(5)],
+        {'role': 'assistant', 'content': [ToolUseBlock('c1', 'read', {})]},
+        {'role': 'user', 'content': [
+            {'type': 'tool_result', 'tool_use_id': 'c1', 'content': 'file contents'},
+            {'type': 'text', 'text': 'background notification'},
+        ]},
+        *[{'role': 'user', 'content': f'recent {i}'} for i in range(4)],
+    ]
+    if mode == 'snip':
+        result = snip_compact(messages, max_messages=8)
+    else:
+        result = reactive_compact(AppConfig.from_env(tmp_path, environ={'MODEL_ID': 'local'}), lambda history: 'summary', messages)
+    assert messages[5] in result
+    assert messages[6] in result
+    assert 'file contents' in str(chat_history(None, result))

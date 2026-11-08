@@ -10,6 +10,7 @@ import threading
 from pathlib import Path
 
 from .adapters import providers
+from .provider_config import resolve_provider_config, normalize_base_url, ProviderConfigurationError
 from .bootstrap import build_default_runtime
 from .branding import render_startup_screen
 from .cli_exit import ExitAction, ExitGesture, QuitRequested
@@ -29,7 +30,7 @@ LOGGER = get_logger("pamu.cli")
 COMMANDS = ("login", "logout", "status", "use")
 
 SLASH_HELP = help_text()
-LOGIN_HINT = "尚未配置 API Key，请输入 /login 选择 provider 并保存 API Key。"
+LOGIN_HINT = "尚未配置模型服务，请输入 /login 选择供应商、服务地址和模型。"
 
 
 def notify_or_print(ui, message: str, *, print_fn=print) -> None:
@@ -155,8 +156,20 @@ def _cmd_login(
         return 2
 
     import os
+    from dataclasses import replace
+    from .bootstrap import load_runtime_environment
 
-    api_key = os.environ.get(spec.key_env) if spec.key_env else None
+    environment = {**load_runtime_environment(), **os.environ}
+    record = auth.get_login(auth.load_credentials(credentials_path), spec.name)
+    url_name = spec.base_url_env or spec.name.upper() + "_BASE_URL"
+    configured_url = environment.get(url_name) or record.get("base_url")
+    if configured_url:
+        try:
+            spec = replace(spec, base_url=normalize_base_url(configured_url))
+        except ValueError as error:
+            print(str(error), file=sys.stderr)
+            return 2
+    api_key = environment.get(spec.key_env) if spec.key_env else None
     if api_key:
         print(f"使用环境变量 {spec.key_env} 中的密钥。")
     elif spec.requires_key:
@@ -165,8 +178,32 @@ def _cmd_login(
             print("未提供 API Key，已取消登录。", file=sys.stderr)
             return 2
 
+    base_url, protocol = configured_url, None
+    if spec.name in ("ollama", "openai-compatible"):
+        protocol = spec.protocol
+        if spec.name == "openai-compatible":
+            protocol = environment.get("OPENAI_COMPATIBLE_PROTOCOL") or record.get("protocol") or protocol
+            protocol = _ask(f"接口协议 openai_chat / openai_responses [{protocol}]: ", input_fn).strip() or protocol
+            if protocol not in ("openai_chat", "openai_responses"):
+                print("无效接口协议。", file=sys.stderr)
+                return 2
+        try:
+            base_url = normalize_base_url(
+                _ask(f"服务 Base URL [{spec.base_url}]: ", input_fn).strip() or spec.base_url
+            )
+        except ValueError as error:
+            print(str(error), file=sys.stderr)
+            return 2
+        if spec.name == "openai-compatible" and not api_key:
+            api_key = secret_fn("API Key（本地服务可留空）: ").strip()
+        spec = replace(spec, base_url=base_url, protocol=protocol)
+    default_model = environment.get("MODEL_ID") or record.get("model") or spec.default_model
+    model = _ask(f"默认模型 [{default_model}]: ", input_fn).strip() or default_model
+    if not model:
+        print("必须填写模型 ID。", file=sys.stderr)
+        return 2
     if not skip_verify:
-        ok = verify(spec, api_key, anthropic_factory=client_factory)
+        ok = verify(spec, api_key, anthropic_factory=client_factory, model=model)
         if not ok:
             print(
                 f"登录验证失败：{spec.label} 拒绝了该密钥或网络不可用。\n"
@@ -175,11 +212,7 @@ def _cmd_login(
             )
             return 1
 
-    model = (
-        _ask(f"默认模型 [{spec.default_model}]: ", input_fn).strip()
-        or spec.default_model
-    )
-    auth.store_login(spec.name, api_key or "", model, credentials_path)
+    auth.store_login(spec.name, api_key or "", model, credentials_path, base_url=base_url, protocol=protocol)
     LOGGER.info("login provider=%s model=%s", spec.name, model)
     print(f"已登录 {spec.label} 并设为当前供应商（模型 {model}）。")
     print(f"下次启动生效；会话内可用 /provider {spec.name} 立即切换。")
@@ -215,7 +248,19 @@ def _cmd_status(
 ) -> int:
     data = auth.load_credentials(credentials_path)
     active = data.get("active") or "anthropic（环境变量模式）"
+    from .bootstrap import load_runtime_environment
+
+    try:
+        resolved = resolve_provider_config(load_runtime_environment(), data)
+    except ValueError:
+        resolved = None
+    if resolved is not None:
+        active = resolved.spec.name
     print(f"当前供应商：{active}")
+    if resolved is not None:
+        print(f"协议：{resolved.protocol}")
+        print(f"服务地址：{resolved.base_url}")
+        print(f"有效模型：{resolved.model}（{resolved.model_source}）")
     records = data.get("providers", {})
     if records:
         print("已登录：")
@@ -252,11 +297,15 @@ def _cmd_use(
         return 2
     data = auth.load_credentials(credentials_path)
     record = auth.get_login(data, spec.name)
-    if spec.requires_key and not record:
+    from .bootstrap import load_runtime_environment
+
+    try:
+        resolved = resolve_provider_config(load_runtime_environment(), data, spec.name)
+    except ValueError:
         print(f"尚未登录 {spec.label}，请先运行：pamu login {spec.name}", file=sys.stderr)
         return 2
     auth.set_active(spec.name, credentials_path)
-    model = record.get("model") or spec.default_model
+    model = resolved.model
     LOGGER.info("use provider=%s model=%s", spec.name, model)
     print(f"已切换到 {spec.label}（模型 {model}），下次启动 pamu 时生效。")
     return 0
@@ -360,7 +409,7 @@ def handle_slash_command(
                 model = argument or choose_model(ui, providers.get_provider(name), record.get("model"))
                 if model:
                     try:
-                        auth.store_login(name, record["api_key"], model, credentials_path)
+                        auth.store_login(name, record.get("api_key", ""), model, credentials_path)
                     except OSError:
                         notify_or_print(
                             ui,
@@ -375,7 +424,11 @@ def handle_slash_command(
     if command == "/status":
         provider, model, fallback = runtime.model.snapshot()
         print_fn(f"供应商：{provider}")
+        print_fn(f"协议：{runtime.model.protocol}")
+        if runtime.model.base_url:
+            print_fn(f"服务地址：{runtime.model.base_url}")
         print_fn(f"模型：{model}")
+        print_fn(f"模型来源：{runtime.model.model_source}")
         print_fn(f"降级模型：{fallback or '（无）'}")
         print_fn(f"思考程度：{runtime.model.thinking_snapshot()}")
         data = auth.load_credentials(credentials_path)
@@ -438,6 +491,9 @@ def handle_slash_command(
             )
             return
         provider = runtime.model.provider
+        if selected != "off" and providers.get_provider(provider).protocol != "anthropic_messages":
+            notify_or_print(ui, "当前协议暂不支持 /thinking 五档设置；可使用 off。", print_fn=print_fn)
+            return
         data = auth.load_credentials(credentials_path)
         if provider and auth.get_login(data, provider):
             try:
@@ -482,11 +538,16 @@ def handle_slash_command(
             )
             return
         record = auth.get_login(data, spec.name)
-        api_key = environment.get(spec.key_env) or record.get("api_key")
-        if spec.requires_key and (not isinstance(api_key, str) or not api_key.strip()):
+        try:
+            # An explicit session selection uses the target's saved model.
+            switch_environment = dict(environment)
+            if record.get("model"):
+                switch_environment.pop("MODEL_ID", None)
+            resolved = resolve_provider_config(switch_environment, data, spec.name)
+        except ValueError as error:
             notify_or_print(
                 ui,
-                f"尚未登录 {spec.label}，请先输入 /login 或运行 pamu login {spec.name}",
+                f"无法切换 {spec.label}：{error} 请先输入 /login 或运行 pamu login {spec.name}",
                 print_fn=print_fn,
             )
             return
@@ -494,18 +555,19 @@ def handle_slash_command(
 
         providers.apply_provider(
             runtime,
-            spec,
-            api_key,
-            record.get("model"),
+            resolved.spec,
+            resolved.api_key,
+            resolved.model,
             anthropic_factory=client_factory,
             progress=terminal_progress,
-            base_url=environment.get("ANTHROPIC_BASE_URL") if spec.name == "anthropic" else None,
-            auth_token=environment.get("ANTHROPIC_AUTH_TOKEN") if spec.name == "anthropic" else None,
+            base_url=resolved.base_url,
+            auth_token=resolved.auth_token,
             thinking=record.get("thinking"),
+            model_source=resolved.model_source,
         )
         auth.set_active(spec.name, credentials_path)
         LOGGER.info("switch provider=%s", spec.name)
-        model = record.get("model") or spec.default_model
+        model = resolved.model
         print_fn(f"供应商已切换为 {spec.label}（模型 {model}），并已设为默认。")
         return
 
@@ -526,11 +588,13 @@ def _create_runtime(runtime_factory, credentials_path):
             f"  全局：{global_config}\n"
             f"  项目：{project_config}\n"
             "示例：MODEL_ID=claude-sonnet-4-6\n"
-            "或运行 pamu login 配置 API Key。",
+            "或运行 pamu login 配置模型服务。",
             file=sys.stderr,
         )
     except providers.MissingApiKeyError as error:
         print(f"登录信息缺失：{error}", file=sys.stderr)
+    except ProviderConfigurationError as error:
+        print(f"配置错误：{error}", file=sys.stderr)
     return None
 
 

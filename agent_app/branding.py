@@ -26,7 +26,7 @@ def render_startup_screen(
         if configuration_error
         else "已准备就绪"
         if ready
-        else "尚未配置 API Key，请输入 /login"
+        else "尚未配置模型服务，请输入 /login"
     )
     return "\n".join(
         (

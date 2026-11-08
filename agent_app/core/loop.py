@@ -10,6 +10,7 @@ from ..features.background import (
     collect_background_results,
     start_background_task,
 )
+from ..adapters.common import generic_blocks
 from ..features.mcp import snapshot_mcp_tools
 from ..features.memory import (
     build_request_messages_with_memories,
@@ -37,6 +38,7 @@ from .recovery import (
     PartialStreamError,
     RecoveryState,
     append_unrecoverable_error,
+    describe_model_error,
     is_prompt_too_long_error,
     with_retry,
 )
@@ -71,7 +73,11 @@ def _summarize(runtime: RuntimeContext, payload, max_tokens: int = 2_000) -> str
     router = runtime.model
     assert router is not None
     if isinstance(payload, list):
-        conversation = json.dumps(payload, default=str)[:80_000]
+        portable = [
+            {"role": message["role"], "content": generic_blocks(message["content"])}
+            for message in payload
+        ]
+        conversation = json.dumps(portable, ensure_ascii=False, default=str)[:80_000]
         prompt = (
             "Summarize this coding-agent conversation so work can continue.\n"
             "Preserve: 1. current goal, 2. key findings/decisions, "
@@ -269,7 +275,7 @@ def run_agent_loop(runtime: RuntimeContext) -> None:
                 continue
             cause_text = (
                 f"{type(stream_exc.cause).__name__}: "
-                f"{str(stream_exc.cause)[:300]}"
+                f"{describe_model_error(stream_exc.cause)}"
             )
             marker = f"[Stream interrupted: {cause_text}]"
             separator = "" if partial_text.endswith("\n") else "\n"
