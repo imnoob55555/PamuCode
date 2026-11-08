@@ -9,15 +9,15 @@
 [![Python](https://img.shields.io/badge/Python-3.13%2B-3776ab?logo=python&logoColor=white)](https://www.python.org/)
 [![uv](https://img.shields.io/badge/deps-uv-de5fe9?logo=astral&logoColor=white)](https://docs.astral.sh/uv/)
 [![UI](https://img.shields.io/badge/UI-prompt--toolkit-7f52ff)](https://python-prompt-toolkit.readthedocs.io/)
-[![API](https://img.shields.io/badge/API-Anthropic--compatible-d97757)](https://docs.anthropic.com/)
+[![API](https://img.shields.io/badge/API-Messages%20%7C%20Responses%20%7C%20Chat%20%7C%20Ollama-d97757)](#内置供应商)
 [![Tests](https://img.shields.io/badge/tests-pytest-0a7d91)](tests)
 [![License](https://img.shields.io/badge/license-MIT-3da639)](LICENSE)
 
 </div>
 
 PamuCode gives an AI model a practical project workspace: file tools, a shell, an interactive
-REPL, persistent memory, a task board, background work and provider switching. Every provider
-speaks the Anthropic Messages API, so one adapter covers all of them, and the runtime stays
+REPL, persistent memory, a task board, background work and provider switching. Independent
+adapters support Anthropic Messages, OpenAI Responses, Chat Completions and native Ollama. The runtime stays
 layered so you can follow a single prompt from keypress to streamed tokens, tool calls, state
 updates and the final answer.
 
@@ -65,11 +65,12 @@ agent 循环、模型适配器、工具执行与状态特性。它不追求功�
 
 **模型与供应商**
 
-- 一个 `AnthropicAdapter` 覆盖 Anthropic、DeepSeek、Moonshot、智谱、OpenRouter 五家供应商，
-  新增供应商只需在 `adapters/providers.py` 里加一条 `ProviderSpec`。
+- 支持 Anthropic Messages、OpenAI Responses、OpenAI Chat Completions、Ollama 原生协议，
+  均支持流式文本、原生工具调用及结果回传；现有五家供应商继续使用 Messages。
+- 可连接自定义网关和本地推理服务；Ollama 免密钥，兼容服务的密钥可选。
 - `/login` 离线完成供应商与模型选择，密钥写入 `~/.pamu/credentials.json`（仅本人可读）。
-- `/model`、`/provider` 运行时切换，无需重启；`FALLBACK_MODEL_ID` 在主模型失败时自动回退。
-- `/thinking` 五档思考程度，按供应商分别保存；启用时向请求附带 `thinking` 与对应 token 预算。
+- `/model`、`/provider` 运行时切换，无需重启；`FALLBACK_MODEL_ID` 用于当前供应商内的过载回退。
+- Messages 后端保留 `/thinking` 五档设置；新增协议首版只接受 `off`。
 
 **终端体验**
 
@@ -126,7 +127,7 @@ uv tool update-shell
 pamu
 ```
 
-`pamu` 以**当前目录**为工作区，运行时状态写在 `<当前目录>/.pamu/`。只要没有可用的密钥或模型，
+`pamu` 以**当前目录**为工作区，运行时状态写在 `<当前目录>/.pamu/`。缺少必需的服务配置或模型时，
 启动后 REPL 会提示先 `/login`。
 
 ## 首次运行
@@ -143,18 +144,21 @@ PamuCode · AI Coding Agent
 工作目录：/path/to/your/project
 Provider：未配置
 模型：未配置
-状态：尚未配置 API Key，请输入 /login
+状态：尚未配置模型服务，请输入 /login
 
 输入问题开始对话，输入 /help 查看命令
 输入 /quit 或在 1 秒内连按两次 Ctrl+C 退出
 ```
 
-输入 `/login` 选择供应商、粘贴 API Key、选择模型。交互式登录完全离线：候选项来自内置预设，
-不会先发一次验证请求。需要联网校验时用非交互形式：
+输入 `/login` 选择供应商并完成配置。现有供应商输入密钥后选模型；OpenAI 输入密钥和模型 ID；
+兼容服务选择协议、地址、是否使用密钥及模型；Ollama 只需地址和已安装模型 ID。
+终端菜单完全离线，不查询模型列表、不发验证请求。非 TTY 的命令行登录会按选定地址、协议和模型验证，
+使用 `--no-verify` 可跳过校验：
 
 ```bash
-pamu login deepseek              # 保存前校验密钥
-pamu login deepseek --no-verify  # 跳过校验，直接保存
+pamu login openai
+pamu login openai-compatible --no-verify
+pamu login ollama --no-verify
 ```
 
 ## 配置
@@ -167,25 +171,35 @@ pamu login deepseek --no-verify  # 跳过校验，直接保存
 4. 已保存的供应商凭证 `~/.pamu/credentials.json`
 
 高优先级覆盖低优先级；项目设置可以覆盖用户级默认值，显式导出的环境变量又能覆盖两者。
+`PAMU_PROVIDER` 覆盖已保存的当前供应商；`MODEL_ID` 覆盖保存的模型。旧设置中若保留了
+`MODEL_ID`，登录时选择的新模型会在下次启动被它覆盖；清空该项即可使用保存值。
+会话内 `/model` 和 `/provider` 立即生效，下一次启动重新按优先级解析；`/status` 和 `pamu status`
+显示有效模型及来源。切换时已有队友继续使用启动它们的模型与客户端。
 `.settings.example` 是提交在仓库里的模板，所有值保持为空：
 
 ```dotenv
-# 可在 pamu 中输入 /login 配置供应商；也可在这里手动填写 Key。
+PAMU_PROVIDER=
 ANTHROPIC_API_KEY=
-MODEL_ID=claude-sonnet-4-6
-# FALLBACK_MODEL_ID=claude-haiku-4-5
-# ANTHROPIC_BASE_URL=https://api.anthropic.com
-
-# 日志级别：DEBUG / INFO / WARNING / ERROR（日志写入 .pamu/logs/pamu.log）
-# LOG_LEVEL=INFO
+MODEL_ID=
+FALLBACK_MODEL_ID=
+OPENAI_API_KEY=
+OPENAI_BASE_URL=
+OPENAI_COMPATIBLE_BASE_URL=
+OPENAI_COMPATIBLE_PROTOCOL=
+OPENAI_COMPATIBLE_API_KEY=
+OLLAMA_BASE_URL=
 ```
 
 | 变量 | 说明 |
 | --- | --- |
+| `PAMU_PROVIDER` | 可选，明确选择供应商入口；否则使用已保存选择，初始默认为 Anthropic |
 | `MODEL_ID` | 必填，主模型 ID（通过 `/login` 登录供应商时会自动提供） |
-| `FALLBACK_MODEL_ID` | 可选，主模型不可用时回退的模型 |
+| `FALLBACK_MODEL_ID` | 可选，连续过载时回退；必须属于当前服务和协议，不做跨供应商回退 |
 | `ANTHROPIC_API_KEY` | Anthropic 密钥；其他供应商用各自的 `*_API_KEY` |
-| `ANTHROPIC_BASE_URL` | 可选，自建网关或代理地址 |
+| `<供应商>_BASE_URL` | 可选，覆盖服务地址，如 `ANTHROPIC_BASE_URL`、`DEEPSEEK_BASE_URL`、`OPENAI_BASE_URL` |
+| `OPENAI_COMPATIBLE_PROTOCOL` | `openai_chat`（默认）或 `openai_responses`，必须与服务支持的接口一致 |
+| `OPENAI_COMPATIBLE_BASE_URL` | 兼容服务必填，通常包含 `/v1`；密钥变量为可选的 `OPENAI_COMPATIBLE_API_KEY` |
+| `OLLAMA_BASE_URL` | 默认 `http://localhost:11434`；使用原生 `/api/chat`，不填写 `/v1` |
 | `LOG_LEVEL` | 日志级别，写入 `.pamu/logs/pamu.log`，默认 `INFO` |
 
 ### 内置供应商
@@ -197,9 +211,32 @@ MODEL_ID=claude-sonnet-4-6
 | `moonshot` | `https://api.moonshot.cn/anthropic` | `kimi-k2-0905-preview` | `MOONSHOT_API_KEY` |
 | `zhipu` | `https://open.bigmodel.cn/api/anthropic` | `glm-4.6` | `ZHIPU_API_KEY` |
 | `openrouter` | `https://openrouter.ai/api` | `z-ai/glm-4.6` | `OPENROUTER_API_KEY` |
+| `openai` | `https://api.openai.com/v1` | 自行填写 | `OPENAI_API_KEY` |
+| `openai-compatible` | 自行填写 | 自行填写 | `OPENAI_COMPATIBLE_API_KEY`（可选） |
+| `ollama` | `http://localhost:11434` | 已安装的模型 ID | 无 |
+
+前五项使用 `anthropic_messages`；`openai` 使用 `openai_responses`；`openai-compatible` 使用显式选择的
+`openai_chat` 或 `openai_responses`；`ollama` 使用原生协议。失败后不会自动猜测并切换协议。
 
 推荐用 `pamu login <provider>` 或 `/login` 保存密钥：文件权限收紧为本人可读，密钥在输入时打码，
 不进入输入历史和日志。若网关对 `thinking` 字段报错，用 `/thinking off` 回退。
+
+### 本地模型示例
+
+已启动本地推理服务后，可在 REPL 输入 `/login` 并选择 Ollama，选择默认地址或自定义地址，再输入
+已经安装的模型 ID。也可仅用环境变量启动（把占位模型名替换为实际 ID）：
+
+```bash
+PAMU_PROVIDER=ollama MODEL_ID=your-installed-model pamu
+
+# 支持 Chat Completions 的本地服务，例如配置在 8000 端口的服务：
+PAMU_PROVIDER=openai-compatible OPENAI_COMPATIBLE_BASE_URL=http://localhost:8000/v1 \
+  OPENAI_COMPATIBLE_PROTOCOL=openai_chat MODEL_ID=your-served-model pamu
+```
+
+模型必须支持原生工具调用才能完成编码任务。协议兼容不保证模型的工具能力；不使用文本标签模拟工具调用。
+PamuCode 不安装、下载模型或启动推理服务。服务不可达时检查地址和启动状态，模型不存在时检查已安装 ID。
+地址不能包含用户名、密码或密钥查询参数；需要认证的服务应使用对应的 API Key 配置。
 
 ## 命令行
 
@@ -208,15 +245,15 @@ MODEL_ID=claude-sonnet-4-6
 | `pamu` | 启动交互式会话 |
 | `pamu login [provider] [--no-verify]` | 配置供应商与模型，`--no-verify` 跳过联网校验 |
 | `pamu logout [provider]` | 删除一个或全部已保存的供应商 |
-| `pamu status` | 查看当前供应商、模型与已登录账号 |
+| `pamu status` | 查看有效供应商、协议、地址、模型来源与已配置账号 |
 | `pamu use <provider>` | 指定下次启动使用的供应商 |
 
 ## REPL 交互
 
 | 命令 | 说明 |
 | --- | --- |
-| `/login` | 配置 API Key 并选择模型 |
-| `/status` | 查看供应商、模型及登录状态 |
+| `/login` | 配置模型服务、认证和模型 |
+| `/status` | 查看当前供应商、协议、地址、模型来源及登录状态 |
 | `/model` | 选择或切换当前模型 |
 | `/provider` | 选择并切换供应商 |
 | `/thinking` | 选择或切换思考程度 |
@@ -242,7 +279,7 @@ MODEL_ID=claude-sonnet-4-6
 
 ### 思考程度
 
-`/thinking` 决定上下横线的颜色，并在请求里附带对应的 token 预算：
+Messages 后端的 `/thinking` 决定上下横线的颜色，并在请求里附带对应的 token 预算：
 
 | 级别 | 预算 | 说明 |
 | --- | --- | --- |
@@ -251,6 +288,10 @@ MODEL_ID=claude-sonnet-4-6
 | `low` | 2048 | 低 |
 | `medium` | 8192 | 中 |
 | `high` | 16384 | 高 |
+
+Responses、Chat Completions 和 Ollama 首版只接受 `off`，选择其他档位会提示不支持且不保存变更。
+这里的 `off` 表示客户端不主动请求额外推理参数，不保证模型服务完全不推理。必要的原生推理回放信息
+按协议、供应商、地址和模型隔离，切换后只保留可兼容的文本及工具往返。
 
 ## 工具
 
@@ -307,8 +348,8 @@ Agent 循环（core/loop.py）
         ├── 上下文与压缩（core/context.py、core/prompt.py、core/compaction.py）
         ├── 失败恢复（core/recovery.py：回退模型、重试、续写）
         ▼
-适配器层（adapters/anthropic.py、adapters/providers.py）
-        │  Anthropic Messages API、流式事件、供应商切换
+适配器层（adapters/*、provider_config.py）
+        │  Messages / Responses / Chat Completions / Ollama、流式事件、配置与切换
         ▼
 工具与特性（tools/*、features/*）
           注册表、执行器、Hooks；记忆、任务、子代理、团队、worktree、MCP、调度
@@ -333,12 +374,14 @@ agent_app/
 
 ```bash
 uv sync                          # 安装项目与 dev 依赖
-uv run pytest -q                 # 全量测试：371 条用例
+uv run pytest -q                 # 全量离线测试
 uv run pytest tests/test_cli_pty.py -q   # 终端 / PTY 相关用例
 ```
 
 测试用假的模型客户端、临时目录与本地凭证，不需要真实 API Key 或网络。其中两条用例通过真实
 PTY 驱动终端，需要可用的 PTY 设备。
+新协议测试覆盖工具往返、参数分片、断流、截断恢复、原生回放隔离、配置保存、启动与切换。
+离线测试不代表已验证真实模型效果；真实 OpenAI/Ollama 连通性需要用户可用的服务另行验证。
 
 想通过真实命令验证改动：
 
