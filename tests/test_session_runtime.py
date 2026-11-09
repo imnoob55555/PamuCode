@@ -375,3 +375,31 @@ def test_restore_warns_for_unfinished_background_or_subagent(tmp_path, kind):
     restored.sessions.restore(restored, saved, restored.sessions.store.acquire(saved['id']))
     assert '后台任务或子代理无法自动恢复' in restored.session.history[-1]['content']
     restored.sessions.close()
+
+
+@pytest.mark.parametrize('prior_notice', [False, True])
+def test_restore_warns_for_later_background_after_completion_or_notice(tmp_path, prior_notice):
+    notice = '[会话恢复] 之前的后台任务或子代理无法自动恢复，请检查实际状态。'
+    rt = runtime(tmp_path)
+    rt.session.history[:] = [
+        {'role': 'user', 'content': 'go'},
+        {'role': 'assistant', 'content': [call('first')]},
+        {'role': 'user', 'content': [result('first', '[Background task bg_0001 started] command')]},
+        {'role': 'user', 'content': notice if prior_notice else '<task_notification><task_id>bg_0001</task_id><status>completed</status></task_notification>'},
+        {'role': 'assistant', 'content': [call('second')]},
+        {'role': 'user', 'content': [result('second', '[Background task bg_0001 started] another command')]},
+    ]
+    checkpoint(rt)
+    saved = rt.sessions.store.load(rt.sessions.session_id)
+    rt.sessions.close()
+    restored = runtime(tmp_path)
+    restored.sessions.restore(restored, saved, restored.sessions.store.acquire(saved['id']))
+    assert restored.session.history[-1]['content'] == notice
+    assert sum(m['content'] == notice for m in restored.session.history) == (2 if prior_notice else 1)
+    checkpoint(restored)
+    saved = restored.sessions.store.load(saved['id'])
+    restored.sessions.close()
+    again = runtime(tmp_path)
+    again.sessions.restore(again, saved, again.sessions.store.acquire(saved['id']))
+    assert again.session.history == restored.session.history
+    again.sessions.close()

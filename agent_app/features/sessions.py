@@ -107,20 +107,21 @@ class SessionPersistence:
             repaired = []
             background = False
             background_starts = set()
-            background_finished = set()
-            for message in history:
+            for i, message in enumerate(history):
+                repaired.append(message)
                 content = message.get('content', '')
                 texts = [content] if isinstance(content, str) else [
                     block.get('text', '') for block in content
                     if isinstance(block, dict) and block.get('type') == 'text'
                 ]
                 for text in texts:
+                    if _INTERRUPTED_BACKGROUND in text:
+                        background = False
+                        background_starts.clear()
                     for notification in re.findall(r'<task_notification>(.*?)</task_notification>', text, re.DOTALL):
                         match = re.search(r'<task_id>(bg_\d+)</task_id>.*?<status>(completed|failed)</status>', notification, re.DOTALL)
                         if match:
-                            background_finished.add(match.group(1))
-            for i, message in enumerate(history):
-                repaired.append(message)
+                            background_starts.discard(match.group(1))
                 calls = _blocks(message, 'tool_use') if message['role'] == 'assistant' else []
                 if not calls:
                     continue
@@ -151,8 +152,8 @@ class SessionPersistence:
                 background |= any(call['name'] == 'spawn_teammate' and any(
                     result['tool_use_id'] == call['id'] and "' spawned as " in str(result['content'])
                     for result in results) for call in calls)
-            background |= bool(background_starts - background_finished)
-            if background and not any(_INTERRUPTED_BACKGROUND in str(m['content']) for m in repaired):
+            background |= bool(background_starts)
+            if background:
                 repaired.append({'role': 'user', 'content': _INTERRUPTED_BACKGROUND})
             runtime.session.history[:] = repaired
             runtime.session.todos[:] = copy.deepcopy(snapshot['todos'])
