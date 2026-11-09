@@ -16,6 +16,8 @@ from .branding import render_startup_screen
 from .cli_exit import ExitAction, ExitGesture, QuitRequested
 from .config import MissingConfigurationError
 from .core.loop import run_agent_loop
+from .features.sessions import checkpoint
+from .features.session_store import SessionError
 from .features import auth
 from .features.scheduler import (
     cron_scheduler_loop,
@@ -45,7 +47,16 @@ def run_agent_turn(runtime, user_query: str | None = None) -> None:
     # Slash commands are REPL-local controls; they never join the LLM context.
     if user_query and not user_query.lstrip().startswith("/"):
         runtime.session.history.append({"role": "user", "content": user_query})
-    run_agent_loop(runtime)
+    checkpoint(runtime, status="running")
+    try:
+        run_agent_loop(runtime)
+    except BaseException:
+        coordinator = getattr(runtime, "sessions", None)
+        if coordinator is None or not coordinator.failed:
+            checkpoint(runtime, status="interrupted")
+        raise
+    else:
+        checkpoint(runtime, status="idle")
     print()
 
 
@@ -56,9 +67,15 @@ def _queue_processor_loop(runtime) -> None:
         if not runtime.agent_lock.acquire(blocking=False):
             continue
         try:
+            if getattr(runtime.stop_event, "is_set", lambda: False)():
+                return
             if has_cron_queue(runtime.scheduler):
                 print("\n  \033[35m[queue processor] delivering scheduled work\033[0m")
                 run_agent_turn(runtime)
+        except SessionError as exc:
+            print(str(exc))
+            runtime.stop_event.set()
+            return
         finally:
             runtime.agent_lock.release()
 

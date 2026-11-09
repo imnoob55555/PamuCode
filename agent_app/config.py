@@ -47,6 +47,10 @@ class AppConfig:
     permission_poll_interval: float = 0.5
     permission_timeout: float = 300.0
 
+    @property
+    def sessions_dir(self) -> Path:
+        return self.state_dir / "sessions"
+
     @classmethod
     def from_env(
         cls,

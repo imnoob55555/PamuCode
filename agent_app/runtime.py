@@ -134,6 +134,8 @@ class RuntimeContext:
     agent_lock: threading.Lock = field(default_factory=threading.Lock)
     stop_event: threading.Event = field(default_factory=threading.Event)
 
+    sessions: Any = None
+
     def __post_init__(self) -> None:
         # Direct constructions without an explicit router (tests, embedders)
         # still get a consistent, switchable view of the configured model.

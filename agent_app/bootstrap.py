@@ -34,6 +34,7 @@ from .features.teams import protocol as team_protocol
 from .features.teams import teammates
 from .logging_setup import setup_logging
 from .runtime import ModelRouter, RuntimeContext, SessionState
+from .features.sessions import SessionPersistence
 from .thinking import DEFAULT_THINKING_LEVEL, normalize_level
 from .tools import builtin
 from .tools.hooks import (
@@ -512,6 +513,7 @@ def build_runtime(
         team=team_state,
         mcp=mcp_state,
         model=model_router,
+        sessions=SessionPersistence(config.workdir),
     )
 
 

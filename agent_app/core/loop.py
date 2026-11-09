@@ -12,6 +12,8 @@ from ..features.background import (
 )
 from ..adapters.common import generic_blocks
 from ..features.mcp import snapshot_mcp_tools
+from ..features.sessions import checkpoint, archive_history
+from ..features.session_store import SessionError
 from ..features.memory import (
     build_request_messages_with_memories,
     consolidate_memories,
@@ -70,6 +72,7 @@ def _extract_text(content) -> str:
 
 
 def _summarize(runtime: RuntimeContext, payload, max_tokens: int = 2_000) -> str:
+    checkpoint(runtime, status="running")
     router = runtime.model
     assert router is not None
     if isinstance(payload, list):
@@ -180,6 +183,7 @@ def run_agent_loop(runtime: RuntimeContext) -> None:
         return _summarize(runtime, payload, max_tokens)
 
     while True:
+        checkpoint(runtime, status="running")
         fired_jobs = consume_cron_queue(runtime.scheduler)
         pending_texts = [
             f"[Scheduled: {job.id}] {job.prompt}" for job in fired_jobs
@@ -194,10 +198,16 @@ def run_agent_loop(runtime: RuntimeContext) -> None:
         messages[:] = tool_result_budget(runtime.config, messages)
         messages[:] = snip_compact(messages)
         messages[:] = micro_compact(runtime.config, messages)
+        archive_history(runtime, pre_compact_messages, messages)
+        checkpoint(runtime)
+        before_auto = copy.deepcopy(messages)
         if estimate_size(messages) > runtime.config.context_limit:
             LOGGER.info("auto compact triggered")
             print("[auto compact]")
             messages[:] = compact_history(runtime.config, summarize, messages)
+
+        archive_history(runtime, before_auto, messages)
+        checkpoint(runtime)
 
         if session.rounds_since_todo >= 3:
             messages.append(
@@ -216,6 +226,7 @@ def run_agent_loop(runtime: RuntimeContext) -> None:
         request_messages = build_request_messages_with_memories(
             runtime.memory, messages, summarize
         )
+        checkpoint(runtime)
         thinking, request_max_tokens = plan_request(
             router.thinking_snapshot(),
             max_tokens,
@@ -231,6 +242,7 @@ def run_agent_loop(runtime: RuntimeContext) -> None:
             thinking=thinking,
             tools=tools,
         ):
+            checkpoint(runtime, status="running")
             return runtime.llm.create_streaming(
                 system=system,
                 messages=request_messages,
@@ -293,6 +305,8 @@ def run_agent_loop(runtime: RuntimeContext) -> None:
             )
             _update_context(runtime)
             return
+        except SessionError:
+            raise
         except Exception as exc:
             if (
                 is_prompt_too_long_error(exc)
@@ -302,9 +316,14 @@ def run_agent_loop(runtime: RuntimeContext) -> None:
                 state.reactive_compact_count += 1
                 LOGGER.warning("recovery: reactive compact")
                 try:
+                    before_reactive = copy.deepcopy(messages)
                     messages[:] = reactive_compact(
                         runtime.config, summarize, messages
                     )
+                    archive_history(runtime, before_reactive, messages)
+                    checkpoint(runtime)
+                except SessionError:
+                    raise
                 except Exception as compact_exc:
                     append_unrecoverable_error(messages, compact_exc)
                     _update_context(runtime)
@@ -345,6 +364,7 @@ def run_agent_loop(runtime: RuntimeContext) -> None:
                         ],
                     }
                 )
+            checkpoint(runtime)
             state.has_escalated = True
             max_tokens = runtime.config.escalated_max_tokens
             if state.continuation_count < runtime.config.max_continuations:
@@ -369,6 +389,7 @@ def run_agent_loop(runtime: RuntimeContext) -> None:
             return
 
         messages.append({"role": "assistant", "content": response.content})
+        checkpoint(runtime)
         if not _has_tool_use(response.content):
             force = runtime.hooks.trigger("Stop", messages)
             if force:
@@ -377,13 +398,23 @@ def run_agent_loop(runtime: RuntimeContext) -> None:
             if _wait_for_team_activity(runtime):
                 continue
             extract_memories(runtime.memory, pre_compact_messages, summarize)
+            checkpoint(runtime)
             consolidate_memories(runtime.memory, summarize)
+            checkpoint(runtime)
             _update_context(runtime)
             LOGGER.info("turn complete")
             return
 
         session.rounds_since_todo += 1
         results = []
+        result_message = {"role": "user", "content": results}
+
+        def add_result(result):
+            if not results:
+                messages.append(result_message)
+            results.append(result)
+            checkpoint(runtime, tool_id=result["tool_use_id"], tool_status="completed")
+
         compacted_now = False
         for block in response.content:
             if _block_value(block, "type") != "tool_use":
@@ -393,8 +424,23 @@ def run_agent_loop(runtime: RuntimeContext) -> None:
             tool_use_id = _block_value(block, "id")
             LOGGER.info("tool_call name=%s", name)
             print(f"\033[36m> {name}\033[0m")
+            checkpoint(runtime, tool_id=tool_use_id, tool_status="running")
             if name == "compact":
+                # Pair every call before replacing history, including later calls
+                # deliberately skipped by the compact control tool.
+                completed_ids = {r["tool_use_id"] for r in results}
+                for pending in response.content:
+                    if _block_value(pending, "type") != "tool_use":
+                        continue
+                    pending_id = _block_value(pending, "id")
+                    if pending_id not in completed_ids:
+                        add_result({"type": "tool_result", "tool_use_id": pending_id,
+                                    "content": "会话上下文已压缩" if pending_id == tool_use_id else "上下文压缩，工具未执行",
+                                    "is_error": pending_id != tool_use_id})
+                before_manual = copy.deepcopy(messages)
                 messages[:] = compact_history(runtime.config, summarize, messages)
+                archive_history(runtime, before_manual, messages)
+                checkpoint(runtime)
                 messages.append(
                     {
                         "role": "user",
@@ -408,7 +454,7 @@ def run_agent_loop(runtime: RuntimeContext) -> None:
 
             blocked = runtime.hooks.trigger("PreToolUse", block)
             if blocked:
-                results.append(
+                add_result(
                     {
                         "type": "tool_result",
                         "tool_use_id": tool_use_id,
@@ -417,6 +463,7 @@ def run_agent_loop(runtime: RuntimeContext) -> None:
                 )
                 continue
 
+            checkpoint(runtime)
             if should_run_background(name, tool_input):
                 background_id = start_background_task(
                     runtime.background,
@@ -429,7 +476,7 @@ def run_agent_loop(runtime: RuntimeContext) -> None:
                         runtime.config, used_id, output
                     ),
                 )
-                results.append(
+                add_result(
                     {
                         "type": "tool_result",
                         "tool_use_id": tool_use_id,
@@ -443,20 +490,20 @@ def run_agent_loop(runtime: RuntimeContext) -> None:
                 continue
 
             output = execute_tool(block, handlers)
-            runtime.hooks.trigger("PostToolUse", block, output)
             if name == "todo_write":
                 session.rounds_since_todo = 0
-            results.append(
+            add_result(
                 {
                     "type": "tool_result",
                     "tool_use_id": tool_use_id,
                     "content": output,
                 }
             )
+            runtime.hooks.trigger("PostToolUse", block, output)
 
         if compacted_now:
             continue
-        user_content = list(results)
+        user_content = results
         background_notifications = collect_background_results(runtime.background)
         user_content.extend(
             {"type": "text", "text": notification}
@@ -466,4 +513,6 @@ def run_agent_loop(runtime: RuntimeContext) -> None:
             f"  \033[32m[inject] {len(background_notifications)} "
             "background notification(s)\033[0m"
         )
-        messages.append({"role": "user", "content": user_content})
+        if not results:
+            messages.append({"role": "user", "content": user_content})
+        checkpoint(runtime)
