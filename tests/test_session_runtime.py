@@ -319,3 +319,59 @@ def test_completed_result_is_saved_before_post_tool_hook_interrupts(runtime_fact
     assert saved['history'][-1]['content'] == [result('a', 'completed output')]
     assert saved['tool_states'] == {'a': 'completed', 'b': 'pending'}
     rt.sessions.close()
+
+
+def test_restore_completed_subagent_and_background_do_not_warn(tmp_path):
+    rt = runtime(tmp_path)
+    task = dict(call('sub'), name='task')
+    rt.session.history[:] = [
+        {'role': 'user', 'content': 'go'},
+        {'role': 'assistant', 'content': [task, call('bg')]},
+        {'role': 'user', 'content': [result('sub', 'finished'), result('bg', '[Background task bg_0001 started] command')]},
+        {'role': 'user', 'content': '<task_notification>\n  <task_id>bg_0001</task_id>\n  <status>completed</status>\n</task_notification>'},
+    ]
+    checkpoint(rt)
+    saved = rt.sessions.store.load(rt.sessions.session_id)
+    rt.sessions.close()
+    restored = runtime(tmp_path)
+    restored.sessions.restore(restored, saved, restored.sessions.store.acquire(saved['id']))
+    assert restored.session.history == saved['history']
+    restored.sessions.close()
+
+
+def test_restore_places_missing_results_before_existing_text(tmp_path):
+    rt = runtime(tmp_path)
+    rt.session.history[:] = [
+        {'role': 'user', 'content': 'go'},
+        {'role': 'assistant', 'content': [call('a'), call('b')]},
+        {'role': 'user', 'content': [result('a', 'done'), {'type': 'text', 'text': 'additional context'}]},
+    ]
+    checkpoint(rt)
+    saved = rt.sessions.store.load(rt.sessions.session_id)
+    rt.sessions.close()
+    restored = runtime(tmp_path)
+    restored.sessions.restore(restored, saved, restored.sessions.store.acquire(saved['id']))
+    blocks = restored.session.history[-1]['content']
+    assert [block['type'] for block in blocks] == ['tool_result', 'tool_result', 'text']
+    assert blocks[0] == result('a', 'done')
+    assert blocks[-1]['text'] == 'additional context'
+    restored.sessions.close()
+
+
+@pytest.mark.parametrize('kind', ['background', 'running_subagent'])
+def test_restore_warns_for_unfinished_background_or_subagent(tmp_path, kind):
+    rt = runtime(tmp_path)
+    block = dict(call('work'), name='task' if kind == 'running_subagent' else 'bash')
+    rt.session.history[:] = [
+        {'role': 'user', 'content': 'go'},
+        {'role': 'assistant', 'content': [block]},
+    ]
+    if kind == 'background':
+        rt.session.history.append({'role': 'user', 'content': [result('work', '[Background task bg_0001 started] command')]})
+    checkpoint(rt, status='running', tool_id='work', tool_status='running')
+    saved = rt.sessions.store.load(rt.sessions.session_id)
+    rt.sessions.close()
+    restored = runtime(tmp_path)
+    restored.sessions.restore(restored, saved, restored.sessions.store.acquire(saved['id']))
+    assert '后台任务或子代理无法自动恢复' in restored.session.history[-1]['content']
+    restored.sessions.close()

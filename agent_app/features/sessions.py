@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import re
 import threading
 import time
 import uuid
@@ -105,6 +106,19 @@ class SessionPersistence:
                                  if history[i]['role'] == 'assistant'), None)
             repaired = []
             background = False
+            background_starts = set()
+            background_finished = set()
+            for message in history:
+                content = message.get('content', '')
+                texts = [content] if isinstance(content, str) else [
+                    block.get('text', '') for block in content
+                    if isinstance(block, dict) and block.get('type') == 'text'
+                ]
+                for text in texts:
+                    for notification in re.findall(r'<task_notification>(.*?)</task_notification>', text, re.DOTALL):
+                        match = re.search(r'<task_id>(bg_\d+)</task_id>.*?<status>(completed|failed)</status>', notification, re.DOTALL)
+                        if match:
+                            background_finished.add(match.group(1))
             for i, message in enumerate(history):
                 repaired.append(message)
                 calls = _blocks(message, 'tool_use') if message['role'] == 'assistant' else []
@@ -118,16 +132,26 @@ class SessionPersistence:
                     if call['id'] in done:
                         continue
                     state = snapshot['tool_states'].get(call['id']) if i == latest_batch else None
+                    if call['name'] in ('task', 'spawn_teammate') and state != 'pending':
+                        background = True
                     missing.append(dict(type='tool_result', tool_use_id=call['id'], is_error=True,
                         content='上次会话中断，此工具未执行' if state == 'pending' else
                         '执行结果未知，可能已产生副作用，请先检查实际状态'))
                 if missing:
                     if following is not None and isinstance(following['content'], list):
-                        following['content'].extend(missing)
+                        content = following['content']
+                        following['content'] = ([b for b in content if isinstance(b, dict) and b.get('type') == 'tool_result']
+                                                + missing + [b for b in content if not (isinstance(b, dict) and b.get('type') == 'tool_result')])
                     else:
                         repaired.append({'role': 'user', 'content': missing})
-                background |= any('[Background task ' in str(b['content']) and ' started]' in str(b['content']) for b in results)
-                background |= any(b['name'] in ('task', 'spawn_teammate') for b in calls)
+                for result in results:
+                    match = re.search(r'\[Background task (bg_\d+) started\]', str(result['content']))
+                    if match:
+                        background_starts.add(match.group(1))
+                background |= any(call['name'] == 'spawn_teammate' and any(
+                    result['tool_use_id'] == call['id'] and "' spawned as " in str(result['content'])
+                    for result in results) for call in calls)
+            background |= bool(background_starts - background_finished)
             if background and not any(_INTERRUPTED_BACKGROUND in str(m['content']) for m in repaired):
                 repaired.append({'role': 'user', 'content': _INTERRUPTED_BACKGROUND})
             runtime.session.history[:] = repaired
