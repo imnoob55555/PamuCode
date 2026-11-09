@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import getpass
+from contextlib import nullcontext
 import os
 import shutil
 import sys
@@ -364,7 +365,26 @@ def run_command(
 # ---------------------------------------------------------------------------
 
 
-def handle_slash_command(
+def handle_slash_command(runtime, query: str, *, credentials_path=None,
+                         client_factory=None, print_fn=print, ui=None):
+    """Keep model changes and their durable checkpoint in one agent transaction."""
+    mutating = query.strip().partition(" ")[0] in ("/model", "/provider", "/thinking")
+    lock = getattr(runtime, "agent_lock", None) if mutating else None
+    with lock if lock is not None else nullcontext():
+        fields = ("provider", "protocol", "base_url", "primary_model", "fallback_model", "thinking_level")
+        router = getattr(runtime, "model", None)
+        before = tuple(getattr(router, key, None) for key in fields)
+        result = _handle_slash_command(
+            runtime, query, credentials_path=credentials_path,
+            client_factory=client_factory, print_fn=print_fn, ui=ui,
+        )
+        after = tuple(getattr(router, key, None) for key in fields)
+        if mutating and before != after:
+            checkpoint(runtime)
+        return result
+
+
+def _handle_slash_command(
     runtime,
     query: str,
     *,
@@ -440,6 +460,8 @@ def handle_slash_command(
 
     if command == "/status":
         provider, model, fallback = runtime.model.snapshot()
+        coordinator = getattr(runtime, "sessions", None)
+        print_fn(f"会话：{getattr(coordinator, 'session_id', None) or '尚未保存'}")
         print_fn(f"供应商：{provider}")
         print_fn(f"协议：{runtime.model.protocol}")
         if runtime.model.base_url:
@@ -591,10 +613,10 @@ def handle_slash_command(
     notify_or_print(ui, f"未知命令：{command}。输入 /help 查看可用命令。", print_fn=print_fn)
 
 
-def _create_runtime(runtime_factory, credentials_path):
+def _create_runtime(runtime_factory, credentials_path, session_selection=None):
     try:
-        if runtime_factory is build_default_runtime and credentials_path is not None:
-            return runtime_factory(credentials_path=credentials_path)
+        if runtime_factory is build_default_runtime:
+            return runtime_factory(credentials_path=credentials_path, session_selection=session_selection)
         return runtime_factory()
     except MissingConfigurationError as error:
         global_config = Path.home() / ".pamu" / ".settings"
@@ -612,6 +634,8 @@ def _create_runtime(runtime_factory, credentials_path):
         print(f"登录信息缺失：{error}", file=sys.stderr)
     except ProviderConfigurationError as error:
         print(f"配置错误：{error}", file=sys.stderr)
+    except SessionError as error:
+        print(f"会话错误：{error}", file=sys.stderr)
     return None
 
 
@@ -651,6 +675,18 @@ def main(
             args, credentials_path=credentials_path, verify=verify,
             client_factory=client_factory,
         )
+    selected_session = None
+    if args and args[0] == "resume":
+        from .session_cli import select_session
+        try:
+            selected_session = select_session(args[1:], ui)
+        except (EOFError, KeyboardInterrupt, QuitRequested):
+            return 0
+        except SessionError as error:
+            print(f"会话错误：{error}", file=sys.stderr)
+            return 2
+        if selected_session is None:
+            return 0
     if configuration_check is None:
         from .bootstrap import has_local_configuration
 
@@ -660,12 +696,37 @@ def main(
         )
     runtime = None
     configuration_error = False
-    if ui is None or configuration_check():
-        runtime = _create_runtime(runtime_factory, credentials_path)
+    if selected_session is not None or ui is None or configuration_check():
+        try:
+            runtime = _create_runtime(runtime_factory, credentials_path, selected_session[0]["selection"] if selected_session else None)
+        except BaseException:
+            if selected_session:
+                selected_session[1].close()
+            raise
         if runtime is None:
             configuration_error = True
+            if selected_session:
+                selected_session[1].close()
+                return 2
             if not interactive:
                 return 2
+    if selected_session:
+        coordinator = getattr(runtime, "sessions", None)
+        try:
+            if coordinator is None:
+                raise SessionError("当前运行时不支持会话恢复")
+            coordinator.restore(runtime, *selected_session)
+            from .session_cli import show_restored_session
+            show_restored_session(selected_session[0], runtime)
+        except BaseException as error:
+            if coordinator is not None:
+                coordinator.close()
+            selected_session[1].close()
+            if isinstance(error, SessionError):
+                print(f"会话错误：{error}", file=sys.stderr)
+                return 2
+            raise
+    exit_code = None
     threads = []
     exit_gesture = ExitGesture()
     if ui is not None:
@@ -747,6 +808,28 @@ def main(
             runtime.hooks.trigger("UserPromptSubmit", query)
             with runtime.agent_lock:
                 run_turn(runtime, query)
+    except SessionError as error:
+        print(f"会话错误：{error}", file=sys.stderr)
+        exit_code = 2
     finally:
         if runtime is not None:
-            stop_threads(runtime, threads)
+            coordinator = getattr(runtime, "sessions", None)
+            try:
+                stop_threads(runtime, threads)
+                if coordinator is not None and exit_code != 2:
+                    lock = runtime.agent_lock
+                    acquire = getattr(lock, "acquire", None)
+                    # Legacy injected locks may only support context management.
+                    # Without nonblocking acquisition there is no safe final snapshot.
+                    if acquire is not None and acquire(blocking=False):
+                        try:
+                            checkpoint(runtime)
+                        finally:
+                            lock.release()
+            except SessionError as error:
+                print(f"会话错误：{error}", file=sys.stderr)
+                exit_code = 2
+            finally:
+                if coordinator is not None:
+                    coordinator.close()
+    return exit_code

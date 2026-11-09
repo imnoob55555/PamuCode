@@ -542,14 +542,24 @@ def has_local_configuration(credentials_path: Path | None = None) -> bool:
     return True
 
 
-def build_default_runtime(*, credentials_path: Path | None = None) -> RuntimeContext:
+def build_default_runtime(*, credentials_path: Path | None = None, session_selection: dict | None = None) -> RuntimeContext:
     """Resolve configuration and wire the selected protocol into all model calls."""
     from .provider_config import resolve_provider_config
     from .adapters.providers import build_client, build_adapter
 
     environment = load_runtime_environment()
     credentials = auth_store.load_credentials(credentials_path or CREDENTIALS_PATH)
-    resolved = resolve_provider_config(environment, credentials)
+    selection = session_selection or {}
+    saved_provider = selection.get("provider")
+    chosen_provider = (environment.get("PAMU_PROVIDER") or "").strip() or saved_provider
+    use_saved_model = bool(saved_provider and chosen_provider == saved_provider and not (environment.get("MODEL_ID") or "").strip())
+    if use_saved_model:
+        environment = {**environment, "MODEL_ID": selection.get("primary_model", "")}
+    resolved = resolve_provider_config(environment, credentials, chosen_provider)
+    if (selection and chosen_provider == saved_provider and
+        resolved.protocol == selection.get("protocol") and resolved.base_url == selection.get("base_url") and
+        "FALLBACK_MODEL_ID" not in environment and selection.get("fallback_model")):
+        environment = {**environment, "FALLBACK_MODEL_ID": selection["fallback_model"]}
     spec = resolved.spec
     # Omit the official Anthropic URL to retain its established SDK injection API.
     client_url = None if spec.name == "anthropic" and resolved.base_url == spec.base_url else resolved.base_url
@@ -558,9 +568,11 @@ def build_default_runtime(*, credentials_path: Path | None = None) -> RuntimeCon
     config = AppConfig.from_env(INSTALL_ROOT, Path.cwd().resolve(),
                                 {**environment, "MODEL_ID": resolved.model})
     thinking = _saved_thinking(auth_store.get_login(credentials, spec.name))
+    if selection and chosen_provider == saved_provider and resolved.protocol == selection.get("protocol"):
+        thinking = normalize_level(selection.get("thinking_level")) or thinking
     return build_runtime(
         config, client, progress_factory=terminal_progress, provider=spec.name,
         thinking_level=thinking if spec.protocol == "anthropic_messages" else "off",
         adapter=adapter, protocol=resolved.protocol, base_url=resolved.base_url,
-        model_source=resolved.model_source,
+        model_source="恢复会话" if use_saved_model else resolved.model_source,
     )

@@ -229,3 +229,62 @@ main(argv=[], credentials_path=Path(sys.argv[1]))
             process.wait(timeout=2)
         os.close(slave)
         os.close(master)
+
+
+def test_resume_picker_restores_and_quits_without_model_request(tmp_path):
+    from tests.test_session_runtime import runtime
+    from agent_app.features.sessions import checkpoint
+    from agent_app.features.session_store import SessionStore
+
+    original = runtime(tmp_path)
+    original.model.base_url = 'https://api.anthropic.com'
+    original.session.history[:] = [{'role': 'user', 'content': 'PTY restored question'}]
+    checkpoint(original)
+    saved = original.sessions.store.load(original.sessions.session_id)
+    original.sessions.close()
+    script = '''
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+from agent_app import bootstrap
+from agent_app.cli import main
+class Client:
+    def __init__(self, **kw):
+        self.messages = SimpleNamespace(create=self.fail, stream=self.fail)
+    def fail(self, **kw):
+        raise AssertionError('resume must not send a model request')
+sys.modules['anthropic'] = SimpleNamespace(Anthropic=Client)
+bootstrap.load_runtime_environment = lambda: {'ANTHROPIC_API_KEY': 'fake-pty-only'}
+raise SystemExit(main(argv=['resume'], credentials_path=Path(sys.argv[1])))
+'''
+    environment = dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parents[1]),
+                       TERM='xterm-256color', PROMPT_TOOLKIT_NO_CPR='1')
+    master, slave = pty.openpty()
+    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', 28, 110, 0, 0))
+    process = subprocess.Popen(
+        [sys.executable, '-c', script, str(tmp_path / 'missing-credentials.json')],
+        stdin=slave, stdout=slave, stderr=slave, cwd=tmp_path, env=environment,
+    )
+    output = bytearray()
+    deadline = time.monotonic() + 15
+    try:
+        _read_until(master, output, '选择会话'.encode(), deadline)
+        _read_until(master, output, b'PTY restored question', deadline)
+        os.write(master, b'\r')
+        _read_until(master, output, '已恢复会话'.encode(), deadline)
+        _read_until(master, output, '─'.encode(), deadline)
+        os.write(master, b'/status\r')
+        _read_until(master, output, ('会话：' + saved['id']).encode(), deadline)
+        os.write(master, b'/quit\r')
+        _read_until(master, output, 'Shutting down PamuCode'.encode(), deadline)
+        process.wait(timeout=5)
+        assert process.returncode == 0
+        assert b'fake-pty-only' not in output
+        assert SessionStore(tmp_path).load(saved['id']) == saved
+        SessionStore(tmp_path).acquire(saved['id']).close()
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=2)
+        os.close(slave)
+        os.close(master)
