@@ -72,7 +72,7 @@ def test_unsafe_files_and_lock(tmp_path):
 
 def test_atomic_failure(tmp_path, monkeypatch):
     store = SessionStore(tmp_path); s = snapshot(tmp_path); store.save(s)
-    monkeypatch.setattr(os, 'replace', lambda *args: (_ for _ in ()).throw(OSError('fail')))
+    monkeypatch.setattr(os, 'replace', lambda *args, **kwargs: (_ for _ in ()).throw(OSError('fail')))
     changed = copy.deepcopy(s); changed['title'] = 'changed'
     with pytest.raises(SessionError): store.save(changed)
     assert store.load(s['id']) == s
@@ -107,3 +107,52 @@ def test_private_directories_and_invalid_archive(tmp_path):
 def test_oversized_timestamp_is_safe_error(tmp_path):
     s = snapshot(tmp_path); s['created_at'] = 10 ** 400
     with pytest.raises(SessionError): SessionStore(tmp_path).save(s)
+
+
+@pytest.mark.parametrize('operation', ['load', 'acquire', 'save'])
+@pytest.mark.skipif(os.name != 'posix', reason='POSIX directory-FD containment guarantee')
+def test_directory_swap_cannot_redirect_file_operations(tmp_path, monkeypatch, operation):
+    store = SessionStore(tmp_path); s = snapshot(tmp_path); store.save(s)
+    directory = tmp_path / '.pamu/sessions'
+    moved = tmp_path / '.pamu/original-sessions'
+    outside = tmp_path / 'outside'; outside.mkdir()
+    if operation == 'load':
+        hostile = copy.deepcopy(s); hostile['title'] = 'outside'
+        (outside / (s['id'] + '.json')).write_text(json.dumps(hostile))
+    real_open = os.open
+    swapped = False
+
+    def swap_before_file_open(path, flags, *args, **kwargs):
+        nonlocal swapped
+        name = os.fspath(path)
+        suffix = '.json' if operation == 'load' else '.lock' if operation == 'acquire' else '.tmp'
+        if not swapped and name.endswith(suffix):
+            directory.rename(moved)
+            directory.symlink_to(outside, target_is_directory=True)
+            swapped = True
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, 'open', swap_before_file_open)
+    if operation == 'load':
+        assert store.load(s['id'])['title'] == 'hello'
+    elif operation == 'acquire':
+        with store.acquire(s['id']): pass
+        assert not list(outside.iterdir())
+    else:
+        s['title'] = 'updated'; store.save(s)
+        assert not list(outside.iterdir())
+        assert json.loads((moved / (s['id'] + '.json')).read_text())['title'] == 'updated'
+    assert swapped
+
+
+def test_path_backend_preserves_functional_baseline_and_static_validation(tmp_path, monkeypatch):
+    import agent_app.features.session_store as module
+    monkeypatch.setattr(module, '_SECURE_DIR_FDS', False)
+    store = SessionStore(tmp_path); s = snapshot(tmp_path)
+    with store.acquire(s['id']): store.save(s)
+    assert store.load(s['id']) == s
+    assert store.list_sessions() == ([s], 0)
+    directory = tmp_path / '.pamu/sessions'
+    moved = tmp_path / '.pamu/original-sessions'
+    directory.rename(moved); directory.symlink_to(moved, target_is_directory=True)
+    with pytest.raises(SessionError): store.save(s)

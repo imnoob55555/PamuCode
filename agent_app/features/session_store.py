@@ -6,13 +6,16 @@ import math
 import os
 from pathlib import Path
 import stat
-import tempfile
 import uuid
+from contextlib import contextmanager
 
 from .session_codec import decode_history, safe_preview
 
 _MAX_BYTES = 32 * 1024 * 1024
 _PROTOCOLS = {'anthropic_messages', 'openai_responses', 'openai_chat', 'ollama'}
+# Windows keeps the validated-path backend; only POSIX supports anchoring
+# operations against concurrent directory replacement using stdlib primitives.
+_SECURE_DIR_FDS = os.name == 'posix' and hasattr(os, 'O_NOFOLLOW') and hasattr(os, 'O_DIRECTORY')
 
 
 class SessionError(ValueError):
@@ -28,9 +31,11 @@ def _id(text):
     raise SessionError('会话编号无效')
 
 
-def _regular(path, missing=False):
+def _regular(path, missing=False, *, dir_fd=None):
+    if isinstance(dir_fd, Path):
+        path, dir_fd = dir_fd / path, None
     try:
-        mode = path.lstat().st_mode
+        mode = os.stat(path, dir_fd=dir_fd, follow_symlinks=False).st_mode
     except FileNotFoundError:
         if missing:
             return
@@ -39,13 +44,29 @@ def _regular(path, missing=False):
         raise SessionError('会话路径必须是普通文件')
 
 
-def _open(path, flags):
-    _regular(path, missing=bool(flags & os.O_CREAT))
-    fd = os.open(path, flags | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0), 0o600)
+def _open(path, flags, *, dir_fd):
+    _regular(path, missing=bool(flags & os.O_CREAT), dir_fd=dir_fd)
+    if isinstance(dir_fd, Path):
+        path, dir_fd = dir_fd / path, None
+    fd = os.open(path, flags | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0), 0o600, dir_fd=dir_fd)
     if not stat.S_ISREG(os.fstat(fd).st_mode):
         os.close(fd)
         raise SessionError('会话路径必须是普通文件')
     return fd
+
+
+def _replace(source, target, directory):
+    if isinstance(directory, Path):
+        os.replace(directory / source, directory / target)
+    else:
+        os.replace(source, target, src_dir_fd=directory, dst_dir_fd=directory)
+
+
+def _unlink(name, directory):
+    if isinstance(directory, Path):
+        os.unlink(directory / name)
+    else:
+        os.unlink(name, dir_fd=directory)
 
 
 class SessionLease:
@@ -112,7 +133,7 @@ class SessionStore:
     def __init__(self, workdir: Path):
         given = Path(os.path.abspath(workdir))
         self._check_dirs(given)
-        self.workdir = given.resolve()
+        self.workdir = given
         self.directory = self.workdir / '.pamu' / 'sessions'
 
     @staticmethod
@@ -125,25 +146,69 @@ class SessionStore:
             if not stat.S_ISDIR(mode):
                 raise SessionError('会话目录路径无效')
 
+    @contextmanager
     def _directory(self, create=False):
+        """Hold every traversal step with no-follow directory descriptors.
+
+        Renaming/replacing an ancestor cannot redirect subsequent operations.
+        Windows retains static path validation; it lacks this race guarantee.
+        """
+        if not _SECURE_DIR_FDS:
+            yield self._path_directory(create)
+            return
+        fd = None
+        try:
+            flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+            fd = os.open(self.workdir.anchor, flags)
+            parts = [*self.workdir.parts[1:], '.pamu', 'sessions']
+            for index, part in enumerate(parts):
+                if create and index >= len(parts) - 2:
+                    try:
+                        os.mkdir(part, 0o700, dir_fd=fd)
+                    except FileExistsError:
+                        pass
+                try:
+                    child = os.open(part, flags, dir_fd=fd)
+                except FileNotFoundError:
+                    if not create:
+                        yield None
+                        return
+                    raise
+                os.close(fd)
+                fd = child
+                if create and index == len(parts) - 2:
+                    _regular('.gitignore', missing=True, dir_fd=fd)
+                    try:
+                        ignore_fd = _open('.gitignore', os.O_WRONLY | os.O_CREAT | os.O_EXCL, dir_fd=fd)
+                    except FileExistsError:
+                        pass
+                    else:
+                        with os.fdopen(ignore_fd, 'w', encoding='utf-8') as handle:
+                            handle.write('*\n!.gitignore\n')
+            yield fd
+        finally:
+            if fd is not None:
+                os.close(fd)
+
+    def _path_directory(self, create):
+        """Windows-compatible baseline, without active directory-swap protection."""
         self._check_dirs(self.directory)
         if create:
             self.directory.parent.mkdir(exist_ok=True, mode=0o700)
             self.directory.mkdir(exist_ok=True, mode=0o700)
-            ignore = self.directory.parent / '.gitignore'
-            _regular(ignore, missing=True)
+            _regular('.gitignore', missing=True, dir_fd=self.directory.parent)
             try:
-                fd = _open(ignore, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
+                fd = _open('.gitignore', os.O_WRONLY | os.O_CREAT | os.O_EXCL, dir_fd=self.directory.parent)
             except FileExistsError:
                 pass
             else:
                 with os.fdopen(fd, 'w', encoding='utf-8') as handle:
                     handle.write('*\n!.gitignore\n')
-        return self.directory.exists()
+        return self.directory if self.directory.exists() else None
 
-    def _read(self, path):
+    def _read(self, name, directory_fd):
         try:
-            fd = _open(path, os.O_RDONLY)
+            fd = _open(name, os.O_RDONLY, dir_fd=directory_fd)
             with os.fdopen(fd, 'rb') as handle:
                 if os.fstat(handle.fileno()).st_size > _MAX_BYTES:
                     raise SessionError('会话文件过大')
@@ -159,7 +224,7 @@ class SessionStore:
                 return result
             snapshot = json.loads(raw, object_pairs_hook=pairs)
             _validate(snapshot, self.workdir)
-            if snapshot['id'] != path.stem:
+            if snapshot['id'] != Path(name).stem:
                 raise SessionError('会话编号不匹配')
             return snapshot
         except SessionError:
@@ -169,19 +234,21 @@ class SessionStore:
 
     def list_sessions(self) -> tuple[list[dict], int]:
         try:
-            if not self._directory():
-                return [], 0
-            result, skipped = [], 0
-            for path in self.directory.iterdir():
-                if path.suffix != '.json':
-                    continue
-                try:
-                    _id(path.stem)
-                    result.append(self._read(path))
-                except SessionError:
-                    skipped += 1
-            result.sort(key=lambda s: (s['updated_at'], s['id']), reverse=True)
-            return result, skipped
+            with self._directory() as directory_fd:
+                if directory_fd is None:
+                    return [], 0
+                result, skipped = [], 0
+                for name in os.listdir(directory_fd):
+                    path = Path(name)
+                    if path.suffix != '.json':
+                        continue
+                    try:
+                        _id(path.stem)
+                        result.append(self._read(name, directory_fd))
+                    except SessionError:
+                        skipped += 1
+                result.sort(key=lambda s: (s['updated_at'], s['id']), reverse=True)
+                return result, skipped
         except OSError:
             raise SessionError('无法列出会话') from None
 
@@ -189,19 +256,21 @@ class SessionStore:
         if not isinstance(selector, str) or len(selector) < 8 or any(char not in '0123456789abcdef-' for char in selector) or len(selector) > 36:
             raise SessionError('请输入至少八位会话编号')
         try:
-            if not self._directory():
-                raise SessionError('未找到会话')
-            candidates = []
-            for path in self.directory.iterdir():
-                if path.suffix == '.json' and path.stem.startswith(selector):
-                    try:
-                        _id(path.stem)
-                    except SessionError:
-                        continue
-                    candidates.append(path)
-            if len(candidates) != 1:
-                raise SessionError('会话编号不唯一' if candidates else '未找到会话')
-            return self._read(candidates[0])
+            with self._directory() as directory_fd:
+                if directory_fd is None:
+                    raise SessionError('未找到会话')
+                candidates = []
+                for name in os.listdir(directory_fd):
+                    path = Path(name)
+                    if path.suffix == '.json' and path.stem.startswith(selector):
+                        try:
+                            _id(path.stem)
+                        except SessionError:
+                            continue
+                        candidates.append(name)
+                if len(candidates) != 1:
+                    raise SessionError('会话编号不唯一' if candidates else '未找到会话')
+                return self._read(candidates[0], directory_fd)
         except OSError:
             raise SessionError('无法读取会话') from None
 
@@ -209,18 +278,18 @@ class SessionStore:
         _id(session_id)
         fd = None
         try:
-            self._directory(create=True)
-            fd = _open(self.directory / (session_id + '.lock'), os.O_RDWR | os.O_CREAT)
-            if os.name == 'nt':
-                import msvcrt
-                if os.fstat(fd).st_size == 0:
-                    os.write(fd, b'\0')
-                os.lseek(fd, 0, os.SEEK_SET)
-                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
-            else:
-                import fcntl
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            return SessionLease(fd)
+            with self._directory(create=True) as directory_fd:
+                fd = _open(session_id + '.lock', os.O_RDWR | os.O_CREAT, dir_fd=directory_fd)
+                if os.name == 'nt':
+                    import msvcrt
+                    if os.fstat(fd).st_size == 0:
+                        os.write(fd, b'\0')
+                    os.lseek(fd, 0, os.SEEK_SET)
+                    msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return SessionLease(fd)
         except OSError:
             if fd is not None:
                 os.close(fd)
@@ -231,31 +300,35 @@ class SessionStore:
             raise
 
     def save(self, snapshot: dict) -> None:
-        temporary = None
         try:
             _validate(snapshot, self.workdir)
             encoded = json.dumps(snapshot, ensure_ascii=False, allow_nan=False).encode('utf-8')
             if len(encoded) > _MAX_BYTES:
                 raise SessionError('会话文件过大')
-            self._directory(create=True)
-            target = self.directory / (snapshot['id'] + '.json')
-            _regular(target, missing=True)
-            fd, temporary = tempfile.mkstemp(prefix='.' + snapshot['id'] + '-', suffix='.tmp', dir=self.directory)
-            with os.fdopen(fd, 'wb') as handle:
-                os.chmod(temporary, 0o600)
-                handle.write(encoded)
-                handle.flush()
-                os.fsync(handle.fileno())
-            _regular(target, missing=True)
-            os.replace(temporary, target)
-            temporary = None
+            with self._directory(create=True) as directory_fd:
+                target = snapshot['id'] + '.json'
+                temporary = None
+                try:
+                    _regular(target, missing=True, dir_fd=directory_fd)
+                    name = '.' + snapshot['id'] + '-' + uuid.uuid4().hex + '.tmp'
+                    fd = _open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL, dir_fd=directory_fd)
+                    temporary = name
+                    with os.fdopen(fd, 'wb') as handle:
+                        handle.write(encoded)
+                        handle.flush()
+                        os.fsync(handle.fileno())
+                    _regular(target, missing=True, dir_fd=directory_fd)
+                    _replace(temporary, target, directory_fd)
+                    temporary = None
+                    if isinstance(directory_fd, int):
+                        os.fsync(directory_fd)
+                finally:
+                    if temporary is not None:
+                        try:
+                            _unlink(temporary, directory_fd)
+                        except OSError:
+                            pass
         except SessionError:
             raise
         except (OSError, ValueError, TypeError, KeyError, RecursionError, OverflowError):
             raise SessionError('无法保存会话快照') from None
-        finally:
-            if temporary is not None:
-                try:
-                    os.unlink(temporary)
-                except OSError:
-                    pass
