@@ -97,18 +97,9 @@ class PromptBuilder:
             default=str,
         )
         if key == self.last_key and self.last_prompt:
-            print("  \033[90m[cache hit] system prompt unchanged\033[0m")
             return self.last_prompt
 
         self.last_key = key
         self.last_prompt = assemble_system_prompt(context)
 
-        loaded = ["identity", "tools", "workspace"]
-        if context.get("memories"):
-            loaded.append("memory")
-        if context.get("todos"):
-            loaded.append("todos")
-        print(
-            f"  \033[32m[assembled] sections: {', '.join(loaded)}\033[0m"
-        )
         return self.last_prompt

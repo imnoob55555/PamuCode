@@ -4,6 +4,14 @@ from types import SimpleNamespace
 from agent_app.config import AppConfig
 from agent_app.core.context import append_user_text_blocks, build_context
 from agent_app.core.prompt import PromptBuilder
+
+
+def test_prompt_build_and_cache_are_silent(capsys):
+    builder = PromptBuilder()
+    context = {'workspace': '/tmp/example', 'current_time': 'fixed'}
+    first = builder.build(context)
+    assert builder.build(context) == first
+    assert capsys.readouterr().out == ''
 from agent_app.features.mcp import MCPState
 from agent_app.features.memory import MemoryStore
 from agent_app.features.skills import SkillState

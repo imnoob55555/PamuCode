@@ -115,6 +115,32 @@ def test_prompt_keeps_slash_commands_out_of_input_history():
     assert ui.history.get_strings() == ["普通问题"]
 
 
+def test_up_recalls_previous_message_even_with_unrelated_draft():
+    with create_pipe_input() as pipe:
+        ui = terminal.TerminalUI(input=pipe, output=DummyOutput())
+        pipe.send_text('上一条用户消息\r')
+        assert ui.prompt() == '上一条用户消息'
+        pipe.send_text('新草稿\x1b[A\r')
+        assert ui.prompt() == '上一条用户消息'
+
+
+def test_up_down_browse_user_messages_and_restore_draft():
+    with create_pipe_input() as pipe:
+        ui = terminal.TerminalUI(input=pipe, output=DummyOutput())
+        ui.history.append_string('第一条')
+        ui.history.append_string('第二条')
+        pipe.send_text('草稿\x1b[A\x1b[A\x1b[B\x1b[B\r')
+        assert ui.prompt() == '草稿'
+
+
+def test_up_recalls_user_message_from_multiline_pasted_draft():
+    with create_pipe_input() as pipe:
+        ui = terminal.TerminalUI(input=pipe, output=DummyOutput())
+        ui.history.append_string('上一条用户消息')
+        pipe.send_text('\x1b[200~第一行草稿\n第二行草稿\x1b[201~\x1b[A\r')
+        assert ui.prompt() == '上一条用户消息'
+
+
 @pytest.mark.parametrize("command", ["/login", "/model", "/provider"])
 def test_menu_command_suggestion_has_no_parameter(command):
     assert match_commands(command)[0].usage == command

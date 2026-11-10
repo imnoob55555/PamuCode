@@ -345,6 +345,18 @@ class TerminalUI:
 
         mention_visible = Condition(lambda: mention_state() is not None)
 
+        # Browse whole user messages, including from a multiline pasted draft.
+        # Active suggestion menus retain their own arrow-key navigation.
+        history_visible = ~visible & ~mention_visible
+
+        @bindings.add('up', filter=history_visible)
+        def previous_message(event):
+            buffer.history_backward(count=event.arg)
+
+        @bindings.add('down', filter=history_visible)
+        def next_message(event):
+            buffer.history_forward(count=event.arg)
+
         @bindings.add("up", filter=mention_visible)
         @bindings.add("down", filter=mention_visible)
         def move_mention(event):
