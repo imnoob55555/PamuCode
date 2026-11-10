@@ -351,11 +351,15 @@ class TerminalUI:
 
         @bindings.add('up', filter=history_visible)
         def previous_message(event):
+            nonlocal hidden, mention_hidden
             buffer.history_backward(count=event.arg)
+            hidden = mention_hidden = True
 
         @bindings.add('down', filter=history_visible)
         def next_message(event):
+            nonlocal hidden, mention_hidden
             buffer.history_forward(count=event.arg)
+            hidden = mention_hidden = True
 
         @bindings.add("up", filter=mention_visible)
         @bindings.add("down", filter=mention_visible)
@@ -428,8 +432,7 @@ class TerminalUI:
                 complete_selection(submit=True)
             self.exit_gesture.reset()
             self.notice = ""
-            if not buffer.text.lstrip().startswith("/"):
-                buffer.append_to_history()  # Slash commands stay out of input history.
+            buffer.append_to_history()
             event.app.exit(result=buffer.text)
 
         @bindings.add("c-c")

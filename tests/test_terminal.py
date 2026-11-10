@@ -105,14 +105,28 @@ def test_prompt_enter_executes_highlighted_menu_command(
         assert ui.prompt() == expected
 
 
-def test_prompt_keeps_slash_commands_out_of_input_history():
+def test_prompt_saves_slash_commands_in_input_history():
     with create_pipe_input() as pipe:
         ui = terminal.TerminalUI(input=pipe, output=DummyOutput())
         pipe.send_text("/model custom\r")
         assert ui.prompt() == "/model"
         pipe.send_text("普通问题\r")
         assert ui.prompt() == "普通问题"
-    assert ui.history.get_strings() == ["普通问题"]
+    assert ui.history.get_strings() == ["/model", "普通问题"]
+
+
+def test_arrows_recall_slash_commands_with_arguments_among_user_messages():
+    with create_pipe_input() as pipe:
+        ui = terminal.TerminalUI(input=pipe, output=DummyOutput())
+        for message in ('/status', '/context window 64000', '普通问题'):
+            pipe.send_text(message + '\r')
+            assert ui.prompt() == message
+        pipe.send_text('\x1b[A\x1b[A\r')
+        assert ui.prompt() == '/context window 64000'
+        # A recalled slash command must remain in history-navigation mode.
+        # Otherwise the second Up selects a slash-menu item instead.
+        pipe.send_text('草稿\x1b[A\x1b[A\x1b[A\x1b[A\x1b[B\r')
+        assert ui.prompt() == '/context window 64000'
 
 
 def test_up_recalls_previous_message_even_with_unrelated_draft():
