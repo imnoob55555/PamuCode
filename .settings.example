@@ -31,3 +31,6 @@ OLLAMA_BASE_URL=
 
 # 日志级别：DEBUG / INFO / WARNING / ERROR；默认 INFO。
 LOG_LEVEL=
+
+# 启动模型的上下文窗口（tokens）；留空采用已知规划值或明确标注的假设。
+PAMU_CONTEXT_WINDOW=

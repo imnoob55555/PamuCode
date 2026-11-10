@@ -190,6 +190,8 @@ def test_thinking_level_switches_and_normalizes():
 def test_run_agent_loop_sends_thinking_payload_and_extra_tokens(tmp_path, monkeypatch):
     adapter = RecordingAdapter()
     runtime = _make_runtime(tmp_path, monkeypatch, adapter)
+    from dataclasses import replace
+    runtime.config = replace(runtime.config, context_window=256000)
     _router(runtime).switch_thinking("medium")
     runtime.session.history.append({"role": "user", "content": "hi"})
 

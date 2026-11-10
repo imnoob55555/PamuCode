@@ -17,6 +17,10 @@ class OpenAIResponsesAdapter:
     origin: str = ''
     omit_auth: bool = False
 
+    def project_request(self, *, system, messages, tools, model):
+        request = self._request(system, messages, model, 1, tools, None)
+        return {k: v for k, v in request.items() if k not in ('extra_headers', 'model', 'max_completion_tokens', 'max_output_tokens', 'options', 'store', 'include')}
+
     def _request(self, system, messages, model, max_tokens, tools, thinking):
         check_thinking(thinking)
         items, ids = [], set()
@@ -88,6 +92,8 @@ class OpenAIResponsesAdapter:
         if reason != 'max_tokens' and any(b.type == 'tool_use' for b in blocks):
             reason = 'tool_use'
         result = finish(blocks, reason)
+        from ..core.context_budget import extract_usage
+        result.usage = extract_usage(response, 'openai_responses')
         if reason != 'max_tokens':
             attach_replay(result.content, 'openai_responses', self.origin, model, output)
         return result

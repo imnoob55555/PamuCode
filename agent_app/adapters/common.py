@@ -39,6 +39,7 @@ class ToolUseBlock:
 class ModelResponse:
     content: list
     stop_reason: str
+    usage: Any = None
 
 
 class ProtocolResponseError(ValueError):

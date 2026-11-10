@@ -361,6 +361,7 @@ def test_explicit_settings_layers_remain_above_snapshot(configure, tmp_path, lay
 
 def test_resume_preview_is_bounded(saved, tmp_path, monkeypatch, capsys):
     saved['history'] = [{'role': 'user', 'content': f'message-{i} ' + 'x' * 1000} for i in range(10)]
+    saved['context_state'].pop('_message_records', None)
     SessionStore(tmp_path).save(saved)
     launch(tmp_path, monkeypatch, ['resume', '--last'])
     output = capsys.readouterr().out

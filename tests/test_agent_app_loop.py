@@ -170,7 +170,7 @@ def test_loop_executes_registered_tool_and_returns(runtime_factory):
     run_agent_loop(runtime)
 
     assert tool_results(runtime)[-1]["content"] == "echo:hello"
-    assert runtime.session.context["enabled_tools"] == ["echo_tool"]
+    assert runtime.session.context["enabled_tools"] == ["echo_tool", "history_read", "history_search"]
 
 
 def test_compact_is_control_flow_and_skips_later_tools(runtime_factory, monkeypatch):
@@ -188,12 +188,11 @@ def test_compact_is_control_flow_and_skips_later_tools(runtime_factory, monkeypa
     calls = []
     runtime.tools.register(tool_schema("later"), lambda: calls.append("later"))
     runtime.session.history.append({"role": "user", "content": "compact"})
-    monkeypatch.setattr(
-        "agent_app.core.loop.compact_history",
-        lambda _config, _summarize, _messages: [
-            {"role": "user", "content": "[Compacted]\n\nsummary"}
-        ],
-    )
+    def fake_control_compact(rt, **kwargs):
+        assert kwargs['focus'] == 'next'
+        rt.session.history[:] = [{'role': 'user', 'content': '[Compacted]\n\nsummary'}]
+        return True
+    monkeypatch.setattr('agent_app.core.loop.compact', fake_control_compact)
 
     run_agent_loop(runtime)
 
@@ -255,6 +254,7 @@ def test_max_tokens_pairs_tool_use_then_continues(runtime_factory):
     truncated.stop_reason = "max_tokens"
     runtime = runtime_factory([truncated, text_response()])
     runtime.tools.register(tool_schema("echo"), lambda: "must not run")
+    runtime.config = replace(runtime.config, context_window=256000)
     runtime.session.history.append({"role": "user", "content": "run"})
 
     run_agent_loop(runtime)
@@ -295,6 +295,7 @@ def test_partial_stream_is_saved_then_continued(runtime_factory):
         PartialStreamError("partial text", RuntimeError("network")),
         text_response(),
     ])
+    runtime.config = replace(runtime.config, context_window=256000)
     runtime.session.history.append({"role": "user", "content": "run"})
 
     run_agent_loop(runtime)
@@ -316,12 +317,14 @@ def test_prompt_too_long_compacts_once_then_rebuilds_request(
     runtime.session.history.append({"role": "user", "content": "run"})
     compacted = []
 
-    def fake_compact(_config, _summarize, messages):
-        compacted.append(list(messages))
-        return [{"role": "user", "content": "[Reactive compact]"}]
+    def fake_compact(rt, **kwargs):
+        assert kwargs['emergency'] is True
+        compacted.append(list(rt.session.history))
+        rt.session.history[:] = [{"role": "user", "content": "[Reactive compact]"}]
+        return True
 
     monkeypatch.setattr(
-        "agent_app.core.loop.reactive_compact", fake_compact
+        "agent_app.core.loop.compact", fake_compact
     )
 
     run_agent_loop(runtime)
@@ -358,6 +361,7 @@ def test_continuation_budget_is_shared_by_max_tokens_and_partial_streams(
         third,
         PartialStreamError("stream-part-3", RuntimeError("lost 3")),
     ])
+    runtime.config = replace(runtime.config, context_window=256000)
     runtime.session.history.append({"role": "user", "content": "run"})
 
     run_agent_loop(runtime)
@@ -530,9 +534,11 @@ def test_tool_registry_is_snapshotted_again_each_round(runtime_factory):
 
     run_agent_loop(runtime)
 
-    assert [tool["name"] for tool in runtime.llm.requests[0]["tools"]] == ["echo"]
+    assert [tool["name"] for tool in runtime.llm.requests[0]["tools"]] == ["echo", "history_search", "history_read"]
     assert [tool["name"] for tool in runtime.llm.requests[1]["tools"]] == [
         "echo",
+        "history_search",
+        "history_read",
         "late_tool",
     ]
 

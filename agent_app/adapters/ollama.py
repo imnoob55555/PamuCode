@@ -1,6 +1,6 @@
 """Native Ollama /api/chat adapter. The injected client owns its lifetime."""
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 from uuid import uuid4
 
@@ -12,10 +12,19 @@ class OllamaAdapter:
     client: Any
     progress: Any = null_progress
     origin: str = ''
+    context_window: int = 4096
+
+    def with_context_window(self, window):
+        from ..core.context_budget import validate_window
+        return replace(self, context_window=validate_window(window))
+
+    def project_request(self, *, system, messages, tools, model):
+        request = self._request(system, messages, model, 1, tools, None)
+        return {k: v for k, v in request.items() if k not in ('extra_headers', 'model', 'max_completion_tokens', 'max_output_tokens', 'options', 'store', 'include')}
 
     def _request(self, system, messages, model, max_tokens, tools, thinking):
         check_thinking(thinking)
-        request = {'model': model, 'messages': chat_history(system, messages, ollama=True, origin=self.origin, model=model), 'options': {'num_predict': max_tokens}}
+        request = {'model': model, 'messages': chat_history(system, messages, ollama=True, origin=self.origin, model=model), 'options': {'num_predict': max_tokens, 'num_ctx': self.context_window}}
         if tools is not None:
             request['tools'] = function_tools(tools)
         return request
@@ -37,6 +46,8 @@ class OllamaAdapter:
             fn = value(call, 'function')
             blocks.append(tool_block('ollama_' + uuid4().hex, value(fn, 'name'), value(fn, 'arguments')))
         result = finish(blocks, 'max_tokens' if reason == 'length' else 'tool_use' if any(b.type == 'tool_use' for b in blocks) else 'end_turn')
+        from ..core.context_budget import extract_usage
+        result.usage = extract_usage(response, 'ollama')
         if reason != 'length':
             attach_replay(result.content, 'ollama', self.origin, model, message)
         return result

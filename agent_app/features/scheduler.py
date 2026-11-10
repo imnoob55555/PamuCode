@@ -89,6 +89,7 @@ class CronJob:
 
 @dataclass(slots=True)
 class SchedulerState:
+    paused: bool = False
     jobs: dict[str, CronJob] = field(default_factory=dict)
     queue: list[CronJob] = field(default_factory=list)
     last_fired: dict[str, str] = field(default_factory=dict)
@@ -281,6 +282,8 @@ def cron_scheduler_loop(state: SchedulerState, config: AppConfig, stop_event, no
         minute_marker = current_time.strftime("%Y-%m-%d %H:%M")
         durable_changed = False
         with state.lock:
+            if state.paused:
+                continue
             for job in list(state.jobs.values()):
                 try:
                     if cron_matches(job.cron, current_time):

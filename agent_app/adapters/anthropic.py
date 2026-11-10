@@ -32,6 +32,9 @@ class AnthropicAdapter:
     progress: Callable[[str], AbstractContextManager] = _null_progress
     origin: str = ""
 
+    def project_request(self, *, system, messages, tools, model):
+        return {'system': system, 'messages': anthropic_history(messages, origin=self.origin, model=model), 'tools': tools}
+
     def create(
         self,
         *,

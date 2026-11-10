@@ -25,6 +25,7 @@ from .features.scheduler import (
     has_cron_queue,
     load_durable_jobs,
 )
+from .repl_sessions import ResumeAction, resume_runtime
 from .logging_setup import get_logger
 from .slash_commands import SLASH_COMMANDS, help_text
 from .thinking import THINKING_LABELS, THINKING_LEVELS, normalize_level
@@ -47,6 +48,11 @@ def notify_or_print(ui, message: str, *, print_fn=print) -> None:
 def run_agent_turn(runtime, user_query: str | None = None) -> None:
     # Slash commands are REPL-local controls; they never join the LLM context.
     if user_query and not user_query.lstrip().startswith("/"):
+        from datetime import datetime
+        from uuid import uuid4
+        if hasattr(runtime.session, 'context_state'):
+            runtime.session.context_state['current_request'] = {'id': str(uuid4()), 'text': user_query}
+            runtime.session.context_state['turn_time'] = datetime.now().isoformat(timespec='seconds')
         runtime.session.history.append({"role": "user", "content": user_query})
     checkpoint(runtime, status="running")
     try:
@@ -101,7 +107,8 @@ def start_runtime_threads(runtime) -> list[threading.Thread]:
         for thread in threads:
             thread.start()
             started.append(thread)
-    except Exception:
+    except BaseException as error:
+        error.threads = started
         runtime.stop_event.set()
         for thread in started:
             thread.join(timeout=1.0)
@@ -368,7 +375,7 @@ def run_command(
 def handle_slash_command(runtime, query: str, *, credentials_path=None,
                          client_factory=None, print_fn=print, ui=None):
     """Keep model changes and their durable checkpoint in one agent transaction."""
-    mutating = query.strip().partition(" ")[0] in ("/model", "/provider", "/thinking")
+    mutating = query.strip().partition(" ")[0] in ("/model", "/provider", "/thinking", "/context", "/compact")
     lock = getattr(runtime, "agent_lock", None) if mutating else None
     with lock if lock is not None else nullcontext():
         fields = ("provider", "protocol", "base_url", "primary_model", "fallback_model", "thinking_level")
@@ -397,6 +404,25 @@ def _handle_slash_command(
     credentials_path = credentials_path or auth.CREDENTIALS_PATH
     command, _, rest = query.strip().partition(" ")
     argument = rest.strip()
+    if command in ('/context', '/compact'):
+        if runtime is None:
+            notify_or_print(ui, LOGIN_HINT, print_fn=print_fn)
+            return
+        from .core.context_manager import compact, context_control
+        try:
+            if command == '/context':
+                message = context_control(runtime, argument)
+            else:
+                tools, _ = runtime.tools.snapshot()
+                from .core.context import build_context
+                system = runtime.prompt_builder.build(build_context(runtime, tools))
+                message = '上下文压缩完成。' if compact(runtime, focus=argument, system=system, tools=tools) else '没有可压缩的旧历史。'
+            notify_or_print(ui, message, print_fn=print_fn)
+        except SessionError:
+            raise
+        except ValueError as exc:
+            notify_or_print(ui, f'上下文操作失败：{exc}', print_fn=print_fn)
+        return
 
     known_names = {
         name for item in SLASH_COMMANDS for name in (item.name, *item.aliases)
@@ -408,6 +434,9 @@ def _handle_slash_command(
             print_fn=print_fn,
         )
         return
+
+    if command == "/resume":
+        return ResumeAction(tuple(argument.split()))
 
     if command == "/quit":
         if argument:
@@ -793,6 +822,16 @@ def main(
                 if selected is ExitAction.QUIT:
                     print("Shutting down PamuCode…")
                     break
+                if isinstance(selected, ResumeAction):
+                    if runtime is None:
+                        notify_or_print(ui, LOGIN_HINT)
+                    else:
+                        runtime, threads = resume_runtime(
+                            runtime, threads, selected,
+                            create_runtime=lambda selection: _create_runtime(runtime_factory, credentials_path, selection),
+                            start_threads=start_threads, stop_threads=stop_threads, ui=ui,
+                        )
+                    continue
                 if runtime is None and selected:
                     runtime = _create_runtime(runtime_factory, credentials_path)
                     if runtime is None:

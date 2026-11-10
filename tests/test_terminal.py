@@ -13,6 +13,9 @@ def test_slash_matches_names_descriptions_and_hides_for_normal_text():
         "/model",
         "/provider",
         "/thinking",
+        "/resume",
+        "/context",
+        "/compact",
         "/help",
         "/quit",
     }

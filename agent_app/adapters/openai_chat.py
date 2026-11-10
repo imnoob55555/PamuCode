@@ -12,6 +12,10 @@ class OpenAIChatAdapter:
     origin: str = ''
     omit_auth: bool = False
 
+    def project_request(self, *, system, messages, tools, model):
+        request = self._request(system, messages, model, 1, tools, None)
+        return {k: v for k, v in request.items() if k not in ('extra_headers', 'model', 'max_completion_tokens', 'max_output_tokens', 'options', 'store', 'include')}
+
     def _request(self, system, messages, model, max_tokens, tools, thinking):
         check_thinking(thinking)
         request = {'model': model, 'messages': chat_history(system, messages), 'max_completion_tokens': max_tokens}
@@ -47,7 +51,10 @@ class OpenAIChatAdapter:
         choices = value(response, 'choices', [])
         if len(choices) != 1:
             raise ValueError('Chat 响应缺少唯一候选答案')
-        return self._response(value(choices[0], 'message'), value(choices[0], 'finish_reason'))
+        result = self._response(value(choices[0], 'message'), value(choices[0], 'finish_reason'))
+        from ..core.context_budget import extract_usage
+        result.usage = extract_usage(response, 'openai_chat')
+        return result
 
     def create_streaming(self, *, system, messages, model, max_tokens, tools, thinking=None):
         request = self._request(system, messages, model, max_tokens, tools, thinking)
@@ -55,7 +62,10 @@ class OpenAIChatAdapter:
             stream = self.client.chat.completions.create(**request, stream=True)
             try:
                 text, calls, reason = [], {}, None
+                usage = None
                 for event in stream:
+                    from ..core.context_budget import extract_usage
+                    usage = extract_usage(event, 'openai_chat') or usage
                     if value(event, 'error'):
                         raise ValueError('Chat 流式请求失败')
                     for choice in value(event, 'choices', []):
@@ -82,6 +92,8 @@ class OpenAIChatAdapter:
                     raise ValueError('Chat 流缺少结束事件')
                 if sorted(calls) != list(range(len(calls))):
                     raise ValueError('Chat 工具调用索引不连续')
-                return self._response({'content': ''.join(text), 'tool_calls': [calls[i] for i in sorted(calls)]}, reason)
+                result = self._response({'content': ''.join(text), 'tool_calls': [calls[i] for i in sorted(calls)]}, reason)
+                result.usage = usage
+                return result
             finally:
                 stream.close()

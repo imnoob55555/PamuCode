@@ -31,6 +31,8 @@ class AppConfig:
     logs_dir: Path
     primary_model: str
     fallback_model: str | None
+    context_window: int | None = None
+    context_window_target: tuple[str, str, str] | None = None
     log_level: str = "INFO"
     default_max_tokens: int = 8_000
     escalated_max_tokens: int = 64_000
@@ -62,6 +64,9 @@ class AppConfig:
         model_id = environment.get("MODEL_ID")
         if model_id is None or not model_id.strip():
             raise MissingConfigurationError("MODEL_ID")
+        from .core.context_budget import validate_window
+        raw_window = environment.get("PAMU_CONTEXT_WINDOW", "").strip()
+        window = validate_window(raw_window) if raw_window else None
         root = repo_root.resolve()
         workspace = (workdir or repo_root).resolve()
         state_dir = workspace / ".pamu"
@@ -82,6 +87,7 @@ class AppConfig:
             worktrees_dir=state_dir / "worktrees",
             logs_dir=state_dir / "logs",
             primary_model=model_id,
+            context_window=window,
             fallback_model=environment.get("FALLBACK_MODEL_ID"),
             log_level=(environment.get("LOG_LEVEL") or "INFO").strip() or "INFO",
         )

@@ -1,4 +1,5 @@
 import copy
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -93,7 +94,9 @@ def test_archive_failure_and_closed_writes(tmp_path, monkeypatch):
     rt.sessions.archive_history(before, rt.session.history)
     checkpoint(rt)
     saved = rt.sessions.store.load(rt.sessions.session_id)
-    assert saved['archive'] == [before]
+    assert saved['schema_version'] == 2
+    assert len(saved['archive']) == 1
+    assert json.loads(rt.sessions.context_archive.read(saved['archive'][0]['ref']))['text'] == 'original'
     def fail(snapshot):
         raise OSError('private detail')
     monkeypatch.setattr(rt.sessions.store, 'save', fail)
@@ -173,6 +176,20 @@ from tests.test_agent_app_loop import FakeAPIError
 from agent_app.features.todos import register_todo_tools
 
 
+def summary_response(**kwargs):
+    return text_response(json.dumps(dict(goal='Preserve the task', constraints=[], decisions=[], completed=[], remaining=['continue'], uncertainties=[], references=[])))
+
+
+def old_turns(size):
+    return [
+        {'role': 'user', 'content': 'old evidence ' + 'x' * size},
+        {'role': 'assistant', 'content': [{'type': 'text', 'text': 'previous answer'}]},
+        {'role': 'user', 'content': 'second request'},
+        {'role': 'assistant', 'content': [{'type': 'text', 'text': 'second answer'}]},
+        {'role': 'user', 'content': 'latest request'},
+    ]
+
+
 @pytest.mark.parametrize('mode', ['auto', 'reactive', 'manual'])
 def test_compaction_archives_original_and_pairs_manual_calls(runtime_factory, mode):
     responses = [text_response()]
@@ -184,18 +201,25 @@ def test_compaction_archives_original_and_pairs_manual_calls(runtime_factory, mo
             SimpleNamespace(**call('skip')),
         ]))
     rt = runtime_factory(responses)
-    if mode == 'auto':
-        rt.config = replace(rt.config, context_limit=100)
+    rt.llm.create = summary_response
     rt.sessions = SessionPersistence(rt.config.workdir)
+    rt.session.history[:] = old_turns(20000 if mode == 'auto' else 3000)
+    original = copy.deepcopy(rt.session.history)
     executed = []
     rt.tools.register(tool_schema('bash'), lambda **kw: executed.append(True))
-    run_agent_turn(rt, 'x' * 200)
+    run_agent_turn(rt)
     saved = rt.sessions.store.load(rt.sessions.session_id)
-    assert saved['archive'][0][0] == {'role': 'user', 'content': 'x' * 200}
+    assert saved['context_state']['generation'] == 1
+    archive = rt.sessions.context_archive
+    assert json.loads(archive.read(saved['archive'][0]['ref']))['text'].startswith('old evidence ')
+    assert any(m['content'] == original[-1]['content'] for m in saved['history'])
+    assert 'old evidence' in archive.search('old evidence')
     if mode == 'manual':
         assert not executed
-        archived = saved['archive'][0]
-        assert {b['tool_use_id'] for b in archived[-1]['content']} == {'compact', 'skip'}
+        objects = saved['history']
+        results = [b for m in objects if isinstance(m['content'], list) for b in m['content'] if b['type'] == 'tool_result']
+        assert {b['tool_use_id'] for b in results} == {'compact', 'skip'}
+        assert next(b for b in results if b['tool_use_id'] == 'skip')['is_error']
     rt.sessions.close()
 
 
@@ -254,15 +278,8 @@ def test_closed_during_permission_hook_prevents_tool(runtime_factory):
 
 def test_original_survives_interruption_during_auto_summary(runtime_factory):
     rt = runtime_factory([])
-    rt.config = replace(rt.config, context_limit=100, keep_recent=1)
     rt.sessions = SessionPersistence(rt.config.workdir)
-    rt.session.history[:] = [
-        {'role': 'user', 'content': 'go'},
-        {'role': 'assistant', 'content': [call('old')]},
-        {'role': 'user', 'content': [result('old', 'x' * 200)]},
-        {'role': 'assistant', 'content': [call('new')]},
-        {'role': 'user', 'content': [result('new', 'y' * 200)]},
-    ]
+    rt.session.history[:] = old_turns(20000)
     original = copy.deepcopy(rt.session.history)
     def interrupted(**kwargs):
         raise KeyboardInterrupt()
@@ -270,7 +287,10 @@ def test_original_survives_interruption_during_auto_summary(runtime_factory):
     with pytest.raises(KeyboardInterrupt):
         run_agent_turn(rt)
     saved = rt.sessions.store.load(rt.sessions.session_id)
-    assert saved['archive'][0] == original
+    assert saved['history'] == original
+    assert saved['context_state'].get('generation', 0) == 0
+    assert rt.session.history == original
+    assert not json.loads(rt.sessions.context_archive.search('old evidence'))['matches']
     rt.sessions.close()
 
 
@@ -293,7 +313,7 @@ def test_swallowed_summary_persistence_error_still_prevents_model_request(runtim
     import agent_app.core.loop as loop
     rt = runtime_factory([text_response()])
     rt.sessions = SessionPersistence(rt.config.workdir)
-    def swallowed(memory, messages, summarize):
+    def swallowed(memory, messages, summarize, **kwargs):
         rt.sessions.close()
         try:
             summarize('memory')

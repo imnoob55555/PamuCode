@@ -21,6 +21,9 @@ SLASH_COMMANDS = (
     SlashCommand("/model", "", "选择或切换当前模型"),
     SlashCommand("/provider", "", "选择并切换供应商"),
     SlashCommand("/thinking", "", "选择或切换模型思考程度"),
+    SlashCommand("/context", "[window <tokens> | pin <文本> | pins | unpin <编号>]", "查看上下文预算及管理固定约束"),
+    SlashCommand("/compact", "[focus]", "压缩旧历史并保留近期交互"),
+    SlashCommand("/resume", "[--last | 会话编号]", "恢复当前工作区的其他会话"),
     SlashCommand("/help", "", "显示命令帮助", ("/h",)),
     SlashCommand("/quit", "", "退出当前 PamuCode 会话"),
 )

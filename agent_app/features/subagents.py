@@ -60,25 +60,35 @@ def spawn_subagent(
     handlers: dict,
     hooks,
     model: str | None = None,
+    context=None,
 ) -> str:
     """Run a fresh, bounded subagent conversation using only supplied tools."""
     active_model = model or config.primary_model
     print("\n\033[35m[Subagent spawned]\033[0m")
+    if context is None:
+        from ..core.delegated_context import DelegatedContext
+        context = DelegatedContext(config, llm, active_model)
+    retrieval_schemas, retrieval_handlers = context.retrieval_tools()
+    private_names = set(retrieval_handlers)
+    tools = [tool for tool in tools if tool["name"] not in private_names] + retrieval_schemas
+    handlers = {**handlers, **retrieval_handlers}
     messages: list[dict] = [{"role": "user", "content": description}]
 
     for _ in range(30):
         try:
+            report = context.prepare(system, messages, tools, config.default_max_tokens)
             response = llm(
                 model=active_model,
                 system=system,
                 messages=list(messages),
                 tools=tools,
-                max_tokens=config.default_max_tokens,
+                max_tokens=report.budget.output_tokens,
             )
         except Exception as exc:
             error = f"[Subagent error] {type(exc).__name__}: {describe_model_error(exc)}"
             print(f"  \033[31m{error}\033[0m")
             return error
+        context.record(response, report)
         messages.append({"role": "assistant", "content": response.content})
         if not has_tool_use(response.content):
             break
@@ -97,10 +107,10 @@ def spawn_subagent(
             output = handler(**block.input) if handler else f"Unknown: {block.name}"
             hooks.trigger("PostToolUse", block, output)
             print(f"  \033[90m[sub] {block.name}: {str(output)[:100]}\033[0m")
-            results.append({
-                "type": "tool_result", "tool_use_id": block.id,
-                "content": output,
-            })
+            result = {"type": "tool_result", "tool_use_id": block.id, "content": output}
+            if block.name in private_names and str(output).startswith("Error:"):
+                result["is_error"] = True
+            results.append(result)
         messages.append({"role": "user", "content": results})
 
     result = extract_text(messages[-1]["content"])

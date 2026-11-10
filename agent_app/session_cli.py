@@ -15,14 +15,19 @@ def _session_label(snapshot):
     return f"{snapshot['id'][:8]}  {safe_preview(snapshot['title'])}  {date}  {safe_preview(snapshot['selection']['primary_model'])}  {status}"
 
 
-def select_session(args, ui):
+def select_session(args, ui, *, exclude_id=None, slash=False, workdir=None):
+    usage = "/resume" if slash else "pamu resume"
     if len(args) > 1 or (args and args[0].startswith('-') and args[0] != '--last'):
-        raise SessionError('用法：pamu resume [--last | 会话编号]')
-    store = SessionStore(Path.cwd())
+        raise SessionError(f'用法：{usage} [--last | 会话编号]')
+    store = SessionStore(workdir or Path.cwd())
     if args and args[0] != '--last':
         snapshot = store.load(args[0])
+        if snapshot['id'] == exclude_id:
+            print('当前已在此会话中。')
+            return None
     else:
         snapshots, skipped = store.list_sessions()
+        snapshots = [s for s in snapshots if s['id'] != exclude_id]
         if skipped:
             print(f'已跳过 {skipped} 个无法读取的会话。')
         if not snapshots:
@@ -36,7 +41,7 @@ def select_session(args, ui):
                 print('可恢复的会话：')
                 for sid, label in choices:
                     print(f'  {sid}  {label}')
-                raise SessionError('请使用 pamu resume --last 或 pamu resume <会话编号> 选择会话。')
+                raise SessionError(f'请使用 {usage} --last 或 {usage} <会话编号> 选择会话。')
             selected = ui.choose('选择会话', choices)
             if selected is None:
                 return None

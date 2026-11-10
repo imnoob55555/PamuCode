@@ -9,7 +9,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Mapping
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 
 from .adapters.anthropic import AnthropicAdapter
@@ -227,6 +227,8 @@ def build_runtime(
     model_source: str = "运行时配置",
 ) -> RuntimeContext:
     """Build one completely independent runtime from explicit dependencies."""
+    if config.context_window is not None and config.context_window_target is None:
+        config = replace(config, context_window_target=(protocol, (base_url or getattr(adapter, "origin", "")).rstrip("/"), config.primary_model))
     _create_storage_roots(config)
     setup_logging(config.logs_dir, config.log_level)
     llm = adapter if adapter is not None else (
@@ -269,24 +271,41 @@ def build_runtime(
     def run_bash(command, run_in_background=False, cwd=None):
         return builtin.run_bash(config.workdir, command, run_in_background, cwd)
 
+    from .core.context_materials import remember_file, remember_skill
+
     def run_read(path, offset=0, limit=None, cwd=None):
-        return builtin.run_read(config.workdir, path, offset, limit, cwd)
+        output = builtin.run_read(config.workdir, path, offset, limit, cwd)
+        if not output.startswith("Error:"):
+            remember_file(session, config.workdir, path, offset=offset, limit=limit, cwd=cwd)
+        return output
 
     def run_write(path, content, cwd=None):
-        return builtin.run_write(config.workdir, path, content, cwd)
+        output = builtin.run_write(config.workdir, path, content, cwd)
+        if not output.startswith("Error:"):
+            remember_file(session, config.workdir, path, cwd=cwd)
+        return output
 
     def run_edit(path, old_text, new_text, cwd=None):
-        return builtin.run_edit(config.workdir, path, old_text, new_text, cwd)
+        output = builtin.run_edit(config.workdir, path, old_text, new_text, cwd)
+        if not output.startswith("Error:"):
+            remember_file(session, config.workdir, path, cwd=cwd)
+        return output
 
     def run_glob(pattern, cwd=None):
         return builtin.run_glob(config.workdir, pattern, cwd)
+    def run_skill(name):
+        output = skills.load_skill(skill_state, name)
+        if name in skill_state.registry:
+            remember_skill(session, name, output)
+        return output
+
     builtin_handlers = {
         "bash": run_bash,
         "read_file": run_read,
         "write_file": run_write,
         "edit_file": run_edit,
         "glob": run_glob,
-        "load_skill": lambda name: skills.load_skill(skill_state, name),
+        "load_skill": run_skill,
     }
     builtin.register_builtin_tools(registry, builtin_handlers)
     todos.register_todo_tools(registry, session)
@@ -357,12 +376,22 @@ def build_runtime(
     def spawn_teammate(name: str, role: str, prompt: str) -> str:
         _provider, primary, fallback, task_adapter = model_router.request_snapshot()
         recovery = RecoveryState(primary, fallback)
+        from .core.delegated_context import DelegatedContext
+        delegate = DelegatedContext(config, task_adapter.create, primary,
+                                   protocol=model_router.protocol, origin=model_router.base_url, adapter=task_adapter)
+
+        def delegated_attempt(kwargs):
+            active = recovery.current_model
+            messages = kwargs['messages']
+            report = delegate.prepare(kwargs.get('system'), messages, kwargs.get('tools'), kwargs['max_tokens'], model=active)
+            selected_adapter = task_adapter.with_context_window(report.budget.window) if hasattr(task_adapter, 'with_context_window') else task_adapter
+            response = selected_adapter.create(**{**kwargs, 'messages': list(messages), 'model': active, 'max_tokens': report.budget.output_tokens})
+            delegate.record(response, report, model=active)
+            return response
 
         def teammate_llm(**kwargs):
             return with_retry(
-                lambda: task_adapter.create(
-                    model=recovery.current_model, **kwargs
-                ),
+                lambda: delegated_attempt(kwargs),
                 recovery,
                 max_transient_retries=config.max_transient_retries,
                 max_consecutive_529=config.max_consecutive_529,
@@ -430,6 +459,7 @@ def build_runtime(
             thread_factory=threading.Thread,
             sleep=time.sleep,
             plan_poll_interval=config.idle_poll_interval,
+            context=delegate,
         )
 
     team_handlers = {
@@ -469,12 +499,22 @@ def build_runtime(
     def spawn_subagent(description: str) -> str:
         _provider, primary, fallback, task_adapter = model_router.request_snapshot()
         recovery = RecoveryState(primary, fallback)
+        from .core.delegated_context import DelegatedContext
+        delegate = DelegatedContext(config, task_adapter.create, primary,
+                                   protocol=model_router.protocol, origin=model_router.base_url, adapter=task_adapter)
+
+        def delegated_attempt(kwargs):
+            active = recovery.current_model
+            messages = kwargs['messages']
+            report = delegate.prepare(kwargs.get('system'), messages, kwargs.get('tools'), kwargs['max_tokens'], model=active)
+            selected_adapter = task_adapter.with_context_window(report.budget.window) if hasattr(task_adapter, 'with_context_window') else task_adapter
+            response = selected_adapter.create(**{**kwargs, 'messages': list(messages), 'model': active, 'max_tokens': report.budget.output_tokens})
+            delegate.record(response, report, model=active)
+            return response
 
         def subagent_llm(**kwargs):
             return with_retry(
-                lambda: task_adapter.create(
-                    **{**kwargs, "model": recovery.current_model}
-                ),
+                lambda: delegated_attempt(kwargs),
                 recovery,
                 max_transient_retries=config.max_transient_retries,
                 max_consecutive_529=config.max_consecutive_529,
@@ -490,6 +530,7 @@ def build_runtime(
             {name: builtin_handlers[name] for name in ("bash", "read_file", "write_file", "edit_file", "glob")},
             hooks,
             model=primary,
+            context=delegate,
         )
 
     subagents.register_subagent_tool(registry, spawn_subagent)

@@ -39,7 +39,7 @@ def test_real_loop_executes_tool_and_returns_result_through_protocol(tmp_path, p
     monkeypatch.setattr('agent_app.core.loop.extract_memories', lambda *args, **kw: None)
     monkeypatch.setattr('agent_app.core.loop.consolidate_memories', lambda *args, **kw: None)
     adapter, sent = protocol_adapter(protocol)
-    runtime = build_runtime(AppConfig.from_env(tmp_path, environ={'MODEL_ID': 'local'}), object(), adapter=adapter, protocol=protocol)
+    runtime = build_runtime(AppConfig.from_env(tmp_path, environ={'MODEL_ID': 'local', 'PAMU_CONTEXT_WINDOW': '256000'}), object(), adapter=adapter, protocol=protocol)
     executed = []
     def echo(value):
         executed.append(value)
@@ -63,7 +63,7 @@ def test_subagents_summary_and_teammates_keep_selected_adapter(tmp_path, monkeyp
             calls.append(kwargs)
             return ModelResponse([TextBlock('result')], 'end_turn')
     adapter = Adapter()
-    runtime = build_runtime(AppConfig.from_env(tmp_path, environ={'MODEL_ID': 'local'}), object(), adapter=adapter, provider='ollama', protocol='ollama')
+    runtime = build_runtime(AppConfig.from_env(tmp_path, environ={'MODEL_ID': 'local', 'PAMU_CONTEXT_WINDOW': '256000'}), object(), adapter=adapter, provider='ollama', protocol='ollama')
     handlers = runtime.tools.snapshot()[1]
     assert handlers['task']('inspect') == 'result'
     assert _summarize(runtime, 'summarize') == 'result'
@@ -106,7 +106,7 @@ def test_local_connection_failure_mentions_service_address(capsys):
 def test_summary_uses_portable_content_without_native_signatures(tmp_path):
     calls = []
     adapter = SimpleNamespace(create=lambda **kwargs: calls.append(kwargs) or ModelResponse([TextBlock('summary')], 'end_turn'))
-    runtime = build_runtime(AppConfig.from_env(tmp_path, environ={'MODEL_ID': 'local'}), object(), adapter=adapter, provider='ollama', protocol='ollama')
+    runtime = build_runtime(AppConfig.from_env(tmp_path, environ={'MODEL_ID': 'local', 'PAMU_CONTEXT_WINDOW': '256000'}), object(), adapter=adapter, provider='ollama', protocol='ollama')
     history = [{'role': 'assistant', 'content': [
         SimpleNamespace(type='thinking', thinking='private-thought', signature='private-signature', _pamu_scope=('anthropic_messages', 'old', 'old')),
         {'type': 'redacted_thinking', 'data': 'private-data'},

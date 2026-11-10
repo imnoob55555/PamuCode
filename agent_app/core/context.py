@@ -6,14 +6,16 @@ import hashlib
 import json
 from datetime import datetime
 
-from ..features.memory import read_memory_index
-from ..features.skills import list_skills
+from .context_budget import ContextBudget, resolve_window
+from .context_materials import optional_materials
 from ..features.todos import format_current_todos
 
 
 def build_context(runtime, tools: list[dict]) -> dict:
-    memories = read_memory_index(runtime.memory)
-    skills = list_skills(runtime.skills) if runtime.skills.registry else ""
+    window = (resolve_window(runtime)[0] if getattr(runtime, "model", None) is not None
+              else getattr(runtime.config, "context_window", None) or 16384)
+    budget = ContextBudget(window, runtime.config.default_max_tokens)
+    materials = optional_materials(runtime, budget.input_limit * 15 // 100)
     tool_names = sorted(tool["name"] for tool in tools)
     serialized_tools = json.dumps(
         tools,
@@ -32,14 +34,23 @@ def build_context(runtime, tools: list[dict]) -> dict:
     return {
         "enabled_tools": tool_names,
         "workspace": str(runtime.config.workdir),
-        "memories": memories,
-        "skills": skills,
+        **materials,
         "todos": format_current_todos(runtime.session),
         "active_teammates": active_names,
         "connect_mcp": connected_mcp,
         "tool_fingerprint": tool_fingerprint,
-        "current_time": datetime.now().isoformat(timespec="seconds"),
+        "current_time": runtime.session.context_state.get('turn_time') or datetime.now().isoformat(timespec="seconds"),
+        "pinned_constraints": '\n'.join(p['text'] for p in runtime.session.context_state.get('pins', [])),
+        "project_rules": _project_rules(runtime.config.workdir),
     }
+
+
+def _project_rules(workdir):
+    path = workdir / 'AGENTS.md'
+    if not path.exists() or path.is_symlink() or not path.is_file():
+        return ''
+    # A large required instruction file is reported by the budget gate, not truncated.
+    return path.read_text(encoding='utf-8')
 
 
 def append_user_text_blocks(messages: list, texts: list[str]) -> None:

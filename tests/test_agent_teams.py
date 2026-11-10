@@ -325,3 +325,37 @@ def test_teammate_error_and_round_limit_send_result_and_cleanup(bus, tmp_path):
     assert bus.read_inbox("lead")[0]["content"] == (
         "Stopped after 10 teammate tool rounds."
     )
+
+
+def test_teammate_retrieval_tools_use_only_delegate_archive(bus, tmp_path):
+    from agent_app.adapters.common import ToolUseBlock
+    from agent_app.core.delegated_context import DelegatedContext
+    from agent_app.core.context_manager import archive_for
+    config = AppConfig.from_env(tmp_path, environ={'MODEL_ID': 'test-model'})
+    delegate = DelegatedContext(config, lambda **kw: None, 'test-model')
+    other = DelegatedContext(config, lambda **kw: None, 'test-model')
+    own = archive_for(delegate.runtime).save_artifact('own evidence')
+    forbidden = archive_for(other.runtime).save_artifact('other private evidence')
+    calls = []
+    class ImmediateThread:
+        def __init__(self, target, **kw): self.target = target
+        def start(self): self.target()
+    def llm(**kwargs):
+        calls.append(kwargs)
+        assert {'history_read', 'history_search'} <= {tool['name'] for tool in kwargs['tools']}
+        if len(calls) == 1:
+            return types.SimpleNamespace(content=[ToolUseBlock('one', 'history_read', {'ref': own}),
+                                                  ToolUseBlock('two', 'history_read', {'ref': forbidden})])
+        results = kwargs['messages'][-1]['content']
+        assert json.loads(results[0]['content'])['text'] == 'own evidence'
+        assert results[1]['content'].startswith('Error:')
+        assert 'other private evidence' not in str(results)
+        return text_response('retrieved safely')
+    teammates.spawn_teammate_thread(
+        teammates.TeamState(), bus, llm, name='reader', role='reviewer', prompt='inspect evidence',
+        workdir=tmp_path, handlers={'history_read': lambda **kw: 'parent leak'}, hooks=HookRegistry(),
+        validate_name=lambda *a, **kw: None, guarded_tools=set(), guarded_tool=lambda *a: ('', False),
+        idle=lambda *a: 'timeout', max_tokens=100, thread_factory=ImmediateThread, context=delegate,
+    )
+    assert len(calls) == 2
+    assert bus.read_inbox('lead')[-1]['content'] == 'retrieved safely'

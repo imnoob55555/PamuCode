@@ -65,21 +65,28 @@ def read_memory_index(store: MemoryStore) -> str:
     return text if text else ""
 
 
-def read_memory_file(store: MemoryStore, filename: str) -> str | None:
+def read_memory_file(store: MemoryStore, filename: str, *, max_chars=None) -> str | None:
     path = store.root / filename
-    if not path.exists():
+    if path.name.lower().startswith((".env", ".settings", "credentials")) or not path.exists() or path.is_symlink() or not path.resolve().is_relative_to(store.root.resolve()):
         return None
-    return path.read_text()
+    with path.open(encoding="utf-8") as stream:
+        return stream.read(max_chars) if max_chars is not None else stream.read()
 
 
-def list_memory_files(store: MemoryStore) -> list[dict]:
+def list_memory_files(store: MemoryStore, *, max_files=None, max_chars=None) -> list[dict]:
     result = []
     if not store.root.exists():
         return result
     for path in sorted(store.root.glob("*.md")):
         if path.name == "MEMORY.md":
             continue
-        raw = path.read_text()
+        if path.is_symlink() or path.name.lower().startswith((".env", ".settings", "credentials")):
+            continue
+        try:
+            with path.open(encoding="utf-8") as stream:
+                raw = stream.read(max_chars) if max_chars is not None else stream.read()
+        except (OSError, UnicodeError):
+            continue
         metadata, body = _parse_memory_frontmatter(raw)
         result.append(
             {
@@ -90,6 +97,8 @@ def list_memory_files(store: MemoryStore) -> list[dict]:
                 "body": body,
             }
         )
+        if max_files is not None and len(result) >= max_files:
+            break
     return result
 
 
@@ -104,7 +113,7 @@ def select_relevant_memories(
     summarize,
     max_items: int = 5,
 ) -> list[str]:
-    files = list_memory_files(store)
+    files = list_memory_files(store, max_files=64, max_chars=2048)
     if not files:
         return []
     recent_texts = []
@@ -126,7 +135,7 @@ def select_relevant_memories(
     if not recent.strip():
         return []
     catalog = "\n".join(
-        f"{index}: {file['name']} — {file['description']}"
+        f"{index}: {file['name'][:128]} — {file['description'][:256]}"
         for index, file in enumerate(files)
     )
     prompt = (
@@ -134,7 +143,7 @@ def select_relevant_memories(
         "select the indices of memories that are clearly relevant. "
         "Return ONLY a JSON array of integers, e.g. [0, 3]. "
         "If none are relevant, return [].\n\n"
-        f"Recent conversation:\n{recent}\n\nMemory catalog:\n{catalog}"
+        f"Recent conversation:\n{recent}\n\nMemory catalog:\n{catalog[:4000]}"
     )
     try:
         text = summarize(prompt, 200).strip()
@@ -161,17 +170,20 @@ def select_relevant_memories(
     return selected
 
 
-def load_memories(store: MemoryStore, messages: list, summarize) -> str:
+def load_memories(store: MemoryStore, messages: list, summarize, *, max_tokens=1024) -> str:
+    from ..core.context_materials import bounded_text
+    if max_tokens <= 0:
+        return ""
     selected_files = select_relevant_memories(store, messages, summarize)
     if not selected_files:
         return ""
     parts = ["<relevant_memories>"]
     for filename in selected_files:
-        content = read_memory_file(store, filename)
+        content = read_memory_file(store, filename, max_chars=max_tokens * 2)
         if content:
             parts.append(content)
     parts.append("</relevant_memories>")
-    return "\n\n".join(parts)
+    return bounded_text("\n\n".join(parts), max_tokens)
 
 
 def extract_memories(store: MemoryStore, messages: list, summarize) -> list[dict]:
@@ -292,8 +304,9 @@ def build_request_messages_with_memories(
     store: MemoryStore,
     messages: list,
     summarize,
+    *, max_tokens=1024,
 ):
-    memories = load_memories(store, messages, summarize)
+    memories = load_memories(store, messages, summarize, max_tokens=max_tokens)
     if not memories:
         return messages
     target = find_latest_text_user_message(messages)

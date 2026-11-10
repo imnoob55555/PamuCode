@@ -153,6 +153,7 @@ def spawn_teammate_thread(
     thread_factory: Callable = threading.Thread,
     sleep: Callable[[float], None] = time.sleep,
     plan_poll_interval: float = 5.0,
+    context=None,
 ) -> str:
     try:
         validate_name(name, allow_lead=False)
@@ -170,7 +171,7 @@ def spawn_teammate_thread(
     handler_snapshot = dict(handlers)
     system = (
         f"You are '{name}', role: {role}.\nWorkspace: {workdir}\n"
-        f"Available tools: {', '.join(tool['name'] for tool in TEAM_TOOLS)}\n"
+        f"Available tools: {', '.join(tool['name'] for tool in TEAM_TOOLS)}, history_search, history_read\n"
         "You must send your final result to lead using send_message.\n"
         "Do not create subagents or additional teammates.\n"
         "bash and write_file require permission from Lead. "
@@ -179,6 +180,16 @@ def spawn_teammate_thread(
     )
 
     def run():
+        if context is None:
+            from ...core.delegated_context import DelegatedContext
+            from ...config import AppConfig
+            local_config = AppConfig.from_env(workdir, environ={'MODEL_ID': 'delegated'})
+            delegate = DelegatedContext(local_config, llm, 'delegated')
+        else:
+            delegate = context
+        retrieval_schemas, retrieval_handlers = delegate.retrieval_tools()
+        team_tools = [*TEAM_TOOLS, *retrieval_schemas]
+        handler_snapshot.update(retrieval_handlers)
         messages: list[dict] = [{"role": "user", "content": prompt}]
         summary = "Stopped after 10 teammate rounds."
         deferred_inbox: list[dict] = []
@@ -216,8 +227,9 @@ def spawn_teammate_thread(
                         sleep(plan_poll_interval)
                         continue
                     try:
-                        from ...core.compaction import snip_compact
-                        response = llm(system=system, messages=list(snip_compact(messages, max_messages=20)), tools=TEAM_TOOLS, max_tokens=max_tokens)
+                        report = delegate.prepare(system, messages, team_tools, max_tokens)
+                        response = llm(system=system, messages=list(messages), tools=team_tools, max_tokens=report.budget.output_tokens)
+                        delegate.record(response, report)
                     except Exception as exc:
                         from ...core.recovery import describe_model_error
                         summary = f"Teammate error: {type(exc).__name__}: {describe_model_error(exc)}"
@@ -254,7 +266,7 @@ def spawn_teammate_thread(
                                 output = handler(**block.input, cwd=cwd)
                             else:
                                 output = handler(**block.input)
-                            is_error = False
+                            is_error = block.name in retrieval_handlers and str(output).startswith("Error:")
                         result = {"type": "tool_result", "tool_use_id": block.id, "content": str(output)}
                         if is_error:
                             result["is_error"] = True

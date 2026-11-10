@@ -87,9 +87,12 @@ class SessionLease:
 
 def _validate(snapshot, workspace):
     required = {'schema_version', 'id', 'workspace', 'created_at', 'updated_at', 'title', 'history', 'archive', 'todos', 'rounds_since_todo', 'selection', 'status', 'tool_states'}
+    version = snapshot.get('schema_version') if isinstance(snapshot, dict) else None
+    if version == 2:
+        required.add('context_state')
     if not isinstance(snapshot, dict) or set(snapshot) != required:
         raise SessionError('会话快照格式无效')
-    if type(snapshot['schema_version']) is not int or snapshot['schema_version'] != 1:
+    if type(snapshot['schema_version']) is not int or snapshot['schema_version'] not in (1, 2):
         raise SessionError('会话版本不受支持')
     _id(snapshot['id'])
     if snapshot['workspace'] != str(workspace):
@@ -103,8 +106,24 @@ def _validate(snapshot, workspace):
     decode_history(snapshot['history'])
     if not isinstance(snapshot['archive'], list):
         raise SessionError('会话归档格式无效')
-    for history in snapshot['archive']:
-        decode_history(history)
+    if version == 1:
+        for history in snapshot['archive']:
+            decode_history(history)
+    else:
+        from .session_codec import _json
+        if not isinstance(snapshot['context_state'], dict):
+            raise SessionError('会话上下文状态无效')
+        _json(snapshot['context_state'])
+        records = snapshot['context_state'].get('_message_records')
+        if records is not None and (not isinstance(records, list) or len(records) != len(snapshot['history']) or any(not isinstance(entry, dict) or set(entry) != {'id', 'source', 'turn_id'} or any(not isinstance(value, str) for value in entry.values()) for entry in records)):
+            raise SessionError('会话消息身份目录无效')
+        for entry in snapshot['archive']:
+            if not isinstance(entry, dict) or set(entry) not in ({'id', 'ref', 'source', 'turn_id'}, {'id', 'ref', 'source', 'turn_id', 'artifacts'}):
+                raise SessionError('会话归档目录无效')
+            if any(not isinstance(entry[key], str) for key in ('id', 'ref', 'source', 'turn_id')) or not __import__('re').fullmatch(r'sha256:[0-9a-f]{64}', entry['ref']):
+                raise SessionError('会话归档引用无效')
+            if 'artifacts' in entry and (not isinstance(entry['artifacts'], list) or any(not isinstance(ref, str) or not __import__('re').fullmatch(r'artifact:[0-9a-f]{64}', ref) for ref in entry['artifacts'])):
+                raise SessionError('会话产物引用无效')
     if not isinstance(snapshot['todos'], list):
         raise SessionError('会话任务格式无效')
     for todo in snapshot['todos']:
@@ -224,6 +243,11 @@ class SessionStore:
                 return result
             snapshot = json.loads(raw, object_pairs_hook=pairs)
             _validate(snapshot, self.workdir)
+            if snapshot['schema_version'] == 2:
+                from .context_archive import ContextArchive
+                archive = ContextArchive(self.workdir, snapshot['id'])
+                for ref in archive.active_artifacts(snapshot['history']):
+                    archive.validate_artifact(ref)
             if snapshot['id'] != Path(name).stem:
                 raise SessionError('会话编号不匹配')
             return snapshot
@@ -298,6 +322,13 @@ class SessionStore:
             if fd is not None:
                 os.close(fd)
             raise
+
+    def backup_v1(self, snapshot: dict) -> None:
+        """Preserve the loaded v1 snapshot before its first v2 replacement."""
+        from .context_archive import ContextArchive
+        archive = ContextArchive(self.workdir, snapshot['id'])
+        data = json.dumps(snapshot, ensure_ascii=False, allow_nan=False).encode('utf-8')
+        archive._save(None, data, '', name='migration-v1.json')
 
     def save(self, snapshot: dict) -> None:
         try:

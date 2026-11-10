@@ -53,7 +53,7 @@ def adapter_for(protocol, *, first=False, origin='provider@http://current.local'
 @pytest.mark.parametrize('protocol', ['anthropic_messages', 'openai_responses', 'openai_chat', 'ollama'])
 @pytest.mark.parametrize('change', ['none', 'endpoint', 'model', 'protocol'])
 def test_fresh_runtime_next_turn_preserves_results_without_reexecuting_tools(tmp_path, protocol, change):
-    config = AppConfig.from_env(tmp_path, environ={'MODEL_ID': 'm'})
+    config = AppConfig.from_env(tmp_path, environ={'MODEL_ID': 'm', 'PAMU_CONTEXT_WINDOW': '256000'})
     adapter, first_requests = adapter_for(protocol, first=True)
     original = build_runtime(config, None, adapter=adapter, protocol=protocol,
                              thinking_level='high' if protocol == 'anthropic_messages' else 'off')
@@ -69,7 +69,7 @@ def test_fresh_runtime_next_turn_preserves_results_without_reexecuting_tools(tmp
     target = ('openai_responses' if protocol == 'openai_chat' else 'openai_chat') if change == 'protocol' else protocol
     origin = 'provider@http://other.local' if change == 'endpoint' else 'provider@http://current.local'
     adapter, requests = adapter_for(target, origin=origin)
-    fresh_config = AppConfig.from_env(tmp_path, environ={'MODEL_ID': 'other' if change == 'model' else 'm'})
+    fresh_config = AppConfig.from_env(tmp_path, environ={'MODEL_ID': 'other' if change == 'model' else 'm', 'PAMU_CONTEXT_WINDOW': '256000'})
     restored = build_runtime(fresh_config, None, adapter=adapter, protocol=target,
                              thinking_level='high' if target == 'anthropic_messages' else 'off')
     restored.hooks = HookRegistry()

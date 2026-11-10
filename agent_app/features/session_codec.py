@@ -82,14 +82,19 @@ def _history(messages, decoding):
         raise ValueError('会话历史必须是列表')
     result = []
     for message in messages:
-        if isinstance(message, dict) and set(message) != {'role', 'content'}:
+        if isinstance(message, dict) and not set(message) <= {'role', 'content', '_pamu_id', '_pamu_source', '_pamu_turn_id'}:
             raise ValueError('会话消息字段无效')
         role, content = value(message, 'role'), value(message, 'content')
         if role not in ('user', 'assistant', 'system'):
             raise ValueError('会话角色无效')
         if not isinstance(content, (str, list, tuple)):
             raise ValueError('会话内容格式无效')
-        result.append({'role': role, 'content': content if isinstance(content, str) else [_block(block, decoding) for block in content]})
+        item = {'role': role, 'content': content if isinstance(content, str) else [_block(block, decoding) for block in content]}
+        for key in ('_pamu_id', '_pamu_source', '_pamu_turn_id'):
+            metadata = value(message, key)
+            if metadata is not None:
+                item[key] = _string(metadata, True)
+        result.append(item)
     return result
 
 

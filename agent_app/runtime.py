@@ -94,6 +94,8 @@ class SessionState:
     context: dict = field(default_factory=dict)
     todos: list[dict] = field(default_factory=list)
     rounds_since_todo: int = 0
+    context_state: dict = field(default_factory=dict)
+    context_archive: Any = field(default=None, repr=False, compare=False)
 
 
 from .config import AppConfig
