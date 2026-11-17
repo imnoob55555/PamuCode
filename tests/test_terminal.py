@@ -18,6 +18,9 @@ def test_slash_matches_names_descriptions_and_hides_for_normal_text():
         "/compact",
         "/help",
         "/quit",
+        "/plan",
+        "/execute",
+        "/skill",
     }
     assert [item.name for item in match_commands(" /LOG")] == ["/login"]
     assert "/model" in [item.name for item in match_commands("/模型")]
@@ -373,7 +376,7 @@ def test_prompt_mention_escape_hides_menu(monkeypatch, tmp_path):
     def menu_text(app):
         rows = []
         for window in app.layout.visible_windows[1:]:
-            if isinstance(window.content, FormattedTextControl):
+            if isinstance(window.content, FormattedTextControl) and window.style != "class:muted":
                 rows.append(
                     "".join(
                         part[1] for part in to_formatted_text(window.content.text)
@@ -510,11 +513,12 @@ def test_prompt_puts_model_status_below_the_bottom_rule(monkeypatch):
                 if app.is_done or captured:
                     return
                 windows = app.layout.visible_windows
-                statuses = [w for w in windows if w.style == "class:muted"]
+                statuses = [w for w in windows if w.style == "class:muted"
+                            and w.content.text() == ui.status_text()]
                 assert len(statuses) == 1
                 status = statuses[0]
                 assert status.align == WindowAlign.RIGHT
-                assert status.content.text() == "claude-sonnet-4-6 • low"
+                assert status.content.text() == "claude-sonnet-4-6 • low • execute"
                 rows = [w for w in windows if not isinstance(w.content, DummyControl)]
                 assert rows[-1] is status
                 captured.append(status)
@@ -537,6 +541,47 @@ def _plain_rows(rendered: str) -> list[str]:
     return rows
 
 
+@pytest.mark.parametrize("model", ["", "test-model"])
+def test_workspace_status_below_input_with_or_without_model(monkeypatch, tmp_path, model):
+    from prompt_toolkit.application import Application
+
+    original_run = Application.run
+    workdir = tmp_path / "项目 with spaces" / ("long-directory-" * 8)
+    captured = []
+    with create_pipe_input() as pipe:
+        ui = terminal.TerminalUI(input=pipe, output=DummyOutput(), workdir=workdir)
+        ui.model_name = model
+
+        def run(app):
+            def after_render(_):
+                if app.is_done or captured:
+                    return
+                windows = app.layout.visible_windows
+                directory = next(
+                    w for w in windows
+                    if callable(getattr(w.content, "text", None))
+                    and w.content.text() == str(workdir)
+                )
+                index = windows.index(directory)
+                assert windows[index - 1].char == "─"
+                assert not directory.wrap_lines()
+                if model:
+                    status = next(w for w in windows
+                                  if callable(getattr(w.content, "text", None))
+                                  and w.content.text() == ui.status_text())
+                    positions = app.renderer.last_rendered_screen.visible_windows_to_write_positions
+                    assert positions[directory].ypos == positions[status].ypos
+                captured.append(directory)
+                pipe.send_text("hello\r")
+
+            app.after_render += after_render
+            return original_run(app)
+
+        monkeypatch.setattr(Application, "run", run)
+        assert ui.prompt() == "hello"
+    assert captured
+
+
 def test_prompt_flushes_model_status_to_the_right_edge():
     import io
 
@@ -552,7 +597,7 @@ def test_prompt_flushes_model_status_to_the_right_edge():
         assert ui.prompt() == "hello"
     rows = _plain_rows(rendered.getvalue())
     status = next(row for row in rows if "•" in row)
-    assert status.strip() == "claude-sonnet-4-6 • high"
+    assert status.strip() == "claude-sonnet-4-6 • high • execute"
     assert len(status) == output.get_size().columns
     assert any(
         rows[index + 1] == status

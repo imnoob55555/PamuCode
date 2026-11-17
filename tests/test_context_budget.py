@@ -69,9 +69,12 @@ def test_delegated_budget_stops_oversized_request():
     from agent_app.config import AppConfig
     from pathlib import Path
     config = AppConfig.from_env(Path('/tmp'), environ={'MODEL_ID': 'a'})
-    d = DelegatedContext(config, lambda **kwargs: None, 'a')
+    calls = []
+    llm = lambda **kwargs: calls.append(kwargs)
+    d = DelegatedContext(config, llm, 'a')
     with pytest.raises(ValueError, match='上下文'):
-        d.prepare('x' * 100000, [{'role':'user','content':'task'}], [], 8000)
+        d.request(llm, system='x' * 100000, messages=[{'role':'user','content':'task'}], tools=[], max_tokens=8000)
+    assert calls == []
 
 
 def test_anthropic_projection_keeps_only_native_scope_sent_to_model():

@@ -2,14 +2,12 @@
 from copy import deepcopy
 import hashlib
 import json
-import math
 from uuid import uuid4
-from pathlib import Path
 
 from ..adapters.common import generic_blocks, output_text, value
 from ..features.sessions import checkpoint, commit_history
 from ..features.context_archive import ContextArchive
-from .context_budget import prepare_budget, estimate_request, resolve_window
+from .context_budget import prepare_budget, resolve_window
 from .context_history import split_history, portable_history, user_text
 
 FIELDS = ('goal', 'constraints', 'decisions', 'completed', 'remaining', 'uncertainties', 'references')
@@ -169,11 +167,19 @@ def compact(runtime, focus='', *, system=None, tools=None, model=None, emergency
     return True
 
 
+def archive_result(runtime, text, limit):
+    """Persist full evidence before returning its bounded model-facing preview."""
+    if len(text.encode()) / 2 <= limit:
+        return text
+    ref = archive_for(runtime).save_artifact(text)
+    preview = max(80, min(1000, limit // 2))
+    return f'[归档结果 {ref}]\n长度：{len(text)} 字符；使用 history_read 读取。\n{text[:preview]}\n…\n{text[-preview:]}'
+
+
 def normalize_results(runtime, messages, limit):
     """Archive complete evidence before replacing any tool-result text."""
     candidate = deepcopy(messages)
     changed = False
-    archive = None
     for message in candidate:
         if message['role'] != 'user' or not isinstance(message['content'], list):
             continue
@@ -181,15 +187,14 @@ def normalize_results(runtime, messages, limit):
             if value(block, 'type') != 'tool_result':
                 continue
             text = str(block.get('content', ''))
-            if text.startswith('[归档结果 ') or len(text.encode()) / 2 <= limit:
+            if text.startswith('[归档结果 '):
                 continue
-            archive = archive or archive_for(runtime)
-            ref = archive.save_artifact(text)
-            preview = max(80, min(1000, limit // 2))
-            block['content'] = f'[归档结果 {ref}]\n长度：{len(text)} 字符；使用 history_read 读取。\n{text[:preview]}\n…\n{text[-preview:]}'
-            changed = True
+            replacement = archive_result(runtime, text, limit)
+            if replacement != text:
+                block['content'] = replacement
+                changed = True
     if changed:
-        archive.save_history(messages)
+        archive_for(runtime).save_history(messages)
         commit_history(runtime, candidate, deepcopy(runtime.session.context_state))
     return changed
 

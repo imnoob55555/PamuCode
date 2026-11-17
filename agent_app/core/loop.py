@@ -10,9 +10,9 @@ from ..features.background import (
     collect_background_results,
     start_background_task,
 )
-from ..adapters.common import generic_blocks
+from ..adapters.common import generic_blocks, output_text, value as _block_value
 from ..features.mcp import snapshot_mcp_tools
-from ..features.sessions import checkpoint, archive_history
+from ..features.sessions import checkpoint
 from ..features.session_store import SessionError
 from ..features.memory import (
     build_request_messages_with_memories,
@@ -23,20 +23,13 @@ from ..features.scheduler import consume_cron_queue
 from ..features.teams.protocol import collect_lead_inbox
 from ..logging_setup import get_logger
 from ..runtime import RuntimeContext
+from ..working_mode import tool_denial
 from ..thinking import plan_request, strip_thinking_blocks
 from ..tools.builtin import resolve_tool_cwd
 from ..tools.executor import execute_tool, should_run_background
-from .compaction import (
-    compact_history,
-    estimate_size,
-    micro_compact,
-    persist_large_output,
-    reactive_compact,
-    snip_compact,
-    tool_result_budget,
-)
+from .compaction import persist_large_output
 from .context import append_user_text_blocks, build_context
-from .context_manager import compact, normalize_results, register_history_tools
+from .context_manager import archive_result, compact, normalize_results, register_history_tools
 from .context_budget import prepare_budget, record_usage, resolve_window
 from .recovery import (
     PartialStreamError,
@@ -55,22 +48,12 @@ TEAM_GUARDED_TOOLS = {"bash", "write_file"}
 LOGGER = get_logger("pamu.loop")
 
 
-def _block_value(block, name, default=None):
-    if isinstance(block, dict):
-        return block.get(name, default)
-    return getattr(block, name, default)
-
-
 def _has_tool_use(content) -> bool:
     return any(_block_value(block, "type") == "tool_use" for block in content)
 
 
 def _extract_text(content) -> str:
-    return "\n".join(
-        str(_block_value(block, "text", ""))
-        for block in content
-        if _block_value(block, "type") == "text"
-    ).strip()
+    return output_text(content).strip()
 
 
 def _summarize(runtime: RuntimeContext, payload, max_tokens: int = 2_000) -> str:
@@ -128,8 +111,6 @@ def _collect_team_messages(runtime: RuntimeContext) -> list[dict]:
         hook=runtime.hooks.trigger,
         cwd_resolver=lambda cwd: resolve_tool_cwd(runtime.config.workdir, cwd),
         guarded_tools=TEAM_GUARDED_TOOLS,
-        clock=time.time,
-        sleep=time.sleep,
     )
 
 
@@ -217,6 +198,7 @@ def run_agent_loop(runtime: RuntimeContext) -> None:
         tools, handlers = snapshot_mcp_tools(
             runtime.mcp, *runtime.tools.snapshot()
         )
+        tools = [tool for tool in tools if not tool_denial(session, tool["name"])]
         _update_context(runtime, tools)
         system = runtime.prompt_builder.build(session.context)
         request_messages = build_request_messages_with_memories(
@@ -349,7 +331,6 @@ def run_agent_loop(runtime: RuntimeContext) -> None:
                 state.reactive_compact_count += 1
                 LOGGER.warning("recovery: reactive compact")
                 try:
-                    before_reactive = copy.deepcopy(messages)
                     compact(runtime, system=system, tools=tools, model=state.current_model, emergency=True)
                     checkpoint(runtime)
                 except SessionError:
@@ -427,9 +408,11 @@ def run_agent_loop(runtime: RuntimeContext) -> None:
                 continue
             if _wait_for_team_activity(runtime):
                 continue
-            extract_memories(runtime.memory, pre_compact_messages, summarize)
+            if not runtime.config.headless and getattr(runtime.config, 'sandbox_mode', 'off') != 'confined':
+                extract_memories(runtime.memory, pre_compact_messages, summarize)
             checkpoint(runtime)
-            consolidate_memories(runtime.memory, summarize)
+            if not runtime.config.headless and getattr(runtime.config, 'sandbox_mode', 'off') != 'confined':
+                consolidate_memories(runtime.memory, summarize)
             checkpoint(runtime)
             _update_context(runtime)
             LOGGER.info("turn complete")
@@ -440,13 +423,11 @@ def run_agent_loop(runtime: RuntimeContext) -> None:
         result_message = {"role": "user", "content": results}
 
         def add_result(result):
-            from .context_manager import archive_for
             text = str(result.get('content', ''))
             result_limit = min(4000, max(128, report.budget.input_limit * 15 // 100))
-            if len(text.encode()) / 2 > result_limit:
-                ref = archive_for(runtime).save_artifact(text)
-                preview = max(80, min(1000, result_limit // 2))
-                result['content'] = f'[归档结果 {ref}]\n长度：{len(text)} 字符；使用 history_read 读取。\n{text[:preview]}\n…\n{text[-preview:]}'
+            replacement = archive_result(runtime, text, result_limit)
+            if replacement != text:
+                result['content'] = replacement
             if not results:
                 messages.append(result_message)
             results.append(result)
@@ -462,6 +443,13 @@ def run_agent_loop(runtime: RuntimeContext) -> None:
             LOGGER.info("tool_call name=%s", name)
             print(f"\033[36m> {name}\033[0m")
             checkpoint(runtime, tool_id=tool_use_id, tool_status="running")
+            denied = tool_denial(session, name)
+            if denied:
+                add_result({"type": "tool_result", "tool_use_id": tool_use_id,
+                            "content": denied, "is_error": True})
+                continue
+            if runtime.config.headless:
+                runtime.hooks.trigger("PreToolUse", block)
             if name == "compact":
                 # Pair every call before replacing history, including later calls
                 # deliberately skipped by the compact control tool.
@@ -474,7 +462,6 @@ def run_agent_loop(runtime: RuntimeContext) -> None:
                         add_result({"type": "tool_result", "tool_use_id": pending_id,
                                     "content": "会话上下文已压缩" if pending_id == tool_use_id else "上下文压缩，工具未执行",
                                     "is_error": pending_id != tool_use_id})
-                before_manual = copy.deepcopy(messages)
                 try:
                     compact(runtime, focus=tool_input.get('focus', ''), system=system, tools=tools, model=state.current_model)
                 except SessionError:
@@ -493,7 +480,7 @@ def run_agent_loop(runtime: RuntimeContext) -> None:
                 compacted_now = True
                 break
 
-            blocked = runtime.hooks.trigger("PreToolUse", block)
+            blocked = None if runtime.config.headless else runtime.hooks.trigger("PreToolUse", block)
             if blocked:
                 add_result(
                     {
@@ -505,7 +492,7 @@ def run_agent_loop(runtime: RuntimeContext) -> None:
                 continue
 
             checkpoint(runtime)
-            if should_run_background(name, tool_input):
+            if not runtime.config.headless and should_run_background(name, tool_input):
                 background_id = start_background_task(
                     runtime.background,
                     block,

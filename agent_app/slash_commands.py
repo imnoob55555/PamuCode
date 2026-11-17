@@ -25,6 +25,9 @@ SLASH_COMMANDS = (
     SlashCommand("/compact", "[focus]", "压缩旧历史并保留近期交互"),
     SlashCommand("/resume", "[--last | 会话编号]", "恢复当前工作区的其他会话"),
     SlashCommand("/help", "", "显示命令帮助", ("/h",)),
+    SlashCommand("/plan", "", "进入规划模式，只读探索并制定计划"),
+    SlashCommand("/execute", "", "进入执行模式，按用户要求实施"),
+    SlashCommand("/skill", "[名称] [任务描述]", "选择并调用技能"),
     SlashCommand("/quit", "", "退出当前 PamuCode 会话"),
 )
 
@@ -49,5 +52,8 @@ def match_commands(text: str) -> list[SlashCommand]:
 def help_text() -> str:
     return (
         "可用命令：\n"
-        + "\n".join(f"  {item.usage:<23} {item.description}" for item in SLASH_COMMANDS)
+        + "\n".join(
+            f"  {item.name}  {item.description}"
+            for item in SLASH_COMMANDS
+        )
     )

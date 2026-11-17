@@ -156,11 +156,11 @@ def function_tools(tools, *, responses=False):
     return converted
 
 
-def output_text(content):
+def output_text(content, *, separator="\n"):
     if isinstance(content, str):
         return content
     if isinstance(content, list):
-        return '\n'.join(str(value(b, 'text', '')) for b in content if value(b, 'type') == 'text')
+        return separator.join(str(value(b, 'text', '')) for b in content if value(b, 'type') == 'text')
     return json.dumps(plain(content), ensure_ascii=False)
 
 

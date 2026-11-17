@@ -71,14 +71,15 @@ def test_subagents_summary_and_teammates_keep_selected_adapter(tmp_path, monkeyp
     assert calls[0]['messages'][0]['content'] == 'inspect'
     teammate = []
     def spawn(team, bus, llm, **kwargs):
-        teammate.append(llm)
+        teammate.append((llm, kwargs['context']))
         return 'spawned'
     monkeypatch.setattr('agent_app.bootstrap.teammates.spawn_teammate_thread', spawn)
     assert handlers['spawn_teammate']('worker', 'reviewer', 'inspect') == 'spawned'
     # A provider change must not pair an existing teammate's old model ID
     # with the new provider's client.
     runtime.model.switch('openai', 'other', llm=object())
-    result = teammate[0](system=None, messages=[], max_tokens=10, tools=None)
+    llm, context = teammate[0]
+    result = context.request(llm, system=None, messages=[], max_tokens=10, tools=None)
     assert result.content[0].text == 'result'
     assert calls[-1]['model'] == 'local'
 

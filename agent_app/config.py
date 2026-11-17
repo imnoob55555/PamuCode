@@ -41,13 +41,13 @@ class AppConfig:
     max_reactive_compacts: int = 1
     base_delay_ms: int = 500
     max_consecutive_529: int = 3
-    context_limit: int = 50_000
-    keep_recent: int = 3
     persist_threshold: int = 20_000
     idle_poll_interval: float = 5.0
     idle_timeout: float = 60.0
     permission_poll_interval: float = 0.5
     permission_timeout: float = 300.0
+    headless: bool = False
+    sandbox_mode: str = "off"
 
     @property
     def sessions_dir(self) -> Path:
@@ -67,6 +67,9 @@ class AppConfig:
         from .core.context_budget import validate_window
         raw_window = environment.get("PAMU_CONTEXT_WINDOW", "").strip()
         window = validate_window(raw_window) if raw_window else None
+        sandbox = environment.get("PAMU_SANDBOX", "off").strip()
+        if sandbox not in {"off", "confined"}:
+            raise ValueError("PAMU_SANDBOX must be 'off' or 'confined'")
         root = repo_root.resolve()
         workspace = (workdir or repo_root).resolve()
         state_dir = workspace / ".pamu"
@@ -90,4 +93,5 @@ class AppConfig:
             context_window=window,
             fallback_model=environment.get("FALLBACK_MODEL_ID"),
             log_level=(environment.get("LOG_LEVEL") or "INFO").strip() or "INFO",
+            sandbox_mode=sandbox,
         )

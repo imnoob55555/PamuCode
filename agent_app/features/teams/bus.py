@@ -9,6 +9,8 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .approval import ApprovalAuthority
+
 AGENT_NAME_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,31}$")
 ALLOWED_MESSAGE_TYPES = {
     "message",
@@ -36,6 +38,7 @@ def validate_agent_name(name: str, *, allow_lead: bool = True) -> str:
 class MessageBus:
     root: Path
     lock: threading.RLock = field(default_factory=threading.RLock)
+    authority: ApprovalAuthority = field(default_factory=ApprovalAuthority)
 
     def mailbox_path(self, agent: str) -> Path:
         validate_agent_name(agent)

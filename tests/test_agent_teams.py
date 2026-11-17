@@ -92,9 +92,10 @@ def test_protocol_routes_only_matching_response_and_permission(bus, tmp_path):
     store.pending["shutdown"] = ProtocolState("shutdown", "shutdown", "lead", "worker", "pending", "")
     assert not match_response(store, "plan_approval_response", "shutdown", True)
     assert match_response(store, "shutdown_response", "shutdown", True)
+    bus.authority.register("permit", "worker", {"tool_use_id": "tool", "tool_name": "bash", "tool_input": {"command": "echo safe"}, "cwd": str(tmp_path)})
     process_permission_request(
-        bus, ProtocolStore(), {"from": "worker", "content": {"request_id": "permit", "tool_use_id": "tool", "tool_name": "bash", "tool_input": {"command": "echo safe"}, "cwd": str(tmp_path)}},
-        hook=lambda *_args: None, cwd_resolver=Path, guarded_tools={"bash"}, clock=lambda: 0, sleep=lambda _seconds: None,
+        bus, {"from": "worker", "content": {"request_id": "permit", "tool_use_id": "tool", "tool_name": "bash", "tool_input": {"command": "echo safe"}, "cwd": str(tmp_path)}},
+        hook=lambda *_args: None, cwd_resolver=Path, guarded_tools={"bash"},
     )
     assert bus.read_inbox("worker")[0]["content"] == {"request_id": "permit", "approved": True, "reason": ""}
 
@@ -247,7 +248,9 @@ def test_bootstrap_teammate_idle_adapter_drops_role_argument(
     assert messages[-1]["content"] == "done"
 
 
-def test_bootstrap_teammate_uses_retry_policy(runtime, monkeypatch):
+def test_bootstrap_teammate_retries_transient_errors(runtime, monkeypatch):
+    from agent_app.core import recovery
+
     calls = []
 
     class ImmediateThread:
@@ -257,22 +260,25 @@ def test_bootstrap_teammate_uses_retry_policy(runtime, monkeypatch):
         def start(self):
             self.target()
 
-    def retry(call, state, **kwargs):
-        calls.append((state, kwargs))
-        return call()
+    class RateLimited(Exception):
+        status_code = 429
 
+    def create(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            raise RateLimited()
+        return text_response("retried")
+
+    runtime.llm.client.messages.create = create
     monkeypatch.setattr(bootstrap.threading, "Thread", ImmediateThread)
-    monkeypatch.setattr(bootstrap, "with_retry", retry)
+    monkeypatch.setattr(recovery.time, "sleep", lambda _: None)
     _, handlers = runtime.tools.snapshot()
 
     handlers["spawn_teammate"]("worker", "reviewer", "inspect")
 
-    assert len(calls) == 1
-    assert calls[0][1] == {
-        "max_transient_retries": runtime.config.max_transient_retries,
-        "max_consecutive_529": runtime.config.max_consecutive_529,
-        "base_delay_ms": runtime.config.base_delay_ms,
-    }
+    assert [call["model"] for call in calls] == ["test-model", "test-model"]
+    assert runtime.bus.read_inbox("lead")[-1]["content"] == "retried"
+    assert runtime.team.active == {}
 
 
 def test_teammate_error_and_round_limit_send_result_and_cleanup(bus, tmp_path):

@@ -3,11 +3,13 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 from .context_budget import prepare_budget, record_usage
+from .recovery import RecoveryState, with_retry
 
 
 class DelegatedContext:
-    def __init__(self, config, llm, model, *, protocol='anthropic_messages', origin='', adapter=None):
-        self.llm = llm
+    def __init__(self, config, llm, model, *, protocol='anthropic_messages', origin='', adapter=None,
+                 fallback_model=None):
+        self._recovery = RecoveryState(model, fallback_model)
         self.runtime = SimpleNamespace(
             config=config, llm=adapter or SimpleNamespace(create=llm), sessions=None,
             model=SimpleNamespace(primary_model=model, protocol=protocol, base_url=origin, llm=adapter),
@@ -32,23 +34,48 @@ class DelegatedContext:
             return invoke
         return schemas, {name: guarded(handler) for name, handler in handlers.items()}
 
-    def prepare(self, system, messages, tools, requested_max_tokens, model=None):
+    def request(self, llm, **kwargs):
+        """Prepare, retry and record one request against this delegate's selection.
+
+        Keep the caller's history through compaction; only copy it at the
+        adapter seam. Plain callable injection retains its model keyword
+        convention, while a captured adapter always uses the recovery model.
+        """
+        config = self.runtime.config
+
+        def attempt():
+            active = self._recovery.current_model
+            report = self._prepare(kwargs.get('system'), kwargs['messages'],
+                                   kwargs.get('tools'), kwargs['max_tokens'], active)
+            create = llm
+            adapter = self.runtime.model.llm
+            if adapter is not None and hasattr(adapter, 'with_context_window'):
+                create = adapter.with_context_window(report.budget.window).create
+            request = {**kwargs, 'messages': list(kwargs['messages']),
+                       'max_tokens': report.budget.output_tokens}
+            if adapter is not None or 'model' in request:
+                request['model'] = active
+            response = create(**request)
+            record_usage(self.runtime, response, model=active, estimated_input=report.input_tokens)
+            return response
+
+        return with_retry(
+            attempt, self._recovery,
+            max_transient_retries=config.max_transient_retries,
+            max_consecutive_529=config.max_consecutive_529,
+            base_delay_ms=config.base_delay_ms,
+        )
+
+    def _prepare(self, system, messages, tools, requested_max_tokens, model):
         from .context_manager import compact, normalize_results
         runtime = self.runtime
         runtime.session.history = messages
-        active = model or runtime.model.primary_model
-        report = prepare_budget(runtime, system, messages, tools, requested_max_tokens, model=active)
-        if hasattr(runtime.llm, "with_context_window"):
-            runtime.llm = runtime.llm.with_context_window(report.budget.window)
+        report = prepare_budget(runtime, system, messages, tools, requested_max_tokens, model=model)
         normalize_results(runtime, messages, min(4000, report.budget.input_limit * 15 // 100))
-        report = prepare_budget(runtime, system, messages, tools, requested_max_tokens, model=active)
+        report = prepare_budget(runtime, system, messages, tools, requested_max_tokens, model=model)
         if report.input_tokens >= report.budget.trigger:
-            compact(runtime, system=system, tools=tools, model=active)
-            report = prepare_budget(runtime, system, runtime.session.history, tools, requested_max_tokens, model=active)
+            compact(runtime, system=system, tools=tools, model=model)
+            report = prepare_budget(runtime, system, messages, tools, requested_max_tokens, model=model)
         if report.remaining < 0:
             raise ValueError('子代理必要上下文超过输入预算，请调整上下文窗口或缩减任务')
-        messages[:] = runtime.session.history
         return report
-
-    def record(self, response, report, model=None):
-        return record_usage(self.runtime, response, model, estimated_input=report.input_tokens)

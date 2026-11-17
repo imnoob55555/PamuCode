@@ -80,6 +80,11 @@ def _read_prefix(path, bytes_limit):
 
 def optional_materials(runtime, tokens):
     """Account index, catalogs, loaded skill text and file evidence together."""
+    if getattr(runtime.config, 'sandbox_mode', 'off') == 'confined':
+        # Re-opening remembered project paths in the privileged controller
+        # would bypass descriptor-safe tool I/O. Require explicit tool reads.
+        return {'loaded_skills': '', 'recent_files': '', 'memories': '', 'skills': '',
+                'optional_remaining_tokens': tokens, 'optional_budget_tokens': tokens}
     remaining = tokens
     result = {}
     def allocate(key, text, maximum=None):

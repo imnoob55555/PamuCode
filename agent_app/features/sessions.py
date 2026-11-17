@@ -45,7 +45,9 @@ class SessionPersistence:
             self._check()
             try:
                 history = encode_history(runtime.session.history if _history is None else _history)
-                if not history and self.session_id is None:
+                if not history and self.session_id is None and not (
+                    runtime.session.context_state if _context_state is None else _context_state
+                ):
                     return
                 router = runtime.model
                 with router.lock:

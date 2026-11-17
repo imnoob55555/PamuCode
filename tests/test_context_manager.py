@@ -199,3 +199,55 @@ def test_summary_adapter_uses_resolved_context_window(tmp_path):
         assert selected and set(selected) == {65536}
     finally:
         rt.sessions.close()
+
+
+@pytest.mark.parametrize('entry', ['tool', 'history'])
+@pytest.mark.parametrize('fail_save', [False, True])
+def test_large_results_keep_full_evidence_and_publish_only_after_save(tmp_path, monkeypatch, entry, fail_save):
+    import re
+    from agent_app.core.context_manager import archive_for, normalize_results
+    from agent_app.core.loop import run_agent_loop
+    from tests.agent_app_fakes import FakeAdapter, text_response, tool_response, tool_schema
+
+    evidence = 'BEGIN_EVIDENCE ' + '中' * 12000 + ' END_EVIDENCE'
+    rt = runtime(tmp_path, '')
+    rt.session.history[:] = [{'role': 'user', 'content': 'read evidence'}]
+    archive = archive_for(rt)
+    if fail_save:
+        def reject_save(text):
+            raise OSError('disk full')
+        monkeypatch.setattr(archive, 'save_artifact', reject_save)
+    if entry == 'tool':
+        adapter = FakeAdapter([tool_response('c1', 'evidence', {}), text_response('done')])
+        rt.llm = rt.model.llm = adapter
+        rt.tools.register(tool_schema('evidence'), lambda: evidence)
+        run = lambda: run_agent_loop(rt)
+    else:
+        rt.session.history.extend([
+            {'role': 'assistant', 'content': [{'type': 'tool_use', 'id': 'c1', 'name': 'evidence', 'input': {}}]},
+            {'role': 'user', 'content': [{'type': 'tool_result', 'tool_use_id': 'c1', 'content': evidence}]},
+        ])
+        run = lambda: normalize_results(rt, rt.session.history, 1000)
+    try:
+        if fail_save:
+            with pytest.raises(OSError, match='disk full'):
+                run()
+            assert '[归档结果 ' not in str(rt.session.history)
+            if entry == 'history':
+                assert rt.session.history[-1]['content'][0]['content'] == evidence
+        else:
+            run()
+            result = next(b['content'] for m in rt.session.history if isinstance(m['content'], list)
+                          for b in m['content'] if isinstance(b, dict) and b.get('type') == 'tool_result')
+            ref = re.search(r'\[归档结果 (artifact:[0-9a-f]{64})\]', result).group(1)
+            assert len(result) < len(evidence)
+            assert 'BEGIN_EVIDENCE' in result and 'END_EVIDENCE' in result
+            # The committed snapshot and complete artifact remain readable after reopening.
+            sid = rt.sessions.session_id
+            rt.sessions.close()
+            saved = rt.sessions.store.load(sid)
+            assert ref in str(saved['history'])
+            assert archive._read(ref) == evidence
+            assert not normalize_results(rt, rt.session.history, 1000)
+    finally:
+        rt.sessions.close()

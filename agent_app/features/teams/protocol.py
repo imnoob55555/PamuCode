@@ -108,22 +108,18 @@ def wait_for_permission_response(
 
 def process_permission_request(
     bus: MessageBus,
-    store: ProtocolStore,
     message: dict,
     *,
     hook: Callable,
     cwd_resolver: Callable,
     guarded_tools: set[str],
-    clock: Callable[[], float],
-    sleep: Callable[[float], None],
 ) -> None:
-    del store, clock, sleep
     requester = cast(str, message.get("from"))
     request = message.get("content", {})
     cwd_valid = True
     tool_cwd = None
     try:
-        tool_cwd = cwd_resolver(request.get("cwd"))
+        tool_cwd = cwd_resolver(request.get("cwd")) if isinstance(request, dict) else None
     except (TypeError, ValueError):
         cwd_valid = False
     if isinstance(request, dict):
@@ -150,11 +146,16 @@ def process_permission_request(
         id=request.get("tool_use_id"), name=tool_name, input=tool_input,
         agent=requester, cwd=tool_cwd,
     )
-    denied_reason = hook("PreToolUse", block)
+    denied_reason = "Permission request is not registered or was rejected"
+    def evaluate():
+        nonlocal denied_reason
+        denied_reason = hook("PreToolUse", block)
+        return denied_reason
+    approved = bus.authority.decide(request_id, requester, request, evaluate)
     bus.send(
         "lead", requester,
-        {"request_id": request_id, "approved": denied_reason is None,
-         "reason": "" if denied_reason is None else str(denied_reason)},
+        {"request_id": request_id, "approved": approved,
+         "reason": "" if approved else str(denied_reason)},
         msg_type="permission_response",
     )
 
@@ -166,16 +167,14 @@ def collect_lead_inbox(
     hook: Callable,
     cwd_resolver: Callable,
     guarded_tools: set[str],
-    clock: Callable[[], float],
-    sleep: Callable[[float], None],
 ) -> list[dict]:
     ordinary_messages = []
     for message in bus.read_inbox("lead"):
         message_type = message.get("type", "")
         if message_type == "permission_request":
             process_permission_request(
-                bus, store, message, hook=hook, cwd_resolver=cwd_resolver,
-                guarded_tools=guarded_tools, clock=clock, sleep=sleep,
+                bus, message, hook=hook, cwd_resolver=cwd_resolver,
+                guarded_tools=guarded_tools,
             )
             continue
         if message_type in {"shutdown_response", "plan_approval_response"}:

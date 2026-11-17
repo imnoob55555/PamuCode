@@ -20,6 +20,7 @@ from .core.loop import run_agent_loop
 from .features.sessions import checkpoint
 from .features.session_store import SessionError
 from .features import auth
+from .features.skills import SkillInvocation
 from .features.scheduler import (
     cron_scheduler_loop,
     has_cron_queue,
@@ -375,7 +376,7 @@ def run_command(
 def handle_slash_command(runtime, query: str, *, credentials_path=None,
                          client_factory=None, print_fn=print, ui=None):
     """Keep model changes and their durable checkpoint in one agent transaction."""
-    mutating = query.strip().partition(" ")[0] in ("/model", "/provider", "/thinking", "/context", "/compact")
+    mutating = query.strip().partition(" ")[0] in ("/model", "/provider", "/thinking", "/context", "/compact", "/skill")
     lock = getattr(runtime, "agent_lock", None) if mutating else None
     with lock if lock is not None else nullcontext():
         fields = ("provider", "protocol", "base_url", "primary_model", "fallback_model", "thinking_level")
@@ -399,11 +400,58 @@ def _handle_slash_command(
     client_factory=None,
     print_fn=print,
     ui=None,
-) -> str | ExitAction | None:
+) -> str | ExitAction | SkillInvocation | ResumeAction | None:
     """Handle one slash command inside the REPL, mutating runtime on switch."""
     credentials_path = credentials_path or auth.CREDENTIALS_PATH
     command, _, rest = query.strip().partition(" ")
     argument = rest.strip()
+    if command == "/skill":
+        if runtime is None:
+            notify_or_print(ui, LOGIN_HINT, print_fn=print_fn)
+            return
+        if runtime.config.sandbox_mode == "confined":
+            notify_or_print(ui, "当前沙箱模式不支持加载技能。", print_fn=print_fn)
+            return
+        catalog = runtime.skills.registry
+        if not catalog:
+            notify_or_print(ui, "没有可用技能，请在 skills/<名称>/SKILL.md 添加技能后重启。", print_fn=print_fn)
+            return
+        parts = argument.split(maxsplit=1)
+        name = parts[0] if parts else None
+        task = parts[1] if len(parts) > 1 else ""
+        if name is None:
+            if ui is None:
+                print_fn("可用技能：\n" + "\n".join(
+                    f"  {key} — {skill['description']}" for key, skill in sorted(catalog.items())
+                ) + "\n使用 /skill <名称> [任务描述] 调用。")
+                return
+            name = ui.choose("选择技能", [
+                (key, f"{skill['name']} — {skill['description']}")
+                for key, skill in sorted(catalog.items())
+            ])
+            if name is None:
+                notify_or_print(ui, "已取消技能调用。", print_fn=print_fn)
+                return
+        if name not in catalog:
+            notify_or_print(ui, f"技能不存在：{name}。输入 /skill 查看可用技能。", print_fn=print_fn)
+            return
+        content = runtime.tools.snapshot()[1]["load_skill"](name=name)
+        checkpoint(runtime)
+        print_fn(f"已调用技能：{name}" + (f" · {task}" if task else ""))
+        return SkillInvocation(name, content, task)
+    if command in {"/plan", "/execute"}:
+        if runtime is None:
+            notify_or_print(ui, LOGIN_HINT, print_fn=print_fn)
+        elif argument:
+            notify_or_print(ui, f"用法：{command}", print_fn=print_fn)
+        else:
+            from .working_mode import switch_mode
+            try:
+                message = switch_mode(runtime, command[1:])
+                print_fn(message)
+            except ValueError as exc:
+                notify_or_print(ui, str(exc), print_fn=print_fn)
+        return
     if command in ('/context', '/compact'):
         if runtime is None:
             notify_or_print(ui, LOGIN_HINT, print_fn=print_fn)
@@ -682,6 +730,9 @@ def main(
     configuration_check=None,
 ) -> int | None:
     args = list(sys.argv[1:]) if argv is None else list(argv)
+    if args and args[0] == "run":
+        from .execution import main as run_headless
+        return run_headless(args[1:])
     interactive = sys.stdin.isatty() and sys.stdout.isatty()
     if ui is None and interactive:
         from .terminal import TerminalUI
@@ -724,7 +775,6 @@ def main(
             if runtime_factory is build_default_runtime else lambda: True
         )
     runtime = None
-    configuration_error = False
     if selected_session is not None or ui is None or configuration_check():
         try:
             runtime = _create_runtime(runtime_factory, credentials_path, selected_session[0]["selection"] if selected_session else None)
@@ -733,7 +783,6 @@ def main(
                 selected_session[1].close()
             raise
         if runtime is None:
-            configuration_error = True
             if selected_session:
                 selected_session[1].close()
                 return 2
@@ -762,17 +811,9 @@ def main(
         ui.repl_mode = True
     try:
         if interactive:
-            if runtime is not None and hasattr(runtime, "model"):
-                provider, model = runtime.model.snapshot()[:2]
-            else:
-                provider, model = None, None
             try:
                 print(
                     render_startup_screen(
-                        cwd=str(Path.cwd()),
-                        provider=provider,
-                        model=model,
-                        configuration_error=configuration_error,
                         color=(
                             "NO_COLOR" not in os.environ
                             and os.environ.get("TERM") != "dumb"
@@ -790,6 +831,8 @@ def main(
             if ui is not None and runtime is not None:
                 _provider, ui.model_name = runtime.model.snapshot()[:2]
                 ui.thinking_level = runtime.model.thinking_snapshot()
+                from .working_mode import working_mode
+                ui.working_mode = working_mode(getattr(runtime, "session", None))
             try:
                 # Non-interactive fallback reads a line without a prompt marker.
                 query = ui.prompt() if ui is not None else input("")
@@ -822,6 +865,11 @@ def main(
                 if selected is ExitAction.QUIT:
                     print("Shutting down PamuCode…")
                     break
+                if isinstance(selected, SkillInvocation):
+                    with runtime.agent_lock:
+                        runtime.hooks.trigger("UserPromptSubmit", selected.prompt)
+                        run_turn(runtime, selected.prompt)
+                    continue
                 if isinstance(selected, ResumeAction):
                     if runtime is None:
                         notify_or_print(ui, LOGIN_HINT)

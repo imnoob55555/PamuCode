@@ -359,8 +359,11 @@ def test_slash_provider_unknown_name(tmp_path, capsys):
 def test_slash_help_lists_commands(capsys):
     handle_slash_command(_runtime(), "/help")
     out = capsys.readouterr().out
-    for expected in ("/status", "/model", "/provider", "/help"):
-        assert expected in out
+    from agent_app.slash_commands import SLASH_COMMANDS
+
+    assert out.splitlines() == ["可用命令："] + [
+        f"  {command.name}  {command.description}" for command in SLASH_COMMANDS
+    ]
 
 
 def test_slash_unknown_command_hints_help(capsys):

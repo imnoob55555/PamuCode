@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 
 @dataclass(slots=True)
 class ToolRegistry:
+    access_check: Callable[[str], str | None] | None = None
     _tools: dict[str, dict] = field(default_factory=dict)
     _handlers: dict[str, Callable | None] = field(default_factory=dict)
     _lock: threading.RLock = field(default_factory=threading.RLock)
@@ -32,4 +33,13 @@ class ToolRegistry:
                 for name, handler in self._handlers.items()
                 if handler is not None
             }
+        if self.access_check is not None:
+            check = self.access_check
+            tools = [tool for tool in tools if not check(tool["name"])]
+            def guarded(name, handler):
+                def invoke(*args, **kwargs):
+                    denied = check(name)
+                    return denied if denied else handler(*args, **kwargs)
+                return invoke
+            handlers = {name: guarded(name, handler) for name, handler in handlers.items()}
         return tools, handlers

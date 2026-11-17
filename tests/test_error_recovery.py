@@ -372,35 +372,21 @@ def test_with_retry_never_replays_partial_stream_error():
     assert attempts == 1
 
 
-def test_subagent_routes_llm_request_through_with_retry(
-    runtime,
-    monkeypatch,
-):
-    retry_calls = []
+def test_subagent_retries_transient_errors(runtime, monkeypatch):
     requested_models = []
 
     def fake_create(**kwargs):
         requested_models.append(kwargs["model"])
+        if len(requested_models) == 1:
+            raise FakeAPIError(429, "rate limited")
         return fake_response("end_turn", "subagent done")
 
-    def spy_with_retry(call, state, **kwargs):
-        retry_calls.append((state, kwargs))
-        return call()
-
     runtime.llm.client.messages.create = fake_create
-    monkeypatch.setattr(bootstrap, "with_retry", spy_with_retry)
+    monkeypatch.setattr(recovery.time, "sleep", lambda _: None)
     _, handlers = runtime.tools.snapshot()
 
-    result = handlers["task"]("review one file")
-
-    assert result == "subagent done"
-    assert len(retry_calls) == 1
-    assert retry_calls[0][1] == {
-        "max_transient_retries": runtime.config.max_transient_retries,
-        "max_consecutive_529": runtime.config.max_consecutive_529,
-        "base_delay_ms": runtime.config.base_delay_ms,
-    }
-    assert requested_models == ["primary-model"]
+    assert handlers["task"]("review one file") == "subagent done"
+    assert requested_models == ["primary-model", "primary-model"]
 
 
 def test_subagent_retry_uses_recovery_fallback_model(runtime, monkeypatch):
@@ -408,15 +394,13 @@ def test_subagent_retry_uses_recovery_fallback_model(runtime, monkeypatch):
 
     def fake_create(**kwargs):
         requested_models.append(kwargs["model"])
+        if kwargs["model"] == "primary-model":
+            raise FakeAPIError(529, "overloaded")
         return fake_response("end_turn", "subagent done")
 
-    def switch_before_retry(call, state, **_kwargs):
-        state.current_model = state.fallback_model
-        return call()
-
     runtime.llm.client.messages.create = fake_create
-    monkeypatch.setattr(bootstrap, "with_retry", switch_before_retry)
+    monkeypatch.setattr(recovery.time, "sleep", lambda _: None)
     _, handlers = runtime.tools.snapshot()
 
     assert handlers["task"]("review one file") == "subagent done"
-    assert requested_models == ["fallback-model"]
+    assert requested_models == ["primary-model"] * runtime.config.max_consecutive_529 + ["fallback-model"]

@@ -17,6 +17,7 @@ from prompt_toolkit.layout import (
     ConditionalContainer,
     HSplit,
     Layout,
+    VSplit,
     Window,
     WindowAlign,
 )
@@ -25,6 +26,7 @@ from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.processors import BeforeInput, PasswordProcessor, Processor
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.styles import Style
+from prompt_toolkit.utils import get_cwidth
 
 from .cli_exit import ExitGesture, QuitRequested
 from .file_mentions import (
@@ -70,6 +72,7 @@ class TerminalUI:
         self.exit_gesture = exit_gesture or ExitGesture()
         self.model_name = ""
         self.thinking_level = "off"
+        self.working_mode = "execute"
         self.workdir = Path(workdir) if workdir is not None else None
         self._entry_index = None
         self.notice = ""
@@ -82,7 +85,8 @@ class TerminalUI:
 
     def status_text(self) -> str:
         """Right-aligned model and thinking level under the prompt box."""
-        return model_status(self.model_name, self.thinking_level)
+        status = model_status(self.model_name, self.thinking_level)
+        return f"{status} • {'plan · 只读' if self.working_mode == 'plan' else 'execute'}" if status else ""
 
     def notify(self, text):
         self.notice = text
@@ -478,13 +482,29 @@ class TerminalUI:
                     Window(control, height=1),
                     Window(char="─", height=1, style=border_style),
                     ConditionalContainer(
-                        Window(
-                            FormattedTextControl(self.status_text),
+                        VSplit(
+                            [
+                                Window(
+                                    FormattedTextControl(lambda: str(self.workdir) if self.workdir is not None else ""),
+                                    wrap_lines=False,
+                                    style="class:muted",
+                                ),
+                                Window(
+                                    FormattedTextControl(self.status_text),
+                                    width=lambda: Dimension(
+                                        min=0,
+                                        preferred=get_cwidth(self.status_text()),
+                                        max=get_cwidth(self.status_text()),
+                                    ),
+                                    align=WindowAlign.RIGHT,
+                                    wrap_lines=False,
+                                    style="class:muted",
+                                ),
+                            ],
                             height=1,
-                            align=WindowAlign.RIGHT,
-                            style="class:muted",
+                            padding=1,
                         ),
-                        Condition(lambda: bool(self.model_name)),
+                        Condition(lambda: self.workdir is not None or bool(self.model_name)),
                     ),
                     ConditionalContainer(
                         Window(

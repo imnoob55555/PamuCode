@@ -145,16 +145,24 @@ def make_summary_hook(root: Path):
     return summary_hook
 
 
-def make_diff_preview_hook(root: Path, confirmation: Callable[[str], str]):
+def make_diff_preview_hook(root: Path, confirmation: Callable[[str], str], *, policy=None):
     def diff_preview_hook(block, *, _root=root):
         if block.name not in ("write_file", "edit_file"):
             return None
         path = block.input.get("path", "")
         try:
-            file_path = safe_path(_root, path, getattr(block, "cwd", None))
+            file_path = safe_path(_root, path, getattr(block, "cwd", None), policy=policy, write=True)
+            if policy is not None and policy.mode == 'confined':
+                from ..security.files import open_regular, read_bounded
+                try:
+                    with open_regular(policy, file_path) as stream:
+                        old_text = read_bounded(stream)
+                except FileNotFoundError:
+                    old_text = ''
+            else:
+                old_text = file_path.read_text() if file_path.exists() else ""
         except Exception as exc:
             return f"[HOOK] Error: {exc}"
-        old_text = file_path.read_text() if file_path.exists() else ""
         if block.name == "write_file":
             new_text = block.input.get("content", "")
         else:

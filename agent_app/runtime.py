@@ -41,11 +41,6 @@ class ModelRouter:
         with self.lock:
             return self.thinking_level
 
-    def request_snapshot(self) -> tuple[str, str, str | None, Any]:
-        """Keep a delegated conversation's model and adapter from one selection."""
-        with self.lock:
-            return self.provider, self.primary_model, self.fallback_model, self.llm
-
     def switch_thinking(self, level: str) -> None:
         """Change only the thinking level for the current provider."""
         with self.lock:
@@ -141,6 +136,8 @@ class RuntimeContext:
     def __post_init__(self) -> None:
         # Direct constructions without an explicit router (tests, embedders)
         # still get a consistent, switchable view of the configured model.
+        from .working_mode import tool_denial
+        self.tools.access_check = lambda name: tool_denial(self.session, name)
         if self.model is None:
             self.model = ModelRouter(
                 provider="anthropic",

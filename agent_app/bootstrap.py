@@ -16,7 +16,7 @@ from .adapters.anthropic import AnthropicAdapter
 from .cli_progress import terminal_progress
 from .config import AppConfig
 from .core.prompt import PromptBuilder
-from .core.recovery import RecoveryState, with_retry
+from .core.delegated_context import DelegatedContext
 from .features import auth as auth_store
 from .features import (
     background,
@@ -47,6 +47,7 @@ from .tools.hooks import (
     make_summary_hook,
 )
 from .tools.registry import ToolRegistry
+from .security import ExecutionPolicy, ShellExecutor, child_environment
 
 INSTALL_ROOT = Path(__file__).resolve().parents[1]
 GLOBAL_SETTINGS_PATH = Path.home() / ".pamu" / ".settings"
@@ -186,13 +187,16 @@ def _create_storage_roots(config: AppConfig) -> None:
 
 
 def _run_git(config: AppConfig, args: list[str]) -> tuple[bool, str]:
+    if config.sandbox_mode == "confined":
+        return False, "Error: worktree commands are unavailable in confined mode"
     try:
         result = subprocess.run(  # noqa: S603 - fixed git argv, no user shell
-            ["git", *args],  # noqa: S607 - git is resolved from PATH on purpose
+            ["git", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", *args],
             cwd=config.workdir,
             capture_output=True,
             text=True,
             timeout=30,
+            env=child_environment(os.environ, scratch=config.state_dir / "child-tmp"),
         )
         output = (result.stdout + result.stderr).strip()
         return result.returncode == 0, output[:5000] if output else "(no output)"
@@ -209,7 +213,8 @@ def _register_default_hooks(
         make_permission_hook(config.workdir, input, mcp_state=mcp_state),
     )
     hooks.register("PreToolUse", make_log_hook(config.workdir))
-    hooks.register("PreToolUse", make_diff_preview_hook(config.workdir, input))
+    hooks.register("PreToolUse", make_diff_preview_hook(config.workdir, input,
+                   policy=ExecutionPolicy(config.workdir, config.repo_root, mode=config.sandbox_mode)))
     hooks.register("PostToolUse", make_large_output_hook(config.workdir))
     hooks.register("Stop", make_summary_hook(config.workdir))
 
@@ -225,8 +230,14 @@ def build_runtime(
     protocol: str = "anthropic_messages",
     base_url: str = "",
     model_source: str = "运行时配置",
+    execution_policy: ExecutionPolicy | None = None,
+    shell_deadline: float | None = None,
 ) -> RuntimeContext:
     """Build one completely independent runtime from explicit dependencies."""
+    policy = execution_policy or ExecutionPolicy(config.workdir, config.repo_root, config.sandbox_mode)
+    if policy.workspace != config.workdir.resolve() or policy.install_root != config.repo_root.resolve():
+        raise ValueError("Execution policy roots do not match runtime configuration")
+    config = replace(config, sandbox_mode=policy.mode)
     if config.context_window is not None and config.context_window_target is None:
         config = replace(config, context_window_target=(protocol, (base_url or getattr(adapter, "origin", "")).rstrip("/"), config.primary_model))
     _create_storage_roots(config)
@@ -262,38 +273,51 @@ def build_runtime(
         root=config.worktrees_dir,
         run_git=lambda args: _run_git(config, args),
     )
-    skills.scan_skills(skill_state)
+    if policy.mode != "confined":
+        skills.scan_skills(skill_state)
 
+    shell_executor = ShellExecutor(policy)
     hooks = HookRegistry()
+    def security_hook(block):
+        if block.name in {"read_file", "write_file", "edit_file"}:
+            try:
+                builtin.safe_path(config.workdir, block.input.get("path", ""), getattr(block, "cwd", None), policy=policy, write=block.name != "read_file")
+            except (ValueError, PermissionError) as exc:
+                return f"Permission denied: {exc}"
+        return None
+    hooks.register("PreToolUse", security_hook)
     _register_default_hooks(hooks, config, mcp_state)
     registry = ToolRegistry()
 
     def run_bash(command, run_in_background=False, cwd=None):
-        return builtin.run_bash(config.workdir, command, run_in_background, cwd)
+        timeout = 120 if shell_deadline is None else max(.001, shell_deadline - time.monotonic())
+        return builtin.run_bash(config.workdir, command, run_in_background, cwd, executor=shell_executor, timeout=timeout, json_output=config.headless)
 
     from .core.context_materials import remember_file, remember_skill
 
     def run_read(path, offset=0, limit=None, cwd=None):
-        output = builtin.run_read(config.workdir, path, offset, limit, cwd)
-        if not output.startswith("Error:"):
+        output = builtin.run_read(config.workdir, path, offset, limit, cwd, policy=policy)
+        if policy.mode != 'confined' and not output.startswith("Error:"):
             remember_file(session, config.workdir, path, offset=offset, limit=limit, cwd=cwd)
         return output
 
     def run_write(path, content, cwd=None):
-        output = builtin.run_write(config.workdir, path, content, cwd)
-        if not output.startswith("Error:"):
+        output = builtin.run_write(config.workdir, path, content, cwd, policy=policy)
+        if policy.mode != 'confined' and not output.startswith("Error:"):
             remember_file(session, config.workdir, path, cwd=cwd)
         return output
 
     def run_edit(path, old_text, new_text, cwd=None):
-        output = builtin.run_edit(config.workdir, path, old_text, new_text, cwd)
-        if not output.startswith("Error:"):
+        output = builtin.run_edit(config.workdir, path, old_text, new_text, cwd, policy=policy)
+        if policy.mode != 'confined' and not output.startswith("Error:"):
             remember_file(session, config.workdir, path, cwd=cwd)
         return output
 
     def run_glob(pattern, cwd=None):
-        return builtin.run_glob(config.workdir, pattern, cwd)
+        return builtin.run_glob(config.workdir, pattern, cwd, policy=policy)
     def run_skill(name):
+        if policy.mode == "confined":
+            return "Error: load_skill is unavailable in confined mode"
         output = skills.load_skill(skill_state, name)
         if name in skill_state.registry:
             remember_skill(session, name, output)
@@ -307,6 +331,9 @@ def build_runtime(
         "glob": run_glob,
         "load_skill": run_skill,
     }
+    from .working_mode import guard_handler
+    builtin_handlers = {name: guard_handler(session, name, handler)
+                        for name, handler in builtin_handlers.items()}
     builtin.register_builtin_tools(registry, builtin_handlers)
     todos.register_todo_tools(registry, session)
     tasks.register_task_tools(registry, task_store)
@@ -336,23 +363,27 @@ def build_runtime(
         )
 
     def guarded_tool(agent, block, deferred_inbox, handler, cwd):
+        if 'cwd' in block.input:
+            return 'Permission denied: cwd is owned by the runtime', True
         request_id = uuid.uuid4().hex
-        message_bus.send(
-            agent,
-            "lead",
-            {
+        request = {
                 "request_id": request_id,
                 "tool_use_id": block.id,
                 "tool_name": block.name,
                 "tool_input": block.input,
                 "cwd": str(cwd) if cwd else None,
-            },
-            msg_type="permission_request",
-        )
-        response = wait_for_permission(agent, request_id, deferred_inbox)
-        if not response.get("approved"):
-            return f"Permission denied: {response.get('reason', 'Permission denied')}", True
-        return str(handler(**block.input)), False
+        }
+        message_bus.authority.register(request_id, agent, request)
+        try:
+            message_bus.send(agent, "lead", request, msg_type="permission_request")
+            response = wait_for_permission(agent, request_id, deferred_inbox)
+            # Disk replies are notifications. Only a trusted in-process review
+            # can grant the exact pending action, and it can be consumed once.
+            if not response.get("approved") or not message_bus.authority.consume(request_id, agent, request):
+                return "Permission denied: trusted approval missing or rejected", True
+            return str(handler(**block.input)), False
+        finally:
+            message_bus.authority.cancel(request_id)
 
     def collect_lead_inbox() -> list[dict]:
         return team_protocol.collect_lead_inbox(
@@ -361,8 +392,6 @@ def build_runtime(
             hook=hooks.trigger,
             cwd_resolver=lambda cwd: builtin.resolve_tool_cwd(config.workdir, cwd),
             guarded_tools=TEAM_GUARDED_TOOLS,
-            clock=time.time,
-            sleep=time.sleep,
         )
 
     def format_inbox(messages: list[dict]) -> str:
@@ -374,34 +403,21 @@ def build_runtime(
         )
 
     def spawn_teammate(name: str, role: str, prompt: str) -> str:
-        _provider, primary, fallback, task_adapter = model_router.request_snapshot()
-        recovery = RecoveryState(primary, fallback)
-        from .core.delegated_context import DelegatedContext
-        delegate = DelegatedContext(config, task_adapter.create, primary,
-                                   protocol=model_router.protocol, origin=model_router.base_url, adapter=task_adapter)
-
-        def delegated_attempt(kwargs):
-            active = recovery.current_model
-            messages = kwargs['messages']
-            report = delegate.prepare(kwargs.get('system'), messages, kwargs.get('tools'), kwargs['max_tokens'], model=active)
-            selected_adapter = task_adapter.with_context_window(report.budget.window) if hasattr(task_adapter, 'with_context_window') else task_adapter
-            response = selected_adapter.create(**{**kwargs, 'messages': list(messages), 'model': active, 'max_tokens': report.budget.output_tokens})
-            delegate.record(response, report, model=active)
-            return response
-
-        def teammate_llm(**kwargs):
-            return with_retry(
-                lambda: delegated_attempt(kwargs),
-                recovery,
-                max_transient_retries=config.max_transient_retries,
-                max_consecutive_529=config.max_consecutive_529,
-                base_delay_ms=config.base_delay_ms,
+        from .working_mode import delegated_scope
+        prompt = delegated_scope(session) + "\n\nDelegated task:\n" + prompt
+        with model_router.lock:
+            primary = model_router.primary_model
+            task_adapter = model_router.llm
+            delegate = DelegatedContext(
+                config, task_adapter.create, primary,
+                protocol=model_router.protocol, origin=model_router.base_url,
+                adapter=task_adapter, fallback_model=model_router.fallback_model,
             )
 
         teammate_handlers = {
-            "bash": run_bash,
-            "read_file": run_read,
-            "write_file": run_write,
+            "bash": builtin_handlers["bash"],
+            "read_file": builtin_handlers["read_file"],
+            "write_file": builtin_handlers["write_file"],
             "send_message": lambda to, content: (
                 message_bus.send(name, to, content),
                 "Sent",
@@ -444,7 +460,7 @@ def build_runtime(
         return teammates.spawn_teammate_thread(
             team_state,
             message_bus,
-            teammate_llm,
+            task_adapter.create,
             name=name,
             role=role,
             prompt=prompt,
@@ -497,35 +513,21 @@ def build_runtime(
     ]
 
     def spawn_subagent(description: str) -> str:
-        _provider, primary, fallback, task_adapter = model_router.request_snapshot()
-        recovery = RecoveryState(primary, fallback)
-        from .core.delegated_context import DelegatedContext
-        delegate = DelegatedContext(config, task_adapter.create, primary,
-                                   protocol=model_router.protocol, origin=model_router.base_url, adapter=task_adapter)
-
-        def delegated_attempt(kwargs):
-            active = recovery.current_model
-            messages = kwargs['messages']
-            report = delegate.prepare(kwargs.get('system'), messages, kwargs.get('tools'), kwargs['max_tokens'], model=active)
-            selected_adapter = task_adapter.with_context_window(report.budget.window) if hasattr(task_adapter, 'with_context_window') else task_adapter
-            response = selected_adapter.create(**{**kwargs, 'messages': list(messages), 'model': active, 'max_tokens': report.budget.output_tokens})
-            delegate.record(response, report, model=active)
-            return response
-
-        def subagent_llm(**kwargs):
-            return with_retry(
-                lambda: delegated_attempt(kwargs),
-                recovery,
-                max_transient_retries=config.max_transient_retries,
-                max_consecutive_529=config.max_consecutive_529,
-                base_delay_ms=config.base_delay_ms,
+        from .working_mode import delegated_scope
+        with model_router.lock:
+            primary = model_router.primary_model
+            task_adapter = model_router.llm
+            delegate = DelegatedContext(
+                config, task_adapter.create, primary,
+                protocol=model_router.protocol, origin=model_router.base_url,
+                adapter=task_adapter, fallback_model=model_router.fallback_model,
             )
 
         return subagents.spawn_subagent(
             description,
-            subagent_llm,
+            task_adapter.create,
             config,
-            subagent_system,
+            subagent_system + "\n\n" + delegated_scope(session),
             subagent_tools,
             {name: builtin_handlers[name] for name in ("bash", "read_file", "write_file", "edit_file", "glob")},
             hooks,

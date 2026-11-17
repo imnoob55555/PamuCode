@@ -9,6 +9,7 @@ from datetime import datetime
 from .context_budget import ContextBudget, resolve_window
 from .context_materials import optional_materials
 from ..features.todos import format_current_todos
+from ..working_mode import working_mode
 
 
 def build_context(runtime, tools: list[dict]) -> dict:
@@ -32,6 +33,7 @@ def build_context(runtime, tools: list[dict]) -> dict:
         active_names = sorted(runtime.team.active)
 
     return {
+        "working_mode": working_mode(runtime.session),
         "enabled_tools": tool_names,
         "workspace": str(runtime.config.workdir),
         **materials,
@@ -41,12 +43,21 @@ def build_context(runtime, tools: list[dict]) -> dict:
         "tool_fingerprint": tool_fingerprint,
         "current_time": runtime.session.context_state.get('turn_time') or datetime.now().isoformat(timespec="seconds"),
         "pinned_constraints": '\n'.join(p['text'] for p in runtime.session.context_state.get('pins', [])),
-        "project_rules": _project_rules(runtime.config.workdir),
+        "project_rules": _project_rules(runtime.config.workdir, confined=getattr(runtime.config, 'sandbox_mode', 'off') == 'confined'),
     }
 
 
-def _project_rules(workdir):
+def _project_rules(workdir, *, confined=False):
     path = workdir / 'AGENTS.md'
+    if confined:
+        from ..security import ExecutionPolicy
+        from ..security.files import open_regular, read_bounded
+        policy = ExecutionPolicy(workdir, workdir, mode='confined')
+        try:
+            with open_regular(policy, path) as stream:
+                return read_bounded(stream)
+        except FileNotFoundError:
+            return ''
     if not path.exists() or path.is_symlink() or not path.is_file():
         return ''
     # A large required instruction file is reported by the budget gate, not truncated.

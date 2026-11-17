@@ -38,3 +38,22 @@ def test_mixed_notification_does_not_hide_latest_user_request():
 def test_portable_history_preserves_text_without_native_payloads():
     history = [{'role': 'assistant', 'content': [{'type': 'thinking', 'thinking': 'private', 'signature': 'sig'}, {'type': 'text', 'text': 'public'}]}]
     assert portable_history(history) == [{'role': 'assistant', 'content': [{'type': 'text', 'text': 'public'}]}]
+
+
+def test_split_keeps_tool_pair_with_notification_at_cut():
+    from agent_app.adapters.common import chat_history
+    history = [
+        *[{'role': 'user', 'content': f'old {i}'} for i in range(5)],
+        {'role': 'assistant', 'content': [ToolUseBlock('c1', 'read_file', {})]},
+        {'role': 'user', 'content': [
+            {'type': 'tool_result', 'tool_use_id': 'c1', 'content': 'file contents'},
+            {'type': 'text', 'text': 'background notification'},
+        ]},
+        *[{'role': 'user', 'content': f'recent {i}'} for i in range(4)],
+    ]
+    older, tail = split_history(history)
+    # Each side must contain either both halves of the batch or neither.
+    portable = portable_history(history)
+    for part in (older, tail):
+        assert (portable[5] in part) == (portable[6] in part)
+    assert 'file contents' in str(chat_history(None, older + tail))

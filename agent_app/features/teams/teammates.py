@@ -227,9 +227,8 @@ def spawn_teammate_thread(
                         sleep(plan_poll_interval)
                         continue
                     try:
-                        report = delegate.prepare(system, messages, team_tools, max_tokens)
-                        response = llm(system=system, messages=list(messages), tools=team_tools, max_tokens=report.budget.output_tokens)
-                        delegate.record(response, report)
+                        response = delegate.request(llm, system=system, messages=messages,
+                                                    tools=team_tools, max_tokens=max_tokens)
                     except Exception as exc:
                         from ...core.recovery import describe_model_error
                         summary = f"Teammate error: {type(exc).__name__}: {describe_model_error(exc)}"

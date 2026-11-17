@@ -4,6 +4,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from ..adapters.common import output_text
+
 MEMORY_TYPES = ["user", "feedback", "project", "reference"]
 CONSOLIDATE_THRESHOLD = 10
 
@@ -120,11 +122,7 @@ def select_relevant_memories(
     for message in reversed(messages):
         content = message.get("content", "")
         if isinstance(content, list):
-            content = " ".join(
-                str(getattr(block, "text", ""))
-                for block in content
-                if getattr(block, "type", None) == "text"
-            )
+            content = output_text(content, separator=" ")
         if is_internal_reminder_text(content.strip()):
             continue
         if isinstance(content, str):
@@ -192,11 +190,7 @@ def extract_memories(store: MemoryStore, messages: list, summarize) -> list[dict
         role = message.get("role", "?")
         content = message.get("content", "")
         if isinstance(content, list):
-            content = " ".join(
-                str(getattr(block, "text", ""))
-                for block in content
-                if getattr(block, "type", None) == "text"
-            )
+            content = output_text(content, separator=" ")
         if isinstance(content, str) and content.strip():
             if role == "user" and is_internal_reminder_text(content.strip()):
                 continue

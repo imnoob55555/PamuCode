@@ -76,19 +76,18 @@ def spawn_subagent(
 
     for _ in range(30):
         try:
-            report = context.prepare(system, messages, tools, config.default_max_tokens)
-            response = llm(
+            response = context.request(
+                llm,
                 model=active_model,
                 system=system,
-                messages=list(messages),
+                messages=messages,
                 tools=tools,
-                max_tokens=report.budget.output_tokens,
+                max_tokens=config.default_max_tokens,
             )
         except Exception as exc:
             error = f"[Subagent error] {type(exc).__name__}: {describe_model_error(exc)}"
             print(f"  \033[31m{error}\033[0m")
             return error
-        context.record(response, report)
         messages.append({"role": "assistant", "content": response.content})
         if not has_tool_use(response.content):
             break

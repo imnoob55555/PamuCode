@@ -10,6 +10,21 @@ class SkillState:
     registry: dict[str, dict] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class SkillInvocation:
+    name: str
+    content: str
+    task: str = ""
+
+    @property
+    def prompt(self) -> str:
+        return (
+            f"请使用技能 {self.name} 完成下面的任务，遵守当前工作模式和用户已有约束。\n"
+            f"任务：{self.task or '根据当前对话执行此技能；缺少必要信息时先询问。'}\n\n"
+            f"技能正文：\n{self.content}"
+        )
+
+
 def _parse_skill_frontmatter(text: str) -> tuple[dict, str]:
     if not text.startswith("---"):
         return {}, text
