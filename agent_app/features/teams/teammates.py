@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
 
+from ... import theme
 from ...logging_setup import get_logger
 from ...tools.executor import TOOL_REPEAT_ERROR, TOOL_REPEAT_STOP, ToolRepeatLimit
 
@@ -312,7 +313,7 @@ def spawn_teammate_thread(
             try:
                 bus.send(name, "lead", summary, "result")
             except Exception as exc:
-                print(f"  \033[31m[teammate result error]{name}: {exc}\033[0m")
+                print("  " + theme.paint(f"[teammate result error]{name}: {exc}", "error"))
             with state.lock:
                 state.active.pop(name, None)
             LOGGER.info("teammate %s finished", name)

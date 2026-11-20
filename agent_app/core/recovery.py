@@ -3,6 +3,7 @@ import time
 from contextlib import nullcontext
 from dataclasses import dataclass
 
+from .. import theme
 from ..logging_setup import get_logger
 
 LOGGER = get_logger("pamu.recovery")
@@ -194,4 +195,4 @@ def append_unrecoverable_error(messages, exc):
         }],
     })
 
-    print(f"  \033[31m[unrecoverable] {name}: {detail[:100]}\033[0m")
+    print("  " + theme.paint(f"[unrecoverable] {name}: {detail[:100]}", "error"))

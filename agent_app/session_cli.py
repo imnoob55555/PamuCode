@@ -4,6 +4,8 @@ from datetime import datetime
 from itertools import chain, pairwise
 from pathlib import Path
 
+from . import theme
+from .rendering import section, transcript_entry
 from .core.context_history import compacted_prefix_length
 from .features.context_archive import ContextArchive
 from .features.session_codec import safe_preview, safe_terminal_text
@@ -196,7 +198,8 @@ def _session_dialogue(snapshot):
 
 def show_restored_session(snapshot, runtime):
     """Replay saved dialogue and shell records."""
-    print(f"已恢复会话：{snapshot['id']}")
+    rich = theme.rich_output()
+    print(theme.success(f"已恢复会话：{snapshot['id']}"))
     print(f"当前模型：{safe_preview(runtime.model.primary_model)}（{safe_preview(runtime.model.provider)}）")
     todos = runtime.session.todos
     pending = sum(item['status'] == 'pending' for item in todos)
@@ -213,13 +216,19 @@ def show_restored_session(snapshot, runtime):
 
     missing = shown = False
     try:
-        print('\n历史对话\n')
+        if rich:
+            print('\n' + section('历史对话') + '\n')
+        else:
+            print('\n历史对话\n')
         for entry in _session_dialogue(snapshot):
             if entry is None:
                 missing = True
                 continue
             role, text = entry
-            print(f'{role}：\n{text}\n')
+            if rich:
+                print(transcript_entry(role, text) + '\n')
+            else:
+                print(f'{role}：\n{text}\n')
             shown = True
         if missing:
             print('部分归档消息无法读取。')

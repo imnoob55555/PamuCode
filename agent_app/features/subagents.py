@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from .. import theme
 from ..core.recovery import describe_model_error
 from ..logging_setup import get_logger
 from ..tools.executor import TOOL_REPEAT_ERROR, TOOL_REPEAT_STOP, ToolRepeatLimit
@@ -91,7 +92,7 @@ def spawn_subagent(
             )
         except Exception as exc:
             error = f"[Subagent error] {type(exc).__name__}: {describe_model_error(exc)}"
-            print(f"  \033[31m{error}\033[0m")
+            print("  " + theme.paint(error, "error"))
             return error
         messages.append({"role": "assistant", "content": response.content})
         if not has_tool_use(response.content):

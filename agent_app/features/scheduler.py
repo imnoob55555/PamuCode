@@ -6,6 +6,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from typing import Any, cast
 
+from .. import theme
 from ..config import AppConfig
 from ..logging_setup import get_logger
 
@@ -227,7 +228,7 @@ def load_durable_jobs(state: SchedulerState, config: AppConfig):
                 job = CronJob(**serialized)
                 error = validate_cron(job.cron)
                 if error:
-                    print(f"  \033[31m[cron] skipping invalid job {job.id}: {error}\033[0m")
+                    print("  " + theme.paint(f"[cron] skipping invalid job {job.id}: {error}", "error"))
                     continue
                 state.jobs[job.id] = job
             valid = [job for job in jobs if job["id"] in state.jobs]
@@ -299,7 +300,7 @@ def cron_scheduler_loop(state: SchedulerState, config: AppConfig, stop_event, no
                             state.last_fired.pop(job.id, None)
                             durable_changed = durable_changed or job.durable
                 except Exception as error:
-                    print(f"  \033[31m[cron error] {job.id}: {error}\033[0m")
+                    print("  " + theme.paint(f"[cron error] {job.id}: {error}", "error"))
         if durable_changed:
             save_durable_jobs(state, config)
 

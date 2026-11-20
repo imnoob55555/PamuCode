@@ -13,8 +13,12 @@ Experimental release: **0.1.0**, Python **3.13+**.
 
 - Streaming model responses with retry, fallback, continuation, and context recovery.
 - Anthropic Messages, OpenAI Responses, Chat Completions, and native Ollama adapters.
-- Inline terminal input with slash suggestions, `@` file completion, input history,
-  and a single footer showing workspace, context usage, model, thinking level, and work mode.
+- Inline terminal input in a rounded prompt box with slash suggestions, `@` file
+  completion, input history, and a single footer showing workspace, git branch,
+  context usage, model, thinking level, and work mode.
+- Styled transcript: `>` marks your messages, `●` marks model replies and shell
+  statuses, and streamed Markdown (headings, lists, inline code, fenced code with
+  syntax highlighting) is formatted line by line.
 - Explicit planning and execution modes, plus direct skill invocation.
 - Durable sessions, interrupted tool-call repair, context budgets, compaction,
   pinned constraints, and retrievable history evidence.
@@ -53,15 +57,18 @@ pamu
 ```
 
 The startup screen contains the logo and basic controls. Workspace and model
-information appear below the input box. Cancelled or unsuccessful commands show
+information appear below the input box. Menus accept arrow keys or the number
+of an entry. Cancelled or unsuccessful commands show
 feedback above the input box for three seconds; successful results stay in the
 terminal transcript. Slash commands can be recalled through input history.
 Exit with `/quit` or two presses of Ctrl+C within one second at the REPL.
 
-The terminal shows an animated `Working` status while waiting for the model.
-Shell commands show a temporary `Running <command>` status that stays visible
-briefly for fast commands and is replaced by `Ran <command>` on exit.
-Redirected output records the final status.
+The terminal shows an animated `Working…` status with elapsed time while
+waiting for the model. Shell commands show a temporary `● Running <command>`
+status that stays visible briefly for fast commands and is replaced by
+`● Ran <command>` on exit; the dot turns red for a non-zero exit code.
+Redirected output records the final status as plain text without colors or
+glyphs. Set `NO_COLOR` to keep the layout but drop colors.
 Operations requiring approval show the permission prompt and wait for your
 answer. Proposed file changes include a diff.
 
@@ -232,7 +239,7 @@ snapshot and session archive, then exit. If work is still running or queued,
 finish it before deleting the session. Workspace files are outside the scope
 of session deletion.
 
-`Context used: xx%` in the footer estimates the share of the active model's
+`Context xx%` in the footer estimates the share of the active model's
 context window occupied by the retained conversation, system instructions, and
 tools. It refreshes before each prompt. The window comes from the current
 provider and model configuration or a provisional default. Use `/context` to

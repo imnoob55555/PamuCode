@@ -6,6 +6,7 @@ import copy
 import json
 import time
 
+from .. import theme
 from ..features.background import (
     collect_background_results,
     start_background_task,
@@ -137,10 +138,7 @@ def _wait_for_team_activity(runtime: RuntimeContext) -> bool:
         if not _has_active_teammates(runtime):
             return False
         if time.time() >= deadline:
-            print(
-                "  \033[33m[team] wait timed out; "
-                "teammates remain active\033[0m"
-            )
+            print("  " + theme.paint("[team] wait timed out; teammates remain active", "warning"))
             return False
         time.sleep(runtime.config.permission_poll_interval)
 
@@ -401,7 +399,7 @@ def run_agent_loop(runtime: RuntimeContext) -> str | None:
                 LOGGER.info("output token limit, continuing response %d/%d",
                             state.continuation_count, runtime.config.max_continuations)
                 continue
-            print("  \033[31m[max_tokens] recovery limit reached\033[0m")
+            print("  " + theme.paint("[max_tokens] recovery limit reached", "error"))
             _update_context(runtime)
             return
 

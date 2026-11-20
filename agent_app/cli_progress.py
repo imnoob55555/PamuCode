@@ -15,7 +15,10 @@ from typing import Any
 
 from prompt_toolkit.utils import get_cwidth
 
-DEFAULT_FRAMES = tuple("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
+from . import theme
+from .rendering import MarkdownLines, render_line, wrapped_rows
+
+DEFAULT_FRAMES = theme.SPINNER_FRAMES
 _TERMINAL_LOCK = threading.Lock()
 _visible_spinner: TerminalSpinner | None = None
 _CLEAR_LINE = "\r\033[2K"
@@ -25,6 +28,7 @@ _approval_open = False
 _pending_shell_status: list[str] = []
 _foreground_shell: tuple[Any, float] | None = None
 _invalidate_shell_status: Callable[[], None] | None = None
+_shell_block_open = False
 
 
 @dataclass(slots=True)
@@ -49,6 +53,7 @@ def _flush_shell_status() -> None:
         return
     try:
         _erase_spinner()
+        _open_shell_block(sys.stdout)
         for line in _pending_shell_status:
             print(line, flush=True)
     except (OSError, ValueError):
@@ -56,6 +61,27 @@ def _flush_shell_status() -> None:
         pass
     finally:
         _pending_shell_status.clear()
+
+
+def _open_shell_block(stream) -> None:
+    global _shell_block_open
+    if not _shell_block_open and theme.rich_output(stream):
+        stream.write("\n")
+    _shell_block_open = True
+
+
+def _fit_segments(segments: list[tuple[str, str]], stream) -> str:
+    """Fit styled ``(text, style)`` segments to one terminal row, then paint them."""
+    fitted = _fit_terminal_line("".join(text for text, _ in segments))
+    output, used = [], 0
+    for text, style in segments:
+        piece = fitted[used:used + len(text)]
+        used += len(text)
+        if piece:
+            output.append(theme.paint(piece, style, stream) if style else piece)
+    if len(fitted) > used:
+        output.append(fitted[used:])
+    return "".join(output)
 
 
 def _fit_terminal_line(text: str) -> str:
@@ -107,14 +133,33 @@ def _supports_status_line(stream) -> bool:
         return False
 
 
-def _show_foreground_shell(line: str) -> None:
+_SHELL_LABELS = {'running': 'Running', 'finished': 'Ran', 'interrupted': 'Interrupted',
+                 'timed_out': 'Timed out', 'failed': 'Failed'}
+
+
+def _shell_segments(event: str, command: str, exit_code: int | None) -> list[tuple[str, str]]:
+    failed = event == 'failed' or (event == 'finished' and exit_code not in (None, 0))
+    dot = ('dim' if event == 'running' else 'error' if failed
+           else 'warning' if event in ('interrupted', 'timed_out') else 'success')
+    segments = [(theme.BULLET, dot), (' ', ''), (_SHELL_LABELS[event], 'muted' if event == 'running' else 'bold'),
+                (' ', ''), (command, '')]
+    if exit_code not in (None, 0):
+        segments.append((f' (exit {exit_code})', 'error'))
+    return segments
+
+
+def _show_foreground_shell(line: str, segments=None) -> None:
     global _foreground_shell
     stream = sys.stdout
     if not _supports_status_line(stream):
         return
     try:
         _erase_spinner()
-        stream.write(_fit_terminal_line(line))
+        if segments is not None and theme.rich_output(stream):
+            _open_shell_block(stream)
+            stream.write(_fit_segments(segments, stream))
+        else:
+            stream.write(_fit_terminal_line(line))
         stream.flush()
     except (OSError, ValueError):
         return
@@ -154,8 +199,7 @@ def _keep_running_visible(worker: int, main_thread: bool) -> None:
 def show_shell_status(event: str, command: str, exit_code: int | None) -> None:
     from .features.session_codec import safe_terminal_text
 
-    label = {'running': 'Running', 'finished': 'Ran', 'interrupted': 'Interrupted',
-             'timed_out': 'Timed out', 'failed': 'Failed'}[event]
+    label = _SHELL_LABELS[event]
     text = safe_terminal_text(command)
     suffix = f' (exit {exit_code})' if exit_code not in (None, 0) else ''
     main_thread = threading.current_thread() is threading.main_thread()
@@ -167,7 +211,7 @@ def show_shell_status(event: str, command: str, exit_code: int | None) -> None:
             single_line = text.replace('\n', ' ').expandtabs()
             line = f'{label} {single_line}'
             if main_thread and not (_model_line_open or _approval_open or _invalidate_shell_status):
-                _show_foreground_shell(line)
+                _show_foreground_shell(line, _shell_segments(event, single_line, None))
                 return
             # Shell dispatch is synchronous inside each worker, including
             # separate workers running identical commands concurrently.
@@ -175,6 +219,9 @@ def show_shell_status(event: str, command: str, exit_code: int | None) -> None:
         else:
             command_text = text.replace('\n', '\n  ')
             line = f'{label} {command_text}{suffix}'
+            if theme.rich_output(sys.stdout):
+                segments = _shell_segments(event, command_text, exit_code)
+                line = ''.join(theme.paint(part, style) if style else part for part, style in segments)
             _background_shell_status.pop(worker, None)
             if main_thread and _foreground_shell is not None:
                 _clear_foreground_shell()
@@ -208,18 +255,96 @@ def terminal_confirmation(prompt: str) -> str:
             _flush_shell_status()
 
 
-def write_model_text(text: str) -> None:
-    global _model_line_open
+class _ModelTextWriter:
+    """Stream model text as a bulleted block, restyling each finished line.
+
+    A partial line is shown raw as it arrives; once its newline arrives the
+    raw rows are erased and replaced by the Markdown-styled rendering.
+    """
+
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.active = False
+        self.markdown = MarkdownLines()
+        self.line = ''
+        self.lead = ''
+
+    def write(self, stream, text: str) -> None:
+        from .features.session_codec import safe_terminal_text
+
+        for index, piece in enumerate(safe_terminal_text(text).expandtabs(4).split('\n')):
+            if index:
+                self._end_line(stream)
+            if not piece:
+                continue
+            if not self.line:
+                self.lead = self._lead(stream)
+                stream.write(self.lead)
+            self.line += piece
+            stream.write(piece)
+        stream.flush()
+
+    def _lead(self, stream) -> str:
+        if self.active:
+            return '  '
+        self.active = True
+        return f"\n{theme.bullet('bold', stream)} "
+
+    def _end_line(self, stream) -> None:
+        line, self.line = self.line, ''
+        if not line:
+            if self.active:
+                stream.write('\n')
+            return
+        size = shutil.get_terminal_size(fallback=(80, 24))
+        rows = wrapped_rows(2, line, max(1, size.columns))
+        styled = self.markdown.style(line)
+        if rows >= size.lines - 1:
+            stream.write('\n')
+            return
+        lead = self.lead.lstrip('\n')
+        stream.write('\033[1A' * (rows - 1) + '\r\033[J' + render_line(styled, lead=lead, stream=stream) + '\n')
+
+    def finish(self, stream) -> None:
+        if self.line:
+            self._end_line(stream)
+            stream.flush()
+        self.reset()
+
+
+_model_writer = _ModelTextWriter()
+
+
+def write_user_message(text: str) -> None:
+    """Echo a submitted prompt and start a new block of terminal output."""
+    global _shell_block_open
     with _TERMINAL_LOCK:
-        print(text, end='', flush=True)
-        _model_line_open = not text.endswith('\n')
+        print(theme.user_message(text), flush=True)
+        _shell_block_open = False
+
+
+def write_model_text(text: str) -> None:
+    global _model_line_open, _shell_block_open
+    with _TERMINAL_LOCK:
+        if theme.rich_output(sys.stdout):
+            _model_writer.write(sys.stdout, text)
+            _model_line_open = bool(_model_writer.line)
+            _shell_block_open = False
+        else:
+            print(text, end='', flush=True)
+            _model_line_open = not text.endswith('\n')
         _flush_shell_status()
 
 
 def finish_model_text() -> None:
     global _model_line_open
     with _TERMINAL_LOCK:
-        if _model_line_open:
+        if _model_writer.active:
+            _model_writer.finish(sys.stdout)
+            _model_line_open = False
+        elif _model_line_open:
             _model_line_open = False
             print()
         _flush_shell_status()
@@ -250,6 +375,7 @@ class TerminalSpinner:
         self._started = False
         self._enabled = False
         self._stopped = False
+        self._started_at = 0.0
 
     def __enter__(self):
         self.start()
@@ -271,6 +397,7 @@ class TerminalSpinner:
             if not interactive:
                 return
             self._enabled = True
+            self._started_at = monotonic()
             self._event = self._event_factory()
             self._thread = self._thread_factory(
                 target=self._animate,
@@ -316,10 +443,13 @@ class TerminalSpinner:
                     if _model_line_open or _approval_open or _foreground_shell is not None:
                         continue
                     active = _background_status(mark_visible=True)
-                    label = f'{frame} {self.label}'
+                    segments = [(frame, 'accent'), (' ', ''), (f'{self.label}…', 'accent.soft')]
+                    elapsed = int(monotonic() - self._started_at)
+                    if elapsed >= 1:
+                        segments.append((f' ({elapsed}s · Ctrl+C 中断)', 'muted'))
                     if active:
-                        label = f'{label} · {active}'
-                    self.stream.write(f"\r{_fit_terminal_line(label)}\033[K")
+                        segments.append((f' · {active}', 'muted'))
+                    self.stream.write(f"\r{_fit_segments(segments, self.stream)}\033[K")
                     self.stream.flush()
                     _visible_spinner = self
         finally:

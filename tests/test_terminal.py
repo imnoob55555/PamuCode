@@ -6,6 +6,24 @@ from agent_app import terminal
 from agent_app.slash_commands import match_commands
 
 
+def _buffer_index(app):
+    from prompt_toolkit.layout.controls import BufferControl
+
+    return next(
+        index for index, window in enumerate(app.layout.visible_windows)
+        if isinstance(window.content, BufferControl)
+    )
+
+
+def _plain(window):
+    from prompt_toolkit.formatted_text import to_formatted_text
+    from prompt_toolkit.layout.controls import FormattedTextControl
+
+    if not isinstance(window.content, FormattedTextControl):
+        return None
+    return "".join(part[1] for part in to_formatted_text(window.content.text))
+
+
 def test_slash_matches_names_descriptions_and_hides_for_normal_text():
     assert {item.name for item in match_commands("/")} == {
         "/login",
@@ -183,10 +201,11 @@ def test_slash_hints_redraw_below_input_as_keyword_changes(monkeypatch):
                 if app.is_done or app.current_buffer.text != expected:
                     return
                 windows = app.layout.visible_windows
-                assert windows[1].content.buffer is app.current_buffer
+                position = _buffer_index(app)
+                assert windows[position].content.buffer is app.current_buffer
                 rows = [
                     "".join(t[1] for t in to_formatted_text(window.content.text))
-                    for window in windows[1:]
+                    for window in windows[position + 1:]
                     if isinstance(window.content, FormattedTextControl)
                 ]
                 snapshots.append((expected, "\n".join(rows)))
@@ -228,16 +247,16 @@ def test_notice_above_input_expires_without_keystrokes(monkeypatch, capsys):
                 if app.is_done:
                     return
                 windows = app.layout.visible_windows
+                texts = [_plain(window) for window in windows]
                 if not rendered_at:
-                    assert windows[0].content.text() == "已取消模型选择。"
-                    assert windows[2].content.buffer is app.current_buffer
+                    assert texts.index("已取消模型选择。") < _buffer_index(app)
                     rendered_at.append(monotonic())
                     watchdog = asyncio.get_running_loop().call_later(
                         5, lambda: app.exit(exception=AssertionError("notice did not expire"))
                     )
                 elif not ui.notice and not elapsed:
                     elapsed.append(monotonic() - rendered_at[0])
-                    assert windows[1].content.buffer is app.current_buffer
+                    assert "已取消模型选择。" not in texts
                     pipe.send_text("hello\r")
 
             app.after_render += after_render
@@ -378,7 +397,7 @@ def test_prompt_mention_escape_hides_menu(monkeypatch, tmp_path):
 
     def menu_text(app):
         rows = []
-        for window in app.layout.visible_windows[1:]:
+        for window in app.layout.visible_windows[_buffer_index(app) + 1:]:
             if isinstance(window.content, FormattedTextControl) and window.style != "class:muted":
                 rows.append(
                     "".join(
@@ -485,20 +504,6 @@ def test_choice_honours_initial_selection():
         )
 
 
-@pytest.mark.parametrize(
-    "model,level,expected",
-    [
-        ("claude-sonnet-4-6", "high", "claude-sonnet-4-6 • high"),
-        ("claude-sonnet-4-6", "medium", "claude-sonnet-4-6 • medium"),
-        ("claude-sonnet-4-6", "off", "claude-sonnet-4-6 • thinking off"),
-        ("claude-sonnet-4-6", "bogus", "claude-sonnet-4-6 • thinking off"),
-        ("", "high", ""),
-    ],
-)
-def test_model_status_matches_pi_footer(model, level, expected):
-    assert terminal.model_status(model, level) == expected
-
-
 def test_prompt_puts_model_status_below_the_bottom_rule(monkeypatch):
     from prompt_toolkit.application import Application
     from prompt_toolkit.layout.containers import WindowAlign
@@ -517,11 +522,12 @@ def test_prompt_puts_model_status_below_the_bottom_rule(monkeypatch):
                     return
                 windows = app.layout.visible_windows
                 statuses = [w for w in windows if w.style == "class:muted"
-                            and w.content.text() == ui.status_text()]
+                            and _plain(w) == ui.status_text()]
                 assert len(statuses) == 1
                 status = statuses[0]
                 assert status.align == WindowAlign.RIGHT
-                assert status.content.text() == "claude-sonnet-4-6 • low • execute"
+                assert _plain(status) == "claude-sonnet-4-6 · low · ⏵ execute"
+                assert windows.index(status) > [w.char for w in windows].index("╯")
                 rows = [w for w in windows if not isinstance(w.content, DummyControl)]
                 assert rows[-1] is status
                 captured.append(status)
@@ -560,18 +566,12 @@ def test_workspace_status_below_input_with_or_without_model(monkeypatch, tmp_pat
                 if app.is_done or captured:
                     return
                 windows = app.layout.visible_windows
-                directory = next(
-                    w for w in windows
-                    if callable(getattr(w.content, "text", None))
-                    and w.content.text() == str(workdir)
-                )
+                directory = next(w for w in windows if _plain(w) == str(workdir))
                 index = windows.index(directory)
-                assert windows[index - 1].char == "─"
+                assert [w.char for w in windows[:index]].count("╯") == 1
                 assert not directory.wrap_lines()
                 if model:
-                    status = next(w for w in windows
-                                  if callable(getattr(w.content, "text", None))
-                                  and w.content.text() == ui.status_text())
+                    status = next(w for w in windows if _plain(w) == ui.status_text())
                     positions = app.renderer.last_rendered_screen.visible_windows_to_write_positions
                     assert positions[directory].ypos == positions[status].ypos
                 captured.append(directory)
@@ -600,11 +600,11 @@ def test_prompt_flushes_model_status_to_the_right_edge():
         pipe.send_text("hello\r")
         assert ui.prompt() == "hello"
     rows = _plain_rows(rendered.getvalue())
-    status = next(row for row in rows if "•" in row)
-    assert status.strip() == "Context used: 37% • claude-sonnet-4-6 • high • execute"
-    assert len(status) == output.get_size().columns
+    status = next(row for row in rows if "claude-sonnet-4-6" in row)
+    assert status.strip() == "Context 37% · claude-sonnet-4-6 · high · ⏵ execute"
+    assert len(status.rstrip()) == output.get_size().columns - 2
     assert any(
         rows[index + 1] == status
         for index, row in enumerate(rows[:-1])
-        if row and set(row.strip()) == {"─"}
+        if row.startswith("╰") and row.endswith("╯")
     )

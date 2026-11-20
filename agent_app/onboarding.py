@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+from . import theme
 from .adapters import providers
 from .features import auth
 from .provider_config import normalize_base_url, resolve_provider_config
@@ -96,7 +97,7 @@ def login(ui, path: Path, provider: str | None = None) -> str | None:
                 return None
             continue
         if needs_key:
-            print("API Key 已保存到本地。")
+            print(theme.success("API Key 已保存到本地。"))
         record = auth.get_login(auth.load_credentials(path), spec.name)
         while True:
             model = choose_model(ui, spec, record.get("model"))
@@ -119,5 +120,5 @@ def login(ui, path: Path, provider: str | None = None) -> str | None:
                     "模型保存失败，请检查凭证文件的写入权限或磁盘空间后重试。",
                 )
                 continue
-            print(f"已选择 {spec.label} · {model}。")
+            print(theme.success(f"已选择 {spec.label} · {model}。"))
             return spec.name

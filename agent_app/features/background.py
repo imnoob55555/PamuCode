@@ -8,6 +8,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from xml.sax.saxutils import escape
 
+from .. import theme
 from ..tools.executor import execute_tool
 from ..core.interruption import command_cancellation, check_command_cancelled
 from ..logging_setup import get_logger
@@ -77,7 +78,7 @@ def start_background_task(
         except Exception as exc:
             status = "failed"
             error = f"{type(exc).__name__}: {exc}"
-            print(f"  \033[31m[background error] {background_id}: {error}\033[0m")
+            print("  " + theme.paint(f"[background error] {background_id}: {error}", "error"))
         finally:
             with state.lock:
                 task = state.tasks.get(background_id)

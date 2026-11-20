@@ -13,6 +13,10 @@ from pathlib import Path
 
 import pytest
 
+# The prompt box marks the frame that accepts input. The welcome panel and
+# history separator also draw rules, so they cannot signal readiness.
+PROMPT = '❯'.encode()
+
 
 def _read_until(master_fd, output, marker, deadline, start=0):
     while marker not in output[start:]:
@@ -63,14 +67,15 @@ print('EXIT_OK')
     project = Path(__file__).resolve().parents[1]
     master, slave = pty.openpty()
     process = subprocess.Popen([sys.executable, '-c', script, '-r', session_id], cwd=tmp_path,
-        env={**os.environ, 'PYTHONPATH': str(project)}, stdin=slave, stdout=slave, stderr=slave)
+        env={**os.environ, 'PYTHONPATH': str(project), 'NO_COLOR': '1'}, stdin=slave, stdout=slave, stderr=slave)
     os.close(slave)
     output = bytearray()
     deadline = time.monotonic() + 12
     try:
-        _read_until(master, output, '─'.encode(), deadline)
-        transcript = bytes(output).split('─'.encode(), 1)[0].decode().replace('\r\n', '\n')
-        assert '用户：\nCreate add.py\n\nPamuCode：\nSaved add.py.\n\nSample:\n    return a + b' in transcript
+        _read_until(master, output, PROMPT, deadline)
+        transcript = bytes(output).split(PROMPT, 1)[0].decode().replace('\r\n', '\n')
+        assert '── 历史对话 ─' in transcript
+        assert '> Create add.py\n\n● Saved add.py.\n\n  Sample:\n      return a + b' in transcript
         assert 'PamuCode · AI Coding Agent' not in transcript
         assert b'CONTINUED' not in output
         os.write(master, b'verify\r')
@@ -117,15 +122,15 @@ print('EXIT_OK')
 '''
     master, slave = pty.openpty()
     process = subprocess.Popen([sys.executable, '-c', script], cwd=tmp_path,
-        env={**os.environ, 'PYTHONPATH': str(project)}, stdin=slave, stdout=slave, stderr=slave)
+        env={**os.environ, 'PYTHONPATH': str(project), 'NO_COLOR': '1'}, stdin=slave, stdout=slave, stderr=slave)
     os.close(slave)
     output = bytearray()
     deadline = time.monotonic() + 12
     try:
-        _read_until(master, output, '─'.encode(), deadline)
+        _read_until(master, output, PROMPT, deadline)
         os.write(master, b'first\r')
-        _read_until(master, output, b'Ran printf private-output; exit 7 (exit 7)', deadline)
-        _read_until(master, output, b'Running printf CAPTURED_OUTPUT; touch ready', deadline)
+        _read_until(master, output, '● Ran printf private-output; exit 7 (exit 7)'.encode(), deadline)
+        _read_until(master, output, '● Running printf CAPTURED_OUTPUT; touch ready'.encode(), deadline)
         while not (tmp_path / 'ready').exists() and time.monotonic() < deadline:
             time.sleep(.01)
         assert (tmp_path / 'ready').exists()
@@ -143,8 +148,9 @@ print('EXIT_OK')
             process.wait(timeout=2)
     assert process.returncode == 0
     assert b'Traceback' not in output
-    assert b'Running printf private-output; exit 7\r\x1b[2KRan printf private-output; exit 7 (exit 7)' in output
-    assert b'Interrupted printf CAPTURED_OUTPUT; touch ready' in output
+    assert ('● Running printf private-output; exit 7\r\x1b[2K● Ran printf private-output; exit 7 (exit 7)'
+            .encode()) in output
+    assert '● Interrupted printf CAPTURED_OUTPUT; touch ready'.encode() in output
     assert b'Ran printf CAPTURED_OUTPUT' not in output and b'Running touch should-not-run' not in output
     assert b'[HOOK]' not in output and b'[inject]' not in output and b'> bash' not in output
     snapshots = list((tmp_path / '.pamu' / 'sessions').glob('*.json'))
@@ -198,13 +204,13 @@ print('EXIT_OK')
 '''
     master, slave = pty.openpty()
     process = subprocess.Popen([sys.executable, '-c', script], cwd=tmp_path,
-        env={**os.environ, 'PYTHONPATH': str(project)}, stdin=slave, stdout=slave, stderr=slave)
+        env={**os.environ, 'PYTHONPATH': str(project), 'NO_COLOR': '1'}, stdin=slave, stdout=slave, stderr=slave)
     os.close(slave)
     output = bytearray()
     deadline = time.monotonic() + 12
     prompt = b'Allow this change? [y/N]'
     try:
-        _read_until(master, output, '─'.encode(), deadline)
+        _read_until(master, output, PROMPT, deadline)
         os.write(master, b'check approvals\r')
         _read_until(master, output, prompt, deadline)
         assert b'Potentially destructive command' in output
@@ -216,7 +222,7 @@ print('EXIT_OK')
         assert b'Running printf "rm allowed"' not in output
         os.write(master, b'y\r')
         _read_until(master, output, b'Apply change? [y/N]', deadline)
-        assert b'Ran printf "rm allowed" > allowed.txt' in output
+        assert '● Ran printf "rm allowed" > allowed.txt'.encode() in output
         assert b'-before' in output and b'+after' in output
         assert (tmp_path / 'note.txt').read_text() == 'before\n'
         os.write(master, b'y\r')
@@ -275,15 +281,16 @@ print('EXIT_OK')
     master, slave = pty.openpty()
     command = 'printf ready' if short else 'while [ ! -f release ]; do sleep .02; done; printf ready'
     process = subprocess.Popen([sys.executable, '-c', script], cwd=tmp_path,
-        env={**os.environ, 'PYTHONPATH': str(project), 'TERM': 'xterm', 'PAMU_PTY_SHELL_COMMAND': command},
+        env={**os.environ, 'PYTHONPATH': str(project), 'TERM': 'xterm', 'NO_COLOR': '1',
+             'PAMU_PTY_SHELL_COMMAND': command},
         stdin=slave, stdout=slave, stderr=slave)
     os.close(slave)
     output = bytearray()
     deadline = time.monotonic() + 12
     running = f'Running {command}'.encode()
-    finished = f'Ran {command}'.encode()
+    finished = f'● Ran {command}'.encode()
     try:
-        _read_until(master, output, '─'.encode(), deadline)
+        _read_until(master, output, PROMPT, deadline)
         os.write(master, b'start background\r')
         _read_until(master, output, b'WAITING_AT_PROMPT', deadline)
         at_prompt = output.index(b'WAITING_AT_PROMPT') + len(b'WAITING_AT_PROMPT')
@@ -383,8 +390,7 @@ def test_cli_fake_stream_spinner_clears_before_text_and_leaves_no_worker(
     output = bytearray()
     deadline = time.monotonic() + 10.0
     try:
-        # The prompt box top rule marks the frame that accepts input.
-        _read_until(master_fd, output, "─".encode(), deadline)
+        _read_until(master_fd, output, PROMPT, deadline)
         os.write(master_fd, b"hello\n")
         _read_until(master_fd, output, b"Working", deadline)
         os.write(release_write, b"1")
@@ -444,7 +450,7 @@ main(argv=[], credentials_path=Path(sys.argv[1]))
         _read_until(master, output, marker.encode(), deadline, start)
     try:
         wait("请输入 /login")
-        wait("─")
+        wait("❯")
         assert "选择 Provider".encode() not in output
         os.write(master, b"/")
         wait("配置模型服务与认证")
@@ -547,7 +553,7 @@ raise SystemExit(main(argv=['resume'], credentials_path=Path(sys.argv[1])))
         _read_until(master, output, b'PTY restored question', deadline)
         os.write(master, b'\r')
         _read_until(master, output, '已恢复会话'.encode(), deadline)
-        _read_until(master, output, '─'.encode(), deadline)
+        _read_until(master, output, PROMPT, deadline, start=output.index('已恢复会话'.encode()))
         os.write(master, b'/status\r')
         _read_until(master, output, ('会话：' + saved['id']).encode(), deadline)
         os.write(master, b'/quit\r')
