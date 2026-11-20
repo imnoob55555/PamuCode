@@ -14,6 +14,9 @@ def test_slash_matches_names_descriptions_and_hides_for_normal_text():
         "/provider",
         "/thinking",
         "/resume",
+        "/delete",
+        "/background",
+        "/stop",
         "/context",
         "/compact",
         "/help",
@@ -593,11 +596,12 @@ def test_prompt_flushes_model_status_to_the_right_edge():
         ui = terminal.TerminalUI(input=pipe, output=output)
         ui.model_name = "claude-sonnet-4-6"
         ui.thinking_level = "high"
+        ui.context_used = 37
         pipe.send_text("hello\r")
         assert ui.prompt() == "hello"
     rows = _plain_rows(rendered.getvalue())
     status = next(row for row in rows if "•" in row)
-    assert status.strip() == "claude-sonnet-4-6 • high • execute"
+    assert status.strip() == "Context used: 37% • claude-sonnet-4-6 • high • execute"
     assert len(status) == output.get_size().columns
     assert any(
         rows[index + 1] == status

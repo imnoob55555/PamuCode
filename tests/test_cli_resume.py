@@ -11,10 +11,11 @@ from tests.test_session_runtime import runtime
 from agent_app.cli import main
 
 
-def test_resume_without_sessions_exits_without_reading_stdin(tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize('command', ['resume', '-r', 'continue', '-c'])
+def test_resume_without_sessions_exits_without_reading_stdin(tmp_path, monkeypatch, capsys, command):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr('builtins.input', lambda *_: (_ for _ in ()).throw(AssertionError('read stdin')))
-    assert main(argv=['resume'], runtime_factory=lambda: None) == 0
+    assert main(argv=[command], runtime_factory=lambda: None) == 0
     assert '会话' in capsys.readouterr().out
 
 
@@ -23,7 +24,8 @@ def test_resume_rejects_conflicting_arguments(tmp_path, monkeypatch):
     assert main(argv=['resume', '--last', '12345678'], runtime_factory=lambda: None) == 2
 
 
-def test_last_restores_before_workers_and_preserves_idle_snapshot(tmp_path, monkeypatch):
+@pytest.mark.parametrize('command', ['continue', '-c'])
+def test_continue_restores_before_workers_and_preserves_idle_snapshot(tmp_path, monkeypatch, command):
     from threading import Lock
     from tests.test_session_runtime import runtime
     from agent_app.features.sessions import checkpoint
@@ -37,7 +39,7 @@ def test_last_restores_before_workers_and_preserves_idle_snapshot(tmp_path, monk
     restored.agent_lock = Lock()
     observed = []
     monkeypatch.setattr('builtins.input', lambda _: '/quit')
-    assert main(argv=['resume', '--last'], runtime_factory=lambda: restored,
+    assert main(argv=[command], runtime_factory=lambda: restored,
                 start_threads=lambda r: observed.append(list(r.session.history)) or [],
                 stop_threads=lambda *_: None) in (0, None)
     assert observed[0][0]['content'] == 'original question'
@@ -75,13 +77,16 @@ def launch(tmp_path, monkeypatch, args, *, rt=None, commands=('/quit',), **kwarg
     return code, rt
 
 
-@pytest.mark.parametrize('kind', ['id', 'prefix', 'last'])
-def test_entrypoints_preview_only_visible_text(saved, tmp_path, monkeypatch, capsys, kind):
-    argument = {'id': saved['id'], 'prefix': saved['id'][:8], 'last': '--last'}[kind]
-    code, rt = launch(tmp_path, monkeypatch, ['resume', argument])
+@pytest.mark.parametrize('kind', ['id', 'prefix', 'continue', '-c', '-r'])
+def test_entrypoints_replay_only_visible_text(saved, tmp_path, monkeypatch, capsys, kind):
+    args = (['resume', saved['id']] if kind == 'id' else
+            ['resume', saved['id'][:8]] if kind == 'prefix' else
+            ['-r', saved['id']] if kind == '-r' else [kind])
+    code, rt = launch(tmp_path, monkeypatch, args)
     assert code in (None, 0)
     output = capsys.readouterr().out
-    assert 'visible answer' in output
+    assert '用户：\nquestion\nnext' in output
+    assert 'PamuCode：\nvisible answer' in output
     assert 'HIDDEN_REASON' not in output and 'HIDDEN_TOOL' not in output
     assert '\x1b' not in output
     assert rt.session.history
@@ -101,6 +106,42 @@ def test_picker_and_cancel(saved, tmp_path, monkeypatch):
     lease.close()
 
 
+@pytest.mark.parametrize('command', ['resume', '-r'])
+def test_resume_alias_opens_picker_and_restores_selection(saved, tmp_path, monkeypatch, command):
+    choices_seen = []
+    ui = SimpleNamespace(
+        choose=lambda title, choices: choices_seen.append(choices) or saved['id'],
+        prompt=lambda: '/quit',
+    )
+    code, rt = launch(tmp_path, monkeypatch, [command], ui=ui)
+    assert code in (None, 0)
+    assert choices_seen[0][0][0] == saved['id']
+    assert rt.sessions.session_id == saved['id']
+
+
+@pytest.mark.parametrize('command', ['continue', '-c'])
+def test_continue_selects_newest_without_opening_picker(saved, tmp_path, monkeypatch, command):
+    older = copy.deepcopy(saved)
+    older.update(id=str(uuid.uuid4()), updated_at=saved['updated_at'] - 1)
+    SessionStore(tmp_path).save(older)
+    def unexpected(*args):
+        raise AssertionError('continue must not open picker')
+    ui = SimpleNamespace(choose=unexpected, prompt=lambda: '/quit')
+    code, rt = launch(tmp_path, monkeypatch, [command], ui=ui)
+    assert code in (None, 0)
+    assert rt.sessions.session_id == saved['id']
+
+
+@pytest.mark.parametrize('command', ['continue', '-c'])
+@pytest.mark.parametrize('argument', ['--last', '12345678'])
+def test_continue_rejects_arguments_before_building_runtime(tmp_path, monkeypatch, capsys, command, argument):
+    monkeypatch.chdir(tmp_path)
+    def unexpected():
+        raise AssertionError('unexpected runtime construction')
+    assert main(argv=[command, argument], runtime_factory=unexpected) == 2
+    assert 'pamu continue' in capsys.readouterr().err
+
+
 def test_picker_interrupt_is_clean_cancel(saved, monkeypatch):
     def cancel(*a): raise KeyboardInterrupt()
     assert main(argv=['resume'], ui=SimpleNamespace(choose=cancel), runtime_factory=lambda: None) == 0
@@ -113,12 +154,14 @@ def test_noninteractive_lists_without_constructing_or_reading(saved, monkeypatch
     captured = capsys.readouterr()
     output = captured.out + captured.err
     assert saved['id'] in output
-    assert 'pamu resume --last' in output and 'pamu resume <会话编号>' in output
+    assert 'pamu continue' in output and 'pamu -c' in output and 'pamu resume <会话编号>' in output
 
 
-@pytest.mark.parametrize('argument', ['bad', '../escape.json', '12345678', '--unknown'])
-def test_bad_ids_and_options(saved, argument):
+@pytest.mark.parametrize('argument', ['bad', '../escape.json', '12345678', '--unknown', '--last'])
+def test_bad_ids_and_options(saved, argument, capsys):
     assert main(argv=['resume', argument], runtime_factory=lambda: None) == 2
+    if argument == '--last':
+        assert capsys.readouterr().err == '会话错误：用法：pamu resume [会话编号]\n'
 
 
 def test_ambiguous_and_malformed_snapshots(saved, tmp_path):
@@ -138,7 +181,7 @@ def test_occupied_last_does_not_fall_back(saved, tmp_path):
     store.save(older)
     lease = store.acquire(saved['id'])
     try:
-        assert main(argv=['resume', '--last'], runtime_factory=lambda: None) == 2
+        assert main(argv=['continue'], runtime_factory=lambda: None) == 2
     finally:
         lease.close()
 
@@ -154,7 +197,7 @@ def test_plain_pamu_does_not_restore_or_save_empty(saved, tmp_path, monkeypatch)
 def test_restore_displays_selection_override(saved, tmp_path, monkeypatch, capsys):
     rt = runtime(tmp_path)
     rt.model.switch_model('explicit-current-model')
-    launch(tmp_path, monkeypatch, ['resume', '--last'], rt=rt)
+    launch(tmp_path, monkeypatch, ['continue'], rt=rt)
     assert 'explicit-current-model' in capsys.readouterr().out
 
 
@@ -165,7 +208,7 @@ def test_slash_mutation_and_checkpoint_share_agent_lock(saved, tmp_path, monkeyp
         assert rt.agent_lock.locked(), 'model mutation must hold agent_lock'
         switch(model)
     monkeypatch.setattr(type(rt.model), 'switch_model', checked)
-    code, rt = launch(tmp_path, monkeypatch, ['resume', '--last'], rt=rt, commands=('/model changed', '/quit'))
+    code, rt = launch(tmp_path, monkeypatch, ['continue'], rt=rt, commands=('/model changed', '/quit'))
     assert code in (None, 0)
     assert SessionStore(tmp_path).load(saved['id'])['selection']['primary_model'] == 'changed'
 
@@ -174,7 +217,7 @@ def test_checkpoint_error_exits_two_and_releases_lease(saved, tmp_path, monkeypa
     rt = runtime(tmp_path)
     def fail(*a, **kw): raise SessionError('无法保存会话')
     monkeypatch.setattr(rt.sessions, 'checkpoint', fail)
-    code, rt = launch(tmp_path, monkeypatch, ['resume', '--last'], rt=rt, commands=('/model changed',))
+    code, rt = launch(tmp_path, monkeypatch, ['continue'], rt=rt, commands=('/model changed',))
     assert code == 2
     assert '会话错误' in capsys.readouterr().err
     SessionStore(tmp_path).acquire(saved['id']).close()
@@ -186,7 +229,7 @@ def test_busy_shutdown_closes_without_unsafe_checkpoint(saved, tmp_path, monkeyp
     rt.agent_lock = threading.Lock()
     def start(r): r.agent_lock.acquire(); return []
     monkeypatch.setattr('builtins.input', lambda *_: '/quit')
-    assert main(argv=['resume', '--last'], runtime_factory=lambda: rt, start_threads=start,
+    assert main(argv=['continue'], runtime_factory=lambda: rt, start_threads=start,
                 stop_threads=lambda *a: None, credentials_path=tmp_path/'credentials.json') in (0, None)
     assert SessionStore(tmp_path).load(saved['id']) == saved
     with pytest.raises(SessionError): checkpoint(rt)
@@ -285,7 +328,7 @@ def test_ollama_restore_is_keyless_even_with_other_keys(configure):
 def test_configuration_failure_releases_selected_lease(saved, tmp_path, monkeypatch):
     from agent_app.config import MissingConfigurationError
     def fail(): raise MissingConfigurationError('MODEL_ID')
-    assert main(argv=['resume', '--last'], runtime_factory=fail,
+    assert main(argv=['continue'], runtime_factory=fail,
                 credentials_path=tmp_path/'credentials.json') == 2
     SessionStore(tmp_path).acquire(saved['id']).close()
     assert SessionStore(tmp_path).load(saved['id']) == saved
@@ -300,7 +343,7 @@ def test_unrenderable_date_does_not_break_listing(saved, tmp_path, capsys):
 
 def test_session_error_during_construction_releases_lease(saved, tmp_path):
     def fail(): raise SessionError('无法创建会话存储')
-    assert main(argv=['resume', '--last'], runtime_factory=fail) == 2
+    assert main(argv=['continue'], runtime_factory=fail) == 2
     SessionStore(tmp_path).acquire(saved['id']).close()
 
 
@@ -359,20 +402,173 @@ def test_explicit_settings_layers_remain_above_snapshot(configure, tmp_path, lay
     assert rt.config.primary_model == expected
 
 
-def test_resume_preview_is_bounded(saved, tmp_path, monkeypatch, capsys):
-    saved['history'] = [{'role': 'user', 'content': f'message-{i} ' + 'x' * 1000} for i in range(10)]
+def test_resume_replays_long_multiline_messages_and_labels_interruptions(saved, tmp_path, monkeypatch, capsys):
+    answer = '已创建 add.py。\n\n```python\ndef add(a, b):\n    return a + b\n```\n' + 'x' * 1000 + '\n验证通过。'
+    saved['history'] = [
+        {'role': 'user', 'content': '创建加法函数'},
+        {'role': 'assistant', 'content': answer},
+        {'role': 'user', 'content': [
+            {'type': 'text', 'text': '查看当前有多少 skills？'},
+            {'type': 'text', 'text': '<task_notification>RAW_NOTIFICATION</task_notification>'},
+        ]},
+        {'role': 'user', '_pamu_source': 'system',
+         'content': '[用户中断] 用户主动停止了上一轮。RAW_INSTRUCTIONS'},
+        {'role': 'user', 'content': '[Compacted]\nRAW_SUMMARY'},
+        {'role': 'user', 'content': '<reminder>RAW_REMINDER</reminder>'},
+        {'role': 'user', 'content': '再帮我验证一次。'},
+        {'role': 'assistant', 'content': '验证结果一致。'},
+    ]
     saved['context_state'].pop('_message_records', None)
     SessionStore(tmp_path).save(saved)
-    launch(tmp_path, monkeypatch, ['resume', '--last'])
+    launch(tmp_path, monkeypatch, ['continue'])
     output = capsys.readouterr().out
-    assert 'message-0' not in output and 'message-9' in output
-    assert len(output) < 1000
+    entries = ['用户：\n创建加法函数', f'PamuCode：\n{answer}', '用户：\n查看当前有多少 skills？',
+               '系统：\n上一轮由用户中断。', '用户：\n再帮我验证一次。', 'PamuCode：\n验证结果一致。']
+    positions = [output.index(entry) for entry in entries]
+    assert positions == sorted(positions)
+    assert 'RAW_' not in output
+    assert '已回到此会话，可以继续输入。' in output
+
+
+def test_resume_displays_shell_entries_separately_and_matches_each_batch(saved, tmp_path, monkeypatch, capsys):
+    def shell(tool_id, command):
+        return {'type': 'tool_use', 'id': tool_id, 'name': 'bash', 'input': {'command': command}}
+
+    def result(tool_id, text):
+        return {'type': 'tool_result', 'tool_use_id': tool_id, 'content': text}
+
+    saved['history'] = [
+        {'role': 'user', 'content': 'Run several checks'},
+        {'role': 'assistant', 'content': [
+            {'type': 'text', 'text': 'Checking the workspace.'},
+            shell('reused', 'printf ok\n:'),
+            shell('blocked', 'rm blocked.txt'),
+            shell('background', 'sleep 1'),
+            {'type': 'tool_use', 'id': 'read', 'name': 'read_file', 'input': {'path': 'HIDDEN_PATH'}},
+        ]},
+        {'role': 'user', 'content': [
+            result('reused', 'HIDDEN_STDOUT'), result('blocked', 'Permission denied by user'),
+            result('background', '[Background task bg_0001 started] Command: sleep 1.'),
+            result('read', 'HIDDEN_FILE_CONTENT'),
+        ]},
+        {'role': 'assistant', 'content': 'Done checking.'},
+        {'role': 'assistant', 'content': [shell('reused', 'touch never-created')]},
+    ]
+    saved['context_state'].pop('_message_records', None)
+    saved['tool_states'] = {'reused': 'pending'}
+    SessionStore(tmp_path).save(saved)
+
+    launch(tmp_path, monkeypatch, ['-r', saved['id']])
+    output = capsys.readouterr().out
+    entries = ['PamuCode：\nChecking the workspace.', 'Shell（结果已记录）：\n$ printf ok\n  :',
+               'Shell（未执行）：\n$ rm blocked.txt', 'Shell（已提交后台 bg_0001）：\n$ sleep 1',
+               'PamuCode：\nDone checking.', 'Shell（未执行）：\n$ touch never-created']
+    positions = [output.index(entry) for entry in entries]
+    assert positions == sorted(positions)
+    assert 'HIDDEN_' not in output
+    assert not (tmp_path / 'never-created').exists()
+
+
+@pytest.mark.parametrize('old_ids', [False, True])
+def test_resume_replays_compacted_dialogue_in_order_once(tmp_path, monkeypatch, capsys, old_ids):
+    from agent_app.adapters.common import TextBlock, ToolUseBlock
+    from agent_app.core.context_manager import compact
+    from tests.test_context_manager import runtime as compact_runtime
+
+    monkeypatch.chdir(tmp_path)
+    summary = dict(goal='summary', constraints=[], decisions=[], completed=[], remaining=[], uncertainties=[], references=[])
+    original = compact_runtime(tmp_path, json.dumps(summary))
+    old_request = '早期需求' + ' evidence' * 400
+    original.session.history[:] = [
+        {'role': 'user', 'content': old_request},
+        {'role': 'assistant', 'content': [
+            {'type': 'thinking', 'thinking': 'HIDDEN_ARCHIVED_REASON', 'signature': 'sig'},
+            TextBlock('早期回复'),
+            ToolUseBlock('archived-bash', 'bash', {'command': 'printf archived'}),
+        ]},
+        {'role': 'user', 'content': [
+            {'type': 'tool_result', 'tool_use_id': 'archived-bash', 'content': 'HIDDEN_ARCHIVED_STDOUT'},
+        ]},
+        {'role': 'user', 'content': '检查结果'},
+        {'role': 'assistant', 'content': [TextBlock('检查完毕')]},
+        {'role': 'user', 'content': '检查结果'},
+    ]
+    assert compact(original)
+    assert original.session.history[0]['content'].startswith('[Compacted]')
+    original.session.history.append({'role': 'assistant', 'content': '再次检查完毕'})
+    checkpoint(original)
+    store = original.sessions.store
+    snapshot = store.load(original.sessions.session_id)
+    retained = next(i for i, message in enumerate(snapshot['history'])
+                    if message['content'] == [{'type': 'text', 'text': '检查完毕'}])
+    record = snapshot['context_state']['_message_records'][retained]
+    assert record['id'] in {entry['id'] for entry in snapshot['archive']}
+    if old_ids:
+        record['id'] = str(uuid.uuid4())
+        store.save(snapshot)
+    original.sessions.close()
+    capsys.readouterr()
+
+    code, _ = launch(tmp_path, monkeypatch, ['-c'])
+    assert code in (0, None)
+    output = capsys.readouterr().out
+    expected = '\n\n'.join([f'用户：\n{old_request}', 'PamuCode：\n早期回复',
+                            'Shell（结果已记录）：\n$ printf archived', '用户：\n检查结果',
+                            'PamuCode：\n检查完毕', '用户：\n检查结果', 'PamuCode：\n再次检查完毕'])
+    assert expected in output
+    assert output.count('PamuCode：\n检查完毕') == 1
+    assert output.count('用户：\n检查结果') == 2
+    assert 'HIDDEN_ARCHIVED_' not in output
+
+
+def test_legacy_replay_keeps_retained_messages_once(saved, tmp_path, monkeypatch, capsys):
+    first = {'role': 'user', 'content': 'legacy question'}
+    retained = {'role': 'assistant', 'content': 'retained answer'}
+    latest = {'role': 'user', 'content': 'next question'}
+    saved.update(schema_version=1, archive=[[first, retained]], history=[
+        {'role': 'user', 'content': '[Reactive compact]\nRAW_SUMMARY'}, retained, latest,
+    ])
+    del saved['context_state']
+    SessionStore(tmp_path).save(saved)
+    launch(tmp_path, monkeypatch, ['-c'])
+    output = capsys.readouterr().out
+    assert '用户：\nlegacy question\n\nPamuCode：\nretained answer\n\n用户：\nnext question' in output
+    assert output.count('retained answer') == 1
+    assert 'RAW_SUMMARY' not in output
+
+
+def test_missing_archived_dialogue_does_not_prevent_continuing(saved, tmp_path, monkeypatch, capsys):
+    saved['archive'] = [dict(id='missing', ref='sha256:' + '0' * 64, source='user', turn_id='missing')]
+    SessionStore(tmp_path).save(saved)
+    seen = []
+    code, _ = launch(tmp_path, monkeypatch, ['-c'], commands=('继续', '/quit'),
+                     run_turn=lambda current, query: seen.append((current.sessions.session_id, query)))
+    assert code in (0, None)
+    assert seen == [(saved['id'], '继续')]
+    output = capsys.readouterr().out
+    assert '部分归档消息无法读取。' in output
+    assert 'visible answer' in output
+
+
+def test_interrupting_history_replay_leaves_the_restored_session_open(saved, tmp_path, monkeypatch, capsys):
+    from agent_app import session_cli
+
+    def interrupt(_):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(session_cli, '_session_dialogue', interrupt)
+    seen = []
+    code, _ = launch(tmp_path, monkeypatch, ['-r', saved['id']], commands=('继续', '/quit'),
+                     run_turn=lambda current, query: seen.append((current.sessions.session_id, query)))
+    assert code in (0, None)
+    assert seen == [(saved['id'], '继续')]
+    assert '已跳过剩余历史。' in capsys.readouterr().out
 
 
 def test_status_shows_unsaved_and_restored_id(saved, tmp_path, monkeypatch, capsys):
     launch(tmp_path, monkeypatch, [], commands=('/status', '/quit'))
     assert '会话：尚未保存' in capsys.readouterr().out
-    launch(tmp_path, monkeypatch, ['resume', '--last'], commands=('/status', '/quit'))
+    launch(tmp_path, monkeypatch, ['continue'], commands=('/status', '/quit'))
     assert f"会话：{saved['id']}" in capsys.readouterr().out
 
 
@@ -402,13 +598,13 @@ def test_resume_reloads_after_acquiring_lease(saved, monkeypatch):
 
 def test_turn_persistence_failure_stops_repl_and_releases_lease(saved, tmp_path, monkeypatch):
     def fail(*args): raise SessionError('无法保存会话')
-    code, _ = launch(tmp_path, monkeypatch, ['resume', '--last'], commands=('continue',), run_turn=fail)
+    code, _ = launch(tmp_path, monkeypatch, ['continue'], commands=('continue',), run_turn=fail)
     assert code == 2
     SessionStore(tmp_path).acquire(saved['id']).close()
 
 
 def test_injected_runtime_without_sessions_has_chinese_error(saved, tmp_path, capsys):
-    assert main(argv=['resume', '--last'], runtime_factory=lambda: SimpleNamespace()) == 2
+    assert main(argv=['continue'], runtime_factory=lambda: SimpleNamespace()) == 2
     assert '当前运行时不支持会话恢复' in capsys.readouterr().err
     SessionStore(tmp_path).acquire(saved['id']).close()
 
@@ -421,7 +617,7 @@ def test_restore_interruption_closes_coordinator_and_lease(saved, tmp_path, monk
         raise KeyboardInterrupt()
     monkeypatch.setattr(rt.sessions, 'restore', interrupted)
     with pytest.raises(KeyboardInterrupt):
-        main(argv=['resume', '--last'], runtime_factory=lambda: rt)
+        main(argv=['continue'], runtime_factory=lambda: rt)
     with pytest.raises(SessionError): rt.sessions._check()
     SessionStore(tmp_path).acquire(saved['id']).close()
 
@@ -430,7 +626,7 @@ def test_restore_always_displays_active_model_and_todo_overview(saved, tmp_path,
     saved['todos'] = [{'content': 'next task', 'status': 'pending'},
                       {'content': 'done task', 'status': 'completed'}]
     SessionStore(tmp_path).save(saved)
-    launch(tmp_path, monkeypatch, ['resume', '--last'])
+    launch(tmp_path, monkeypatch, ['continue'])
     output = capsys.readouterr().out
     assert '当前模型：test' in output
     assert '待办：2 项' in output and '已完成 1' in output

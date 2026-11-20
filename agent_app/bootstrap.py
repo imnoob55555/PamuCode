@@ -13,7 +13,8 @@ from dataclasses import asdict, replace
 from pathlib import Path
 
 from .adapters.anthropic import AnthropicAdapter
-from .cli_progress import terminal_progress
+from .adapters.common import null_progress
+from .cli_progress import show_shell_status, terminal_confirmation, terminal_progress
 from .config import AppConfig
 from .core.prompt import PromptBuilder
 from .core.delegated_context import DelegatedContext
@@ -210,10 +211,10 @@ def _register_default_hooks(
     hooks.register("UserPromptSubmit", make_context_inject_hook(config.workdir))
     hooks.register(
         "PreToolUse",
-        make_permission_hook(config.workdir, input, mcp_state=mcp_state),
+        make_permission_hook(config.workdir, terminal_confirmation, mcp_state=mcp_state),
     )
     hooks.register("PreToolUse", make_log_hook(config.workdir))
-    hooks.register("PreToolUse", make_diff_preview_hook(config.workdir, input,
+    hooks.register("PreToolUse", make_diff_preview_hook(config.workdir, terminal_confirmation,
                    policy=ExecutionPolicy(config.workdir, config.repo_root, mode=config.sandbox_mode)))
     hooks.register("PostToolUse", make_large_output_hook(config.workdir))
     hooks.register("Stop", make_summary_hook(config.workdir))
@@ -276,7 +277,7 @@ def build_runtime(
     if policy.mode != "confined":
         skills.scan_skills(skill_state)
 
-    shell_executor = ShellExecutor(policy)
+    shell_executor = ShellExecutor(policy, report=None if config.headless else show_shell_status)
     hooks = HookRegistry()
     def security_hook(block):
         if block.name in {"read_file", "write_file", "edit_file"}:
@@ -335,6 +336,7 @@ def build_runtime(
     builtin_handlers = {name: guard_handler(session, name, handler)
                         for name, handler in builtin_handlers.items()}
     builtin.register_builtin_tools(registry, builtin_handlers)
+    registry.register(skills.LIST_SKILLS_SCHEMA, lambda: skills.list_skills(skill_state))
     todos.register_todo_tools(registry, session)
     tasks.register_task_tools(registry, task_store)
     scheduler.register_scheduler_tools(registry, scheduler_state, config)
@@ -521,6 +523,7 @@ def build_runtime(
                 config, task_adapter.create, primary,
                 protocol=model_router.protocol, origin=model_router.base_url,
                 adapter=task_adapter, fallback_model=model_router.fallback_model,
+                progress=getattr(task_adapter, "progress", null_progress) if not config.headless else null_progress,
             )
 
         return subagents.spawn_subagent(

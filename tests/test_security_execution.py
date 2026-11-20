@@ -70,6 +70,32 @@ def test_executor_strips_parent_secrets_and_bounds_descendants(tmp_path, monkeyp
     assert not (tmp_path / "orphan").exists()
 
 
+def test_sigint_during_spawn_still_reaps_new_command(tmp_path, monkeypatch):
+    import signal
+    from agent_app.security import ExecutionPolicy, ShellExecutor
+
+    real_popen = subprocess.Popen
+    spawned = []
+
+    def spawn_and_interrupt(*args, **kwargs):
+        process = real_popen(*args, **kwargs)
+        spawned.append(process)
+        signal.raise_signal(signal.SIGINT)
+        return process
+
+    monkeypatch.setattr(subprocess, 'Popen', spawn_and_interrupt)
+    executor = ShellExecutor(ExecutionPolicy(tmp_path, tmp_path / 'install'))
+    try:
+        with pytest.raises(KeyboardInterrupt, match='命令已中断'):
+            executor.run('sleep 20')
+        assert spawned[0].returncode == -signal.SIGKILL
+    finally:
+        for process in spawned:
+            if process.poll() is None:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.wait()
+
+
 def test_confined_unavailable_backend_fails_closed(tmp_path, monkeypatch):
     from agent_app.security import ExecutionPolicy, ShellExecutor, SandboxUnavailable
     monkeypatch.setattr("agent_app.security.executor.sys.platform", "unsupported")

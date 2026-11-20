@@ -41,13 +41,117 @@ def test_compact_preserves_current_user_and_focus_and_restores(tmp_path):
         rt.sessions.close()
 
 
-def test_invalid_summary_does_not_replace_history(tmp_path):
-    rt = runtime(tmp_path, 'not json')
+@pytest.mark.parametrize(('response', 'reason'), [
+    (ModelResponse([TextBlock('not json')], 'end_turn'), '模型未返回有效 JSON'),
+    (ModelResponse([TextBlock('```json')], 'end_turn'), 'JSON 代码块不完整'),
+    (ModelResponse([], 'max_tokens'), '达到 token 上限'),
+])
+def test_invalid_summary_does_not_replace_history(tmp_path, response, reason):
+    rt = runtime(tmp_path, '')
     before = list(rt.session.history)
+    calls = []
+
+    def create(**kwargs):
+        calls.append(kwargs['messages'][0]['content'])
+        return response
+
+    rt.llm.create = create
     try:
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError, match=reason):
             compact(rt)
         assert rt.session.history == before
+        assert len(calls) == 2 and 'Retry with compact, valid JSON' in calls[1]
+    finally:
+        rt.sessions.close()
+
+
+def test_deepseek_resume_sends_the_turn_without_premature_compaction(tmp_path, capsys):
+    from dataclasses import replace
+    from agent_app.adapters.providers import build_adapter, get_provider
+    from agent_app.cli import run_agent_turn
+    from agent_app.core.context_manager import estimate_current_context, register_history_tools
+    from agent_app.features.sessions import checkpoint
+
+    calls = []
+
+    class Stream:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            pass
+
+        text_stream = ('继续成功',)
+
+        def get_final_message(self):
+            return ModelResponse([TextBlock('继续成功')], 'end_turn')
+
+    def create(**kwargs):
+        calls.append(('summary', kwargs))
+        return ModelResponse([], 'max_tokens')
+
+    def stream(**kwargs):
+        calls.append(('turn', kwargs))
+        return Stream()
+
+    model = 'deepseek-v4-pro'
+    url = 'https://api.deepseek.com/anthropic'
+    # This session was saved under the Anthropic-compatible provider name.
+    adapter = build_adapter(get_provider('anthropic'),
+                            SimpleNamespace(messages=SimpleNamespace(create=create, stream=stream)), base_url=url)
+    config = replace(AppConfig.from_env(tmp_path, environ={'MODEL_ID': model}), headless=True)
+    original = build_runtime(config, None, adapter=adapter, base_url=url)
+    for i in range(6):
+        original.session.history.extend([{'role': 'user', 'content': f'需求 {i}'},
+                                         {'role': 'assistant', 'content': '工作结果 ' * 100}])
+    checkpoint(original)
+    store = original.sessions.store
+    snapshot = store.load(original.sessions.session_id)
+    original.sessions.close()
+
+    rt = build_runtime(config, None, adapter=adapter, base_url=url)
+    try:
+        rt.sessions.restore(rt, snapshot, store.acquire(snapshot['id']))
+        register_history_tools(rt)
+        assert 9174 < estimate_current_context(rt).input_tokens < 30_000
+        run_agent_turn(rt, '继续上次任务')
+        assert [kind for kind, _ in calls] == ['turn']
+        assert calls[0][1]['thinking'] == {'type': 'disabled'}
+        assert '压缩摘要无效' not in capsys.readouterr().out
+    finally:
+        rt.sessions.close()
+
+
+def test_deepseek_compaction_disables_default_thinking(tmp_path):
+    from contextlib import contextmanager
+    from agent_app.adapters.anthropic import AnthropicAdapter
+
+    summary = dict(goal='fix', constraints=[], decisions=[], completed=[], remaining=[], uncertainties=[], references=[])
+    rt = runtime(tmp_path, '')
+    calls = []
+    stages = []
+
+    @contextmanager
+    def progress(label):
+        stages.append(label)
+        yield
+
+    def create(**kwargs):
+        calls.append(kwargs)
+        if kwargs.get('thinking') != {'type': 'disabled'}:
+            return SimpleNamespace(stop_reason='max_tokens', content=[
+                {'type': 'thinking', 'thinking': 'used the output budget', 'signature': 'sig'},
+            ])
+        return ModelResponse([TextBlock(json.dumps(summary))], 'end_turn')
+
+    url = 'https://api.deepseek.com/anthropic'
+    adapter = AnthropicAdapter(SimpleNamespace(messages=SimpleNamespace(create=create)), progress, origin=f'anthropic@{url}')
+    rt.model.switch('anthropic', 'deepseek-v4-pro', llm=adapter, protocol='anthropic_messages', base_url=url)
+    try:
+        assert compact(rt)
+        assert calls and all(call['thinking'] == {'type': 'disabled'} for call in calls)
+        assert rt.session.context_state['generation'] == 1
+        assert stages == ['正在压缩上下文'] * len(calls)
     finally:
         rt.sessions.close()
 
@@ -58,6 +162,55 @@ def test_pins_are_persisted_without_model_call(tmp_path):
         context_control(rt, 'pin preserve compatibility')
         assert rt.session.context_state['pins'][0]['text'] == 'preserve compatibility'
         assert not rt.llm.requests
+    finally:
+        rt.sessions.close()
+
+
+def test_repl_context_usage_refreshes_for_active_provider_and_model(tmp_path):
+    from agent_app.adapters.anthropic import AnthropicAdapter
+    from agent_app.adapters.ollama import OllamaAdapter
+    from agent_app.adapters.openai_chat import OpenAIChatAdapter
+    from agent_app.adapters.openai_responses import OpenAIResponsesAdapter
+    from agent_app.cli import main
+
+    targets = [
+        ('anthropic', 'anthropic_messages', 'https://api.anthropic.com',
+         'claude-sonnet-4-6', AnthropicAdapter, 200_000),
+        ('openai', 'openai_responses', 'https://api.openai.com/v1',
+         'responses-model', OpenAIResponsesAdapter, 128_000),
+        ('openai-compatible', 'openai_chat', 'https://gateway.test/v1',
+         'chat-model', OpenAIChatAdapter, 65_536),
+        ('ollama', 'ollama', 'http://localhost:11434',
+         'local-model', OllamaAdapter, 4096),
+    ]
+    config = AppConfig.from_env(tmp_path, environ={'MODEL_ID': targets[0][3]})
+    rt = build_runtime(config, None)
+    rt.session.history.append({'role': 'user', 'content': 'Analyze this context. ' * 400})
+    for _, protocol, origin, model, _, window in targets[1:3]:
+        context_key = '|'.join((protocol, origin, model))
+        rt.session.context_state.setdefault('window_overrides', {})[context_key] = window
+
+    def select(target):
+        provider, protocol, origin, model, adapter, _ = target
+        rt.model.switch(provider, model, llm=adapter(None, origin=origin),
+                        protocol=protocol, base_url=origin)
+
+    readings = []
+
+    def prompt():
+        readings.append(ui.context_used)
+        if len(readings) == len(targets):
+            return '/quit'
+        select(targets[len(readings)])
+        return '/help'
+
+    ui = SimpleNamespace(prompt=prompt)
+    select(targets[0])
+    try:
+        main(argv=[], ui=ui, runtime_factory=lambda: rt,
+             start_threads=lambda _: [], stop_threads=lambda *_: None,
+             credentials_path=tmp_path / 'credentials.json')
+        assert 0 < readings[0] < readings[1] < readings[2] < readings[3]
     finally:
         rt.sessions.close()
 

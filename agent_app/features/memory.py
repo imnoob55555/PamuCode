@@ -5,7 +5,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..adapters.common import output_text
+from ..logging_setup import get_logger
 
+LOGGER = get_logger("pamu.memory")
 MEMORY_TYPES = ["user", "feedback", "project", "reference"]
 CONSOLIDATE_THRESHOLD = 10
 
@@ -233,7 +235,7 @@ def extract_memories(store: MemoryStore, messages: list, summarize) -> list[dict
                 write_memory_file(store, name, memory_type, description, body)
                 count += 1
         if count:
-            print(f"\n\033[33m[Memory: extracted {count} new memories]\033[0m")
+            LOGGER.info("extracted %d new memories", count)
     except Exception:
         return []
     return []
@@ -273,9 +275,7 @@ def consolidate_memories(store: MemoryStore, summarize):
             body = memory.get("body", "")
             if description and body:
                 write_memory_file(store, name, memory_type, description, body)
-        print(
-            f"\n\033[33m[Memory: consolidated {len(files)} → {len(items)} memories]\033[0m"
-        )
+        LOGGER.info("consolidated %d memories into %d", len(files), len(items))
     except Exception:
         return
 

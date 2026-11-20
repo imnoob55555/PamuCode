@@ -3,6 +3,8 @@ from dataclasses import dataclass
 import json
 import math
 
+from ..adapters.anthropic import is_deepseek_messages_endpoint
+
 
 def _value(obj, key, default=None):
     return obj.get(key, default) if isinstance(obj, dict) else getattr(obj, key, default)
@@ -117,8 +119,11 @@ def resolve_window(runtime, model=None):
     override = _state(runtime).get('window_overrides', {}).get(key)
     if override is not None:
         return validate_window(override), '当前模型会话覆盖'
-    if protocol == 'anthropic_messages' and origin == 'https://api.anthropic.com' and selected in ('claude-sonnet-4-6', 'claude-opus-4-6'):
-        return 200000, 'Anthropic 官方目标的保守规划值（200k；可明确配置调整）'
+    if protocol == 'anthropic_messages':
+        if origin == 'https://api.anthropic.com' and selected in ('claude-sonnet-4-6', 'claude-opus-4-6'):
+            return 200000, 'Anthropic 官方目标的保守规划值（200k；可明确配置调整）'
+        if is_deepseek_messages_endpoint(origin) and selected in ('deepseek-v4-pro', 'deepseek-flash', 'deepseek-v4-flash'):
+            return 1_000_000, 'DeepSeek 官方模型窗口（1M；可明确配置调整）'
     return (4096 if protocol == 'ollama' else 16384), '假定窗口，请按实际服务配置调整'
 
 

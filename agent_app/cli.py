@@ -16,8 +16,13 @@ from .bootstrap import build_default_runtime
 from .branding import render_startup_screen
 from .cli_exit import ExitAction, ExitGesture, QuitRequested
 from .config import MissingConfigurationError
+from .core.interruption import protect_interrupt_cleanup
+from .core.context_manager import estimate_current_context
 from .core.loop import run_agent_loop
-from .features.sessions import checkpoint
+from .features.background import (
+    close_background_tasks, collect_background_results, describe_background_tasks, stop_background_tasks,
+)
+from .features.sessions import checkpoint, interrupt_turn
 from .features.session_store import SessionError
 from .features import auth
 from .features.skills import SkillInvocation
@@ -26,7 +31,8 @@ from .features.scheduler import (
     has_cron_queue,
     load_durable_jobs,
 )
-from .repl_sessions import ResumeAction, resume_runtime
+from .repl_sessions import ResumeAction, delete_current_session, resume_runtime
+from .runtime import RuntimeContext
 from .logging_setup import get_logger
 from .slash_commands import SLASH_COMMANDS, help_text
 from .thinking import THINKING_LABELS, THINKING_LEVELS, normalize_level
@@ -46,6 +52,14 @@ def notify_or_print(ui, message: str, *, print_fn=print) -> None:
         print_fn(message)
 
 
+def _save_background_results(runtime):
+    notifications = collect_background_results(runtime.background)
+    runtime.session.history.extend(
+        {'role': 'user', '_pamu_source': 'system', 'content': text} for text in notifications
+    )
+    checkpoint(runtime)
+
+
 def run_agent_turn(runtime, user_query: str | None = None) -> None:
     # Slash commands are REPL-local controls; they never join the LLM context.
     if user_query and not user_query.lstrip().startswith("/"):
@@ -55,9 +69,13 @@ def run_agent_turn(runtime, user_query: str | None = None) -> None:
             runtime.session.context_state['current_request'] = {'id': str(uuid4()), 'text': user_query}
             runtime.session.context_state['turn_time'] = datetime.now().isoformat(timespec='seconds')
         runtime.session.history.append({"role": "user", "content": user_query})
-    checkpoint(runtime, status="running")
     try:
+        checkpoint(runtime, status="running")
         run_agent_loop(runtime)
+    except KeyboardInterrupt:
+        with protect_interrupt_cleanup():
+            interrupt_turn(runtime)
+        raise
     except BaseException:
         coordinator = getattr(runtime, "sessions", None)
         if coordinator is None or not coordinator.failed:
@@ -66,6 +84,33 @@ def run_agent_turn(runtime, user_query: str | None = None) -> None:
     else:
         checkpoint(runtime, status="idle")
     print()
+
+
+def _run_interactive_turn(runtime, query, run_turn, ui):
+    started = False
+    try:
+        with runtime.agent_lock:
+            started = True
+            runtime.hooks.trigger("UserPromptSubmit", query)
+            run_turn(runtime, query)
+    except KeyboardInterrupt:
+        if not started:
+            notify_or_print(ui, "已取消等待，正在占用会话的任务仍在运行。")
+            return
+        # run_agent_turn has saved the interrupted history before control returns.
+        # Keep the same runtime/lease; this is not a resume or a new conversation.
+        notify_or_print(ui, "已中断当前轮次，已完成的修改保留。可继续输入指令。")
+        background = getattr(runtime, 'background', None)
+        if background is not None:
+            with background.lock:
+                running = [key for key, task in background.tasks.items() if task['status'] == 'running']
+            if running:
+                print(f"后台命令仍在运行：{', '.join(running)}。用 /background 查看，/stop <编号> 停止。")
+        team = getattr(runtime, 'team', None)
+        if team is not None:
+            with team.lock:
+                if team.active:
+                    print("队友仍独立运行；当前轮次的中断不会停止队友。")
 
 
 def _queue_processor_loop(runtime) -> None:
@@ -78,7 +123,7 @@ def _queue_processor_loop(runtime) -> None:
             if getattr(runtime.stop_event, "is_set", lambda: False)():
                 return
             if has_cron_queue(runtime.scheduler):
-                print("\n  \033[35m[queue processor] delivering scheduled work\033[0m")
+                LOGGER.debug("delivering scheduled work")
                 run_agent_turn(runtime)
         except SessionError as exc:
             print(str(exc))
@@ -405,6 +450,31 @@ def _handle_slash_command(
     credentials_path = credentials_path or auth.CREDENTIALS_PATH
     command, _, rest = query.strip().partition(" ")
     argument = rest.strip()
+    if command in ('/background', '/stop'):
+        if runtime is None:
+            notify_or_print(ui, LOGIN_HINT, print_fn=print_fn)
+            return
+        if command == '/background':
+            print_fn(describe_background_tasks(runtime.background))
+        elif not argument:
+            print_fn('用法：/stop <后台任务编号 | all>。用 /background 查看编号。')
+        else:
+            try:
+                with protect_interrupt_cleanup():
+                    outcomes = stop_background_tasks(runtime.background, argument)
+                    # Cancellation must work even when a scheduled turn owns history.
+                    # In that case the turn will collect the notification itself.
+                    if runtime.agent_lock.acquire(blocking=False):
+                        try:
+                            _save_background_results(runtime)
+                        finally:
+                            runtime.agent_lock.release()
+                labels = {'running': '正在停止，尚未确认结束', 'cancelled': '已中断，已发生的修改保留',
+                          'completed': '已完成', 'failed': '失败'}
+                print_fn('\n'.join(f'{key}：{labels[value]}' for key, value in outcomes.items()) or '没有后台命令。')
+            except ValueError as error:
+                notify_or_print(ui, str(error), print_fn=print_fn)
+        return
     if command == "/skill":
         if runtime is None:
             notify_or_print(ui, LOGIN_HINT, print_fn=print_fn)
@@ -485,6 +555,26 @@ def _handle_slash_command(
 
     if command == "/resume":
         return ResumeAction(tuple(argument.split()))
+
+    if command == "/delete":
+        if argument:
+            notify_or_print(ui, "用法：/delete", print_fn=print_fn)
+            return
+        coordinator = getattr(runtime, "sessions", None)
+        if coordinator is None or coordinator.session_id is None:
+            notify_or_print(ui, "当前没有已保存的会话。", print_fn=print_fn)
+            return
+        if ui is None:
+            notify_or_print(ui, "请在交互终端使用 /delete 并确认删除。", print_fn=print_fn)
+            return
+        choice = ui.choose(
+            "永久删除当前会话并退出？",
+            [("cancel", "取消"), ("delete", "删除并退出")],
+        )
+        if choice == "delete":
+            return ExitAction.DELETE
+        notify_or_print(ui, "已取消删除会话。", print_fn=print_fn)
+        return
 
     if command == "/quit":
         if argument:
@@ -756,10 +846,10 @@ def main(
             client_factory=client_factory,
         )
     selected_session = None
-    if args and args[0] == "resume":
+    if args and args[0] in {"resume", "-r", "continue", "-c"}:
         from .session_cli import select_session
         try:
-            selected_session = select_session(args[1:], ui)
+            selected_session = select_session(args[1:], ui, latest=args[0] in {"continue", "-c"})
         except (EOFError, KeyboardInterrupt, QuitRequested):
             return 0
         except SessionError as error:
@@ -805,12 +895,13 @@ def main(
                 return 2
             raise
     exit_code = None
+    save_on_exit = True
     threads = []
     exit_gesture = ExitGesture()
     if ui is not None:
         ui.repl_mode = True
     try:
-        if interactive:
+        if interactive and selected_session is None:
             try:
                 print(
                     render_startup_screen(
@@ -833,6 +924,17 @@ def main(
                 ui.thinking_level = runtime.model.thinking_snapshot()
                 from .working_mode import working_mode
                 ui.working_mode = working_mode(getattr(runtime, "session", None))
+                if isinstance(runtime, RuntimeContext):
+                    ui.context_used = None
+                    if runtime.agent_lock.acquire(blocking=False):
+                        try:
+                            report = estimate_current_context(runtime)
+                            ui.context_used = round(100 * report.input_tokens / report.budget.window)
+                        except (OSError, ValueError):
+                            # A status estimate must not stop the interactive session.
+                            LOGGER.debug("Could not estimate context usage for the prompt")
+                        finally:
+                            runtime.agent_lock.release()
             try:
                 # Non-interactive fallback reads a line without a prompt marker.
                 query = ui.prompt() if ui is not None else input("")
@@ -865,10 +967,18 @@ def main(
                 if selected is ExitAction.QUIT:
                     print("Shutting down PamuCode…")
                     break
+                if selected is ExitAction.DELETE:
+                    with protect_interrupt_cleanup():
+                        reason = delete_current_session(runtime)
+                        if not reason:
+                            save_on_exit = False
+                    if reason:
+                        notify_or_print(ui, reason)
+                        continue
+                    print("已删除当前会话。")
+                    break
                 if isinstance(selected, SkillInvocation):
-                    with runtime.agent_lock:
-                        runtime.hooks.trigger("UserPromptSubmit", selected.prompt)
-                        run_turn(runtime, selected.prompt)
+                    _run_interactive_turn(runtime, selected.prompt, run_turn, ui)
                     continue
                 if isinstance(selected, ResumeAction):
                     if runtime is None:
@@ -892,9 +1002,7 @@ def main(
                 continue
             if ui is not None:
                 print(query)
-            runtime.hooks.trigger("UserPromptSubmit", query)
-            with runtime.agent_lock:
-                run_turn(runtime, query)
+            _run_interactive_turn(runtime, query, run_turn, ui)
     except SessionError as error:
         print(f"会话错误：{error}", file=sys.stderr)
         exit_code = 2
@@ -903,14 +1011,24 @@ def main(
             coordinator = getattr(runtime, "sessions", None)
             try:
                 stop_threads(runtime, threads)
-                if coordinator is not None and exit_code != 2:
+                background = getattr(runtime, 'background', None)
+                if background is not None:
+                    with protect_interrupt_cleanup():
+                        outcomes = close_background_tasks(background)
+                    remaining = [key for key, status in outcomes.items() if status == 'running']
+                    if remaining:
+                        print(f"仍未确认停止的后台命令：{', '.join(remaining)}，请检查实际状态。")
+                if coordinator is not None and exit_code != 2 and save_on_exit:
                     lock = runtime.agent_lock
                     acquire = getattr(lock, "acquire", None)
                     # Legacy injected locks may only support context management.
                     # Without nonblocking acquisition there is no safe final snapshot.
                     if acquire is not None and acquire(blocking=False):
                         try:
-                            checkpoint(runtime)
+                            if background is not None:
+                                _save_background_results(runtime)
+                            else:
+                                checkpoint(runtime)
                         finally:
                             lock.release()
             except SessionError as error:

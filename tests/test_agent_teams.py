@@ -316,14 +316,13 @@ def test_teammate_error_and_round_limit_send_result_and_cleanup(bus, tmp_path):
         "content"
     ]
 
-    block = types.SimpleNamespace(
-        type="tool_use", id="missing", name="missing", input={}
-    )
+    blocks = iter(types.SimpleNamespace(type="tool_use", id=str(i), name="missing", input={"step": i})
+                  for i in range(10))
     round_state = teammates.TeamState()
     teammates.spawn_teammate_thread(
         round_state,
         bus,
-        lambda **_kwargs: types.SimpleNamespace(content=[block]),
+        lambda **_kwargs: types.SimpleNamespace(content=[next(blocks)]),
         name="round-worker",
         **common,
     )
@@ -331,6 +330,19 @@ def test_teammate_error_and_round_limit_send_result_and_cleanup(bus, tmp_path):
     assert bus.read_inbox("lead")[0]["content"] == (
         "Stopped after 10 teammate tool rounds."
     )
+
+    from agent_app.adapters.common import ToolUseBlock
+    from agent_app.tools.executor import TOOL_REPEAT_STOP
+    calls = []
+    repeats = iter(ToolUseBlock(str(i), "list_tasks", {}) for i in range(5))
+    repeat_state = teammates.TeamState()
+    teammates.spawn_teammate_thread(
+        repeat_state, bus, lambda **_: types.SimpleNamespace(content=[next(repeats)]),
+        name="repeat-worker", **{**common, "handlers": {"list_tasks": lambda: calls.append(True) or "ok"}},
+    )
+    assert repeat_state.active == {}
+    assert calls == [True] * 3
+    assert bus.read_inbox("lead")[-1]["content"] == TOOL_REPEAT_STOP
 
 
 def test_teammate_retrieval_tools_use_only_delegate_archive(bus, tmp_path):

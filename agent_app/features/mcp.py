@@ -110,7 +110,6 @@ def connect_mcp(state: MCPState, name: str, builtin_snapshot=None) -> str:
                 state.clients.pop(name, None)
                 return f"Error connecting to MCP server '{name}': {exc}"
     tools = [tool["name"] for tool in client.tools]
-    print(f"  \033[31m[mcp] connected: {name} → {tools}\033[0m")
     return f"Connected to MCP server '{name}'. Discovered {len(tools)} tools: {', '.join(tools)}"
 
 

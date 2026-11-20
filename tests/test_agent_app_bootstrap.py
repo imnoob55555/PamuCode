@@ -349,7 +349,7 @@ def test_build_runtime_registers_every_owner_tool(tmp_path, monkeypatch):
 
     assert names == [
         "bash", "read_file", "write_file", "edit_file", "glob", "load_skill",
-        "compact", "todo_write", "create_task", "list_tasks", "get_task",
+        "compact", "list_skills", "todo_write", "create_task", "list_tasks", "get_task",
         "claim_task", "complete_task", "schedule_cron", "list_crons",
         "cancel_cron", "spawn_teammate", "send_message", "check_inbox",
         "request_shutdown", "request_plan", "review_plan", "create_worktree",

@@ -7,6 +7,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Any
 
+from ..cli_progress import finish_model_text, write_model_text
 from ..core.recovery import PartialStreamError
 
 
@@ -221,15 +222,18 @@ def visible_stream(progress_factory):
                     if not chunks:
                         progress.stop()
                     chunks.append(text)
-                    print(text, end='', flush=True)
+                    write_model_text(text)
             yield emit
+    except KeyboardInterrupt:
+        from ..core.interruption import ResponseInterrupted
+        raise ResponseInterrupted(''.join(chunks)) from None
     except Exception as exc:
         if chunks:
             raise PartialStreamError(''.join(chunks), exc) from exc
         raise
     finally:
-        if chunks and not chunks[-1].endswith('\n'):
-            print()
+        if chunks:
+            finish_model_text()
 
 
 def anthropic_history(messages, *, origin='', model=''):

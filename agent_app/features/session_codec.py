@@ -106,9 +106,18 @@ def decode_history(data: list) -> list[dict]:
     return _history(data, True)
 
 
+def _strip_terminal_sequences(text: str) -> str:
+    text = re.sub(r'\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)', '', text)
+    return re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', text)
+
+
+def safe_terminal_text(text: str) -> str:
+    text = _strip_terminal_sequences(text).replace('\r\n', '\n')
+    return ''.join(char for char in text
+                   if char in '\n\t' or not unicodedata.category(char).startswith('C'))
+
+
 def safe_preview(text: str, limit: int = 80) -> str:
-    text = re.sub(r'\x1b\][^\x07]*(?:\x07|\x1b\\)', '', text)
-    text = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', text)
-    text = ''.join(' ' if char.isspace() else char for char in text)
+    text = ''.join(' ' if char.isspace() else char for char in _strip_terminal_sequences(text))
     text = ''.join(char for char in text if not unicodedata.category(char).startswith('C'))
     return ' '.join(text.split())[:max(0, limit)]

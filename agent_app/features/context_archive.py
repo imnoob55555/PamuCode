@@ -9,7 +9,7 @@ from pathlib import Path
 import re
 import uuid
 
-from .session_codec import encode_history
+from .session_codec import decode_history, encode_history
 from .session_store import SessionError, SessionStore, _id, _open, _regular, _unlink
 
 _REF = re.compile(r'(sha256|artifact):([0-9a-f]{64})\Z')
@@ -140,7 +140,7 @@ class ContextArchive:
         self._ephemeral_refs.extend(refs)
         return refs
 
-    def _read(self, ref, max_bytes=8 * 1024 * 1024):
+    def _read_text(self, ref, max_bytes=8 * 1024 * 1024):
         match = _REF.fullmatch(ref) if isinstance(ref, str) else None
         if not match:
             raise SessionError('归档引用无效')
@@ -155,8 +155,16 @@ class ContextArchive:
                 data = handle.read(max_bytes + 1)
         if hashlib.sha256(data).hexdigest() != digest:
             raise SessionError('会话归档内容校验失败')
-        text = data.decode('utf-8')
-        return _visible(json.loads(text)) if kind == 'sha256' else text
+        return data.decode('utf-8')
+
+    def _read(self, ref, max_bytes=8 * 1024 * 1024):
+        text = self._read_text(ref, max_bytes)
+        return _visible(json.loads(text)) if ref.startswith('sha256:') else text
+
+    def read_message(self, entry):
+        """Read a message referenced by the selected, validated snapshot's catalog."""
+        message = decode_history([json.loads(self._read_text(entry['ref']))])[0]
+        return {**message, '_pamu_source': entry['source']}
 
     @staticmethod
     def _verify_handle(handle, digest):

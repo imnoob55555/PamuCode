@@ -29,6 +29,7 @@ from prompt_toolkit.styles import Style
 from prompt_toolkit.utils import get_cwidth
 
 from .cli_exit import ExitGesture, QuitRequested
+from .cli_progress import background_shell_status, watch_shell_status
 from .file_mentions import (
     MATCH_LIMIT,
     complete_mention,
@@ -73,6 +74,7 @@ class TerminalUI:
         self.model_name = ""
         self.thinking_level = "off"
         self.working_mode = "execute"
+        self.context_used: int | None = None
         self.workdir = Path(workdir) if workdir is not None else None
         self._entry_index = None
         self.notice = ""
@@ -84,9 +86,14 @@ class TerminalUI:
         self.repl_mode = False
 
     def status_text(self) -> str:
-        """Right-aligned model and thinking level under the prompt box."""
+        """Right-aligned context, model and mode under the prompt box."""
         status = model_status(self.model_name, self.thinking_level)
-        return f"{status} • {'plan · 只读' if self.working_mode == 'plan' else 'execute'}" if status else ""
+        if status:
+            status += f" • {'plan · 只读' if self.working_mode == 'plan' else 'execute'}"
+        if self.context_used is None:
+            return status
+        usage = f"Context used: {self.context_used}%"
+        return f"{usage} • {status}" if status else usage
 
     def notify(self, text):
         self.notice = text
@@ -137,8 +144,12 @@ class TerminalUI:
         )
 
     def _run(self, root, bindings, *, focus=None):
+        running_shell = ConditionalContainer(
+            Window(FormattedTextControl(background_shell_status), height=1, style="class:muted", wrap_lines=False),
+            Condition(lambda: bool(background_shell_status(mark_visible=False))),
+        )
         app = Application(
-            layout=Layout(HSplit([self._notice_window(), root]), focused_element=focus),
+            layout=Layout(HSplit([running_shell, self._notice_window(), root]), focused_element=focus),
             key_bindings=bindings,
             input=self.input,
             output=self.output,
@@ -154,7 +165,7 @@ class TerminalUI:
 
         app.pre_run_callables.append(start_notice_timer)
         try:
-            with patch_stdout(raw=True):
+            with patch_stdout(raw=True), watch_shell_status(app.invalidate):
                 return app.run()
         finally:
             self._cancel_notice_timer()

@@ -1,6 +1,9 @@
 import threading
 
-from agent_app.cli_progress import TerminalSpinner
+from agent_app.cli_progress import (
+    TerminalSpinner, finish_model_text, show_shell_status, terminal_confirmation,
+    terminal_progress, write_model_text,
+)
 
 
 class FakeStream:
@@ -107,6 +110,68 @@ def test_non_tty_spinner_has_no_thread_or_output():
     assert created == []
     assert stream.writes == []
     assert stream.flushes == 0
+
+
+def test_shell_statuses_do_not_split_streamed_model_text(capsys):
+    assert terminal_progress("summarizing").label == "Working"
+    write_model_text("The assistant")
+    try:
+        show_shell_status("finished", "\x1b[31mprintf ok\x1b[0m", 0)
+        assert capsys.readouterr().out == "The assistant"
+        write_model_text(" keeps writing.")
+    finally:
+        finish_model_text()
+    assert capsys.readouterr().out == " keeps writing.\nRan printf ok\n"
+
+
+def test_shell_status_clears_spinner_and_replaces_running_line(monkeypatch):
+    stream = FakeStream(tty=True)
+    spinner = TerminalSpinner(
+        "Working", stream=stream, frames=("A",), event_factory=FakeEvent,
+        thread_factory=lambda **kwargs: FakeThread([], **kwargs),
+    )
+    monkeypatch.setattr("sys.stdout", stream)
+    monkeypatch.setenv("TERM", "xterm")
+    monkeypatch.setenv("COLUMNS", "80")
+    with spinner:
+        show_shell_status("running", "printf ok", None)
+        show_shell_status("finished", "printf ok", 0)
+
+    assert "".join(stream.writes) == "\rA Working\033[K\r\033[2KRunning printf ok\r\033[2KRan printf ok\n"
+
+
+def test_background_status_waits_for_permission_input(monkeypatch, capsys):
+    def read(prompt):
+        print(prompt, end='')
+        show_shell_status('finished', 'printf background', 0)
+        assert capsys.readouterr().out == 'Approve? [y/N] '
+        print('y')
+        return 'y'
+
+    monkeypatch.setattr('builtins.input', read)
+    assert terminal_confirmation('Approve? [y/N] ') == 'y'
+    assert capsys.readouterr().out == 'y\nRan printf background\n'
+
+
+def test_fast_foreground_shell_running_line_has_time_to_be_seen(monkeypatch):
+    from agent_app import cli_progress
+
+    stream = FakeStream(tty=True)
+    monkeypatch.setattr("sys.stdout", stream)
+    monkeypatch.setenv("TERM", "xterm")
+    clock = [0.0]
+    monkeypatch.setattr(cli_progress, "monotonic", lambda: clock[0])
+
+    def sleep(delay):
+        assert "".join(stream.writes) == "Running :"
+        clock[0] += delay
+
+    monkeypatch.setattr(cli_progress, "sleep", sleep)
+    show_shell_status("running", ":", None)
+    clock[0] = .005
+    show_shell_status("finished", ":", 0)
+    assert clock[0] >= .2
+    assert "".join(stream.writes) == "Running :\r\033[2KRan :\n"
 
 
 def test_stop_waits_until_worker_has_started_before_joining():

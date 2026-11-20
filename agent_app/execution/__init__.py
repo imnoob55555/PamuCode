@@ -171,7 +171,7 @@ def execute(*, task, workdir, output, model, protocol, max_model_calls=30, max_t
     if threading.current_thread() is threading.main_thread():
         def stop_signal(number, frame):
             raise ExecutionStop('budget_exceeded' if number == signal.SIGALRM else 'cancelled', 'timeout' if number == signal.SIGALRM else 'signal')
-        for number in (signal.SIGTERM, signal.SIGALRM):
+        for number in (signal.SIGTERM, signal.SIGINT, signal.SIGALRM):
             saved_signals[number] = signal.signal(number, stop_signal)
         old_timer = signal.setitimer(signal.ITIMER_REAL, timeout)
     try:
@@ -254,9 +254,11 @@ def execute(*, task, workdir, output, model, protocol, max_model_calls=30, max_t
                 runtime.tools._tools = {k:v for k,v in runtime.tools._tools.items() if k in allowed}
                 runtime.tools._handlers = {k:v for k,v in runtime.tools._handlers.items() if k in allowed}
             runtime.session.history.append({'role':'user','content':task})
-            run_agent_loop(runtime)
+            loop_stop = run_agent_loop(runtime)
         if ledger.completed:
             status, reason = 'completed', 'end_turn'
+        elif loop_stop == 'repeated_tool_calls':
+            status, reason = 'budget_exceeded', loop_stop
     except subprocess.TimeoutExpired:
         status, reason = 'budget_exceeded', 'timeout'
     except SecurityDenied:

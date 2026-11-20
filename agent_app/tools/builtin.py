@@ -12,9 +12,10 @@ from pathlib import Path
 
 BUILTIN_TOOL_SCHEMAS = [
     {"name": "bash",
-     "description": "Run a shell command.",
+     "description": "Run a shell command. If you need the output in the current step, set run_in_background to false. "
+                    "For a background command, wait for its result notification before considering another run.",
      "input_schema": {"type": "object",
-                      "properties": {"command": {"type": "string"}, "run_in_background": {"type": "boolean","description": "Run this command asynchronously"}},
+                      "properties": {"command": {"type": "string"}, "run_in_background": {"type": "boolean", "description": "True runs asynchronously; false waits for the result. If omitted, known slow commands may run in the background."}},
                       "required": ["command"]}},
     {"name": "read_file", "description": "Read file contents.",
      "input_schema": {"type": "object", "properties": {"path": {"type": "string"}, "offset": {"type": "integer", "minimum": 0}, "limit": {"type": "integer", "minimum": 1, "maximum": 1000}}, "required": ["path"]}},

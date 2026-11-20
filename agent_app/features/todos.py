@@ -57,13 +57,4 @@ def run_todo_write(session: SessionState, todos: list) -> str:
     if error:
         return error
     session.todos = normalized or []
-    lines = ["\n\033[33m## Current Tasks\033[0m"]
-    for todo in session.todos:
-        icon = {
-            "pending": " ",
-            "in_progress": "\033[36m▸\033[0m",
-            "completed": "\033[32m✓\033[0m",
-        }[todo["status"]]
-        lines.append(f"  [{icon}] {todo['content']}")
-    print("\n".join(lines))
     return f"Updated {len(session.todos)} tasks"

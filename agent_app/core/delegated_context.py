@@ -2,14 +2,16 @@
 from types import SimpleNamespace
 from uuid import uuid4
 
+from ..adapters.common import null_progress
 from .context_budget import prepare_budget, record_usage
 from .recovery import RecoveryState, with_retry
 
 
 class DelegatedContext:
     def __init__(self, config, llm, model, *, protocol='anthropic_messages', origin='', adapter=None,
-                 fallback_model=None):
+                 fallback_model=None, progress=null_progress):
         self._recovery = RecoveryState(model, fallback_model)
+        self._progress = progress
         self.runtime = SimpleNamespace(
             config=config, llm=adapter or SimpleNamespace(create=llm), sessions=None,
             model=SimpleNamespace(primary_model=model, protocol=protocol, base_url=origin, llm=adapter),
@@ -55,7 +57,8 @@ class DelegatedContext:
                        'max_tokens': report.budget.output_tokens}
             if adapter is not None or 'model' in request:
                 request['model'] = active
-            response = create(**request)
+            with self._progress("Working"):
+                response = create(**request)
             record_usage(self.runtime, response, model=active, estimated_input=report.input_tokens)
             return response
 
@@ -64,6 +67,7 @@ class DelegatedContext:
             max_transient_retries=config.max_transient_retries,
             max_consecutive_529=config.max_consecutive_529,
             base_delay_ms=config.base_delay_ms,
+            progress=self._progress,
         )
 
     def _prepare(self, system, messages, tools, requested_max_tokens, model):

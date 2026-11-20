@@ -98,7 +98,6 @@ def bind_task_to_worktree(store: TaskStore, task_id: str, worktree_name: str):
         task = load_task(store, task_id)
         task.worktree = worktree_name
         _save_task_unlocked(store, task)
-    print(f"  \033[33m[bind] {task.subject} → worktree:{worktree_name}\033[0m")
 
 
 def create_worktree(
@@ -121,7 +120,6 @@ def create_worktree(
         if task_id and task_store:
             bind_task_to_worktree(task_store, task_id, name)
         log_event(state, "create", name, task_id)
-    print(f"  \033[33m[worktree] created: {name} at {path}\033[0m")
     return f"Worktree '{name}' created at {path}"
 
 
@@ -158,7 +156,6 @@ def remove_worktree(state: WorktreeState, name: str, discard_changes: bool = Fal
             return f"Failed to remove worktree directory for '{name}'"
         state.run_git(["branch", "-D", f"wt/{name}"])
         log_event(state, "remove", name)
-    print(f"  \033[33m[worktree] removed: {name}\033[0m")
     return f"Worktree '{name}' removed"
 
 
@@ -168,5 +165,4 @@ def keep_worktree(state: WorktreeState, name: str) -> str:
         return error
     with state.lock:
         log_event(state, "keep", name)
-    print(f"  \033[36m[worktree] kept: {name}\033[0m")
     return f"Worktree '{name}' kept for review (branch: wt/{name})"

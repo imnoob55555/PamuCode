@@ -10,8 +10,10 @@ from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import cast
 
+from ...logging_setup import get_logger
 from .bus import MessageBus
 
+LOGGER = get_logger("pamu.teams.protocol")
 
 @dataclass(slots=True)
 class ProtocolState:
@@ -46,28 +48,17 @@ def match_response(
     with store.lock:
         state = store.pending.get(request_id)
         if not state:
-            print(f"  \033[31m[protocol] unknown request_id: {request_id}\033[0m")
+            LOGGER.warning("unknown request_id: %s", request_id)
             return False
         expected_type = EXPECTED_RESPONSE_TYPES.get(state.type)
         if response_type != expected_type:
-            print(
-                f"  \033[31m[protocol] type mismatch: "
-                f"(expected {expected_type}), got {response_type}\033[0m"
-            )
+            LOGGER.warning("response type mismatch: expected %s, got %s", expected_type, response_type)
             return False
         if state.status != "pending":
-            print(
-                f"  \033[33m[protocol] {request_id} already {state.status}, "
-                f"ignoring duplicate\033[0m"
-            )
+            LOGGER.debug("ignored duplicate response to %s (%s)", request_id, state.status)
             return False
         state.status = "approved" if approve else "rejected"
-    icon = "✓" if approve else "✗"
-    color = "32" if approve else "31"
-    print(
-        f"  \033[{color}m[protocol] {state.type} {icon} "
-        f"({request_id}: {state.status})\033[0m"
-    )
+    LOGGER.info("%s response %s: %s", state.type, request_id, state.status)
     return True
 
 
@@ -186,7 +177,7 @@ def collect_lead_inbox(
                     bool(metadata.get("approve", False)),
                 )
             else:
-                print(f"  [protocol] {message_type} missing request_id")
+                LOGGER.warning("%s missing request_id", message_type)
         ordinary_messages.append(message)
     return ordinary_messages
 
@@ -218,7 +209,6 @@ def request_shutdown(bus: MessageBus, store: ProtocolStore, teammate: str) -> st
         "lead", teammate, "Please shut down gracefully.", "shutdown_request",
         {"request_id": request_id},
     )
-    print(f"  \033[35m[protocol] shutdown_request → {teammate} ({request_id})\033[0m")
     return f"Shutdown request sent to {teammate} (req: {request_id})"
 
 
@@ -235,6 +225,4 @@ def review_plan(
         "lead", state.sender, feedback or ("Approved" if approve else "Rejected"),
         "plan_approval_response", {"request_id": request_id, "approve": approve},
     )
-    icon = "✓" if approve else "✗"
-    print(f"  \033[32m[protocol] plan {icon} ({request_id})\033[0m")
     return f"Plan {'approved' if approve else 'rejected'} ({request_id})"

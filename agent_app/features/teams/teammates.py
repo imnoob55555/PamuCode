@@ -11,6 +11,11 @@ from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
 
+from ...logging_setup import get_logger
+from ...tools.executor import TOOL_REPEAT_ERROR, TOOL_REPEAT_STOP, ToolRepeatLimit
+
+LOGGER = get_logger("pamu.teams.teammates")
+
 TEAM_TOOLS = [
     {"name": "bash", "description": "Run a shell command.",
      "input_schema": {"type": "object", "properties": {"command": {"type": "string"}}, "required": ["command"]}},
@@ -113,10 +118,8 @@ def idle_poll(
                     request_id = message.get("metadata", {}).get("request_id", "")
                     bus.send(name, "lead", "Shutting down gracefully.", "shutdown_response",
                              {"request_id": request_id, "approve": True})
-                    print(f"  \033[35m[protocol] {name} approved shutdown in idle ({request_id})\033[0m")
                     return "shutdown"
             messages.append({"role": "user", "content": "<inbox>" + json.dumps(inbox) + "</inbox>"})
-            print(f"  \033[36m[idle] {name} found inbox messages\033[0m")
             return "work"
         unclaimed = scan_unclaimed()
         if unclaimed:
@@ -127,10 +130,10 @@ def idle_poll(
                 if worktree_context is not None:
                     worktree_context["path"] = str(worktree_path(worktree_name)) if worktree_name else None
                 messages.append({"role": "user", "content": f"<auto-claimed>Task {task['id']}: {task['subject']}</auto-claimed>"})
-                print(f"  \033[32m[idle] {name} auto-claimed: {task['subject']}\033[0m")
+                LOGGER.info("%s auto-claimed %s", name, task['id'])
                 return "work"
-            print(f"  \033[33m[idle] {name} claim failed: {result}\033[0m")
-    print(f"  \033[31m[idle] {name} timeout ({timeout}s)\033[0m")
+            LOGGER.warning("%s could not claim %s", name, task['id'])
+    LOGGER.debug("%s idle timeout (%ss)", name, timeout)
     return "timeout"
 
 
@@ -195,6 +198,7 @@ def spawn_teammate_thread(
         deferred_inbox: list[dict] = []
         worktree_context = {"path": None}
         waiting_plan = None
+        repeat_limit = ToolRepeatLimit()
         try:
             while True:
                 if len(messages) <= 3:
@@ -240,11 +244,15 @@ def spawn_teammate_thread(
                         work_completed = True
                         break
                     results: list[dict] = []
+                    repeated = 0
                     for block in response.content:
                         if getattr(block, "type", None) != "tool_use":
                             continue
                         handler = handler_snapshot.get(block.name)
-                        if not handler:
+                        if not repeat_limit.allow(block.name, block.input):
+                            repeated += 1
+                            output, is_error = TOOL_REPEAT_ERROR, True
+                        elif not handler:
                             output, is_error = f"Unknown tool: {block.name}", True
                         elif block.name == "submit_plan":
                             output = handler(**block.input)
@@ -273,6 +281,10 @@ def spawn_teammate_thread(
                         if waiting_plan:
                             break
                     messages.append({"role": "user", "content": results})
+                    if repeat_limit.should_stop(len(results), repeated):
+                        summary = TOOL_REPEAT_STOP
+                        lifecycle_done = True
+                        break
                     if waiting_plan:
                         break
                 if lifecycle_done:
@@ -287,6 +299,7 @@ def spawn_teammate_thread(
                         state.active[name]["status"] = "idle"
                 idle_result = idle(name, messages, name, role, worktree_context)
                 if idle_result == "work":
+                    repeat_limit = ToolRepeatLimit()
                     with state.lock:
                         if name in state.active:
                             state.active[name]["status"] = "running"
@@ -302,8 +315,8 @@ def spawn_teammate_thread(
                 print(f"  \033[31m[teammate result error]{name}: {exc}\033[0m")
             with state.lock:
                 state.active.pop(name, None)
-            print(f"  \033[32m[teammate] {name} finished\033[0m")
+            LOGGER.info("teammate %s finished", name)
 
     thread_factory(target=run, daemon=True).start()
-    print(f"  \033[36m[teammate] {name} spawned as {role}\033[0m")
+    LOGGER.info("teammate %s started", name)
     return f"Teammate '{name}' spawned as {role}"

@@ -64,6 +64,23 @@ def _guard(runtime):
     return None
 
 
+def delete_current_session(runtime) -> str | None:
+    """Delete the idle session and prevent further turns before REPL shutdown."""
+    if not runtime.agent_lock.acquire(blocking=False):
+        return '代理正在处理请求，请稍后重试。'
+    try:
+        scheduler = getattr(runtime, 'scheduler', None)
+        with scheduler.lock if scheduler is not None else nullcontext():
+            reason = _guard(runtime)
+            if reason:
+                return reason
+            runtime.stop_event.set()
+            runtime.sessions.delete_current()
+        return None
+    finally:
+        runtime.agent_lock.release()
+
+
 def resume_runtime(runtime, threads, action, *, create_runtime, start_threads, stop_threads, ui=None):
     """Return the new slot or the untouched old slot on a recoverable failure."""
     target = None

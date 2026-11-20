@@ -10,7 +10,7 @@ from ..features.background import (
     collect_background_results,
     start_background_task,
 )
-from ..adapters.common import generic_blocks, output_text, value as _block_value
+from ..adapters.common import generic_blocks, null_progress, output_text, value as _block_value
 from ..features.mcp import snapshot_mcp_tools
 from ..features.sessions import checkpoint
 from ..features.session_store import SessionError
@@ -26,7 +26,9 @@ from ..runtime import RuntimeContext
 from ..working_mode import tool_denial
 from ..thinking import plan_request, strip_thinking_blocks
 from ..tools.builtin import resolve_tool_cwd
-from ..tools.executor import execute_tool, should_run_background
+from ..tools.executor import (
+    TOOL_REPEAT_ERROR, TOOL_REPEAT_STOP, ToolRepeatLimit, execute_tool, should_run_background,
+)
 from .compaction import persist_large_output
 from .context import append_user_text_blocks, build_context
 from .context_manager import archive_result, compact, normalize_results, register_history_tools
@@ -39,6 +41,7 @@ from .recovery import (
     is_prompt_too_long_error,
     with_retry,
 )
+from .interruption import CommandInterrupted, ResponseInterrupted, protect_interrupt_cleanup
 
 CONTINUATION_PROMPT = (
     "Output token limit hit. Resume directly — "
@@ -80,13 +83,15 @@ def _summarize(runtime: RuntimeContext, payload, max_tokens: int = 2_000) -> str
     adapter = runtime.llm
     if hasattr(adapter, 'with_context_window'):
         adapter = adapter.with_context_window(auxiliary.budget.window)
-    response = adapter.create(
-        model=router.primary_model,
-        system=None,
-        messages=[{"role": "user", "content": prompt}],
-        max_tokens=auxiliary.budget.output_tokens,
-        tools=None,
-    )
+    progress = null_progress if runtime.config.headless else getattr(adapter, 'progress', null_progress)
+    with progress('正在处理会话记忆'):
+        response = adapter.create(
+            model=router.primary_model,
+            system=None,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=auxiliary.budget.output_tokens,
+            tools=None,
+        )
     return _extract_text(response.content) or "(empty summary)"
 
 
@@ -148,7 +153,7 @@ def _update_context(runtime: RuntimeContext, tools: list[dict] | None = None) ->
     runtime.session.context = build_context(runtime, tools)
 
 
-def run_agent_loop(runtime: RuntimeContext) -> None:
+def run_agent_loop(runtime: RuntimeContext) -> str | None:
     """Run one agent turn, mutating only the supplied runtime's owned state."""
     session = runtime.session
     messages = session.history
@@ -167,9 +172,17 @@ def run_agent_loop(runtime: RuntimeContext) -> None:
         fallback_model=fallback_model,
     )
     max_tokens = runtime.config.default_max_tokens
+    repeat_limit = ToolRepeatLimit()
 
     def summarize(payload, max_tokens=2_000):
         return _summarize(runtime, payload, max_tokens)
+
+    def request_history(thinking):
+        request = build_request_messages_with_memories(
+            runtime.memory, messages, summarize,
+            max_tokens=session.context.get('optional_remaining_tokens', 0),
+        )
+        return request if thinking else strip_thinking_blocks(request)
 
     while True:
         checkpoint(runtime, status="running")
@@ -201,32 +214,28 @@ def run_agent_loop(runtime: RuntimeContext) -> None:
         tools = [tool for tool in tools if not tool_denial(session, tool["name"])]
         _update_context(runtime, tools)
         system = runtime.prompt_builder.build(session.context)
-        request_messages = build_request_messages_with_memories(
-            runtime.memory, messages, summarize,
-            max_tokens=session.context.get('optional_remaining_tokens', 0),
-        )
-        checkpoint(runtime)
         thinking, request_max_tokens = plan_request(
             router.thinking_snapshot(),
             max_tokens,
             runtime.config.escalated_max_tokens,
         )
-        if thinking is None:
-            request_messages = strip_thinking_blocks(request_messages)
-
+        request_messages = request_history(thinking)
+        checkpoint(runtime)
         report = prepare_budget(runtime, system, request_messages, tools, request_max_tokens, model=state.current_model)
         if normalize_results(runtime, messages, min(4000, max(128, report.budget.input_limit * 15 // 100))):
-            request_messages = build_request_messages_with_memories(runtime.memory, messages, summarize, max_tokens=session.context.get('optional_remaining_tokens', 0))
+            request_messages = request_history(thinking)
             report = prepare_budget(runtime, system, request_messages, tools, request_max_tokens, model=state.current_model)
         if report.input_tokens > report.budget.trigger:
             try:
-                compact(runtime, system=system, tools=tools, model=state.current_model)
+                compacted = compact(runtime, system=system, tools=tools, model=state.current_model)
             except SessionError:
                 raise
             except ValueError as exc:
                 print(f'上下文压缩：{exc}')
-            request_messages = build_request_messages_with_memories(runtime.memory, messages, summarize, max_tokens=session.context.get('optional_remaining_tokens', 0))
-            report = prepare_budget(runtime, system, request_messages, tools, request_max_tokens, model=state.current_model)
+            else:
+                if compacted:
+                    request_messages = request_history(thinking)
+                    report = prepare_budget(runtime, system, request_messages, tools, request_max_tokens, model=state.current_model)
         if report.input_tokens > report.budget.input_limit:
             print('上下文超出输入预算，请使用 /context 查看占用并设置实际窗口。')
             return
@@ -248,7 +257,7 @@ def run_agent_loop(runtime: RuntimeContext) -> None:
             report = prepare_budget(runtime, system, request_messages, tools, request_max_tokens, model=state.current_model)
             if report.input_tokens > report.budget.input_limit:
                 compact(runtime, system=system, tools=tools, model=state.current_model, emergency=True)
-                request_messages = list(messages)
+                request_messages = list(messages) if thinking else strip_thinking_blocks(messages)
                 report = prepare_budget(runtime, system, request_messages, tools, request_max_tokens, model=state.current_model)
             if report.input_tokens > report.budget.input_limit:
                 raise ValueError('当前备用模型窗口无法容纳请求')
@@ -273,8 +282,16 @@ def run_agent_loop(runtime: RuntimeContext) -> None:
                 max_transient_retries=runtime.config.max_transient_retries,
                 max_consecutive_529=runtime.config.max_consecutive_529,
                 base_delay_ms=runtime.config.base_delay_ms,
+                progress=null_progress if runtime.config.headless else getattr(runtime.llm, 'progress', null_progress),
             )
             record_usage(runtime, response, model=state.current_model, estimated_input=report.input_tokens)
+        except ResponseInterrupted as exc:
+            with protect_interrupt_cleanup():
+                if exc.partial_text:
+                    messages.append({'role': 'assistant', 'content': [
+                        {'type': 'text', 'text': exc.partial_text + '\n[用户中断，回复未完成]'}]})
+                    checkpoint(runtime, status='interrupted')
+            raise
         except PartialStreamError as stream_exc:
             state.has_escalated = True
             max_tokens = runtime.config.escalated_max_tokens
@@ -293,12 +310,6 @@ def run_agent_loop(runtime: RuntimeContext) -> None:
                     runtime.config.max_continuations,
                 )
                 messages.append({"role": "user", "content": CONTINUATION_PROMPT})
-                print(
-                    f"  \033[33m[stream interrupted] continuation "
-                    f"{state.continuation_count}/"
-                    f"{runtime.config.max_continuations} with "
-                    f"{runtime.config.escalated_max_tokens} tokens\033[0m"
-                )
                 continue
             cause_text = (
                 f"{type(stream_exc.cause).__name__}: "
@@ -331,16 +342,15 @@ def run_agent_loop(runtime: RuntimeContext) -> None:
                 state.reactive_compact_count += 1
                 LOGGER.warning("recovery: reactive compact")
                 try:
-                    compact(runtime, system=system, tools=tools, model=state.current_model, emergency=True)
-                    checkpoint(runtime)
+                    compacted = compact(runtime, system=system, tools=tools, model=state.current_model, emergency=True)
                 except SessionError:
                     raise
                 except Exception as compact_exc:
                     append_unrecoverable_error(messages, compact_exc)
                     _update_context(runtime)
                     return
-                print("[recovery] reactive compact")
-                continue
+                if compacted:
+                    continue
             LOGGER.error(
                 "unrecoverable error: %s: %s",
                 type(exc).__name__,
@@ -388,12 +398,8 @@ def run_agent_loop(runtime: RuntimeContext) -> None:
                     messages.append(
                         {"role": "user", "content": CONTINUATION_PROMPT}
                     )
-                print(
-                    f"  \033[33m[max_tokens] continuation "
-                    f"{state.continuation_count}/"
-                    f"{runtime.config.max_continuations} with "
-                    f"{runtime.config.escalated_max_tokens} tokens\033[0m"
-                )
+                LOGGER.info("output token limit, continuing response %d/%d",
+                            state.continuation_count, runtime.config.max_continuations)
                 continue
             print("  \033[31m[max_tokens] recovery limit reached\033[0m")
             _update_context(runtime)
@@ -434,6 +440,7 @@ def run_agent_loop(runtime: RuntimeContext) -> None:
             checkpoint(runtime, tool_id=result["tool_use_id"], tool_status="completed")
 
         compacted_now = False
+        repeated = 0
         for block in response.content:
             if _block_value(block, "type") != "tool_use":
                 continue
@@ -441,8 +448,11 @@ def run_agent_loop(runtime: RuntimeContext) -> None:
             tool_input = _block_value(block, "input", {})
             tool_use_id = _block_value(block, "id")
             LOGGER.info("tool_call name=%s", name)
-            print(f"\033[36m> {name}\033[0m")
-            checkpoint(runtime, tool_id=tool_use_id, tool_status="running")
+            if not repeat_limit.allow(name, tool_input):
+                repeated += 1
+                add_result({"type": "tool_result", "tool_use_id": tool_use_id,
+                            "content": TOOL_REPEAT_ERROR, "is_error": True})
+                continue
             denied = tool_denial(session, name)
             if denied:
                 add_result({"type": "tool_result", "tool_use_id": tool_use_id,
@@ -451,6 +461,7 @@ def run_agent_loop(runtime: RuntimeContext) -> None:
             if runtime.config.headless:
                 runtime.hooks.trigger("PreToolUse", block)
             if name == "compact":
+                checkpoint(runtime, tool_id=tool_use_id, tool_status="running")
                 # Pair every call before replacing history, including later calls
                 # deliberately skipped by the compact control tool.
                 completed_ids = {r["tool_use_id"] for r in results}
@@ -491,7 +502,7 @@ def run_agent_loop(runtime: RuntimeContext) -> None:
                 )
                 continue
 
-            checkpoint(runtime)
+            checkpoint(runtime, tool_id=tool_use_id, tool_status="running")
             if not runtime.config.headless and should_run_background(name, tool_input):
                 background_id = start_background_task(
                     runtime.background,
@@ -517,7 +528,13 @@ def run_agent_loop(runtime: RuntimeContext) -> None:
                 )
                 continue
 
-            output = execute_tool(block, handlers)
+            try:
+                output = execute_tool(block, handlers)
+            except CommandInterrupted as exc:
+                with protect_interrupt_cleanup():
+                    add_result({'type': 'tool_result', 'tool_use_id': tool_use_id,
+                                'content': str(exc), 'is_error': True})
+                raise
             if name == "todo_write":
                 session.rounds_since_todo = 0
             add_result(
@@ -529,6 +546,7 @@ def run_agent_loop(runtime: RuntimeContext) -> None:
             )
             runtime.hooks.trigger("PostToolUse", block, output)
 
+        stop_repeating = repeat_limit.should_stop(len(results), repeated)
         if compacted_now:
             continue
         user_content = results
@@ -537,10 +555,11 @@ def run_agent_loop(runtime: RuntimeContext) -> None:
             {"type": "text", "text": notification}
             for notification in background_notifications
         )
-        print(
-            f"  \033[32m[inject] {len(background_notifications)} "
-            "background notification(s)\033[0m"
-        )
         if not results:
             messages.append({"role": "user", "content": user_content})
         checkpoint(runtime)
+        if stop_repeating:
+            LOGGER.info("turn stopped after repeated tool calls")
+            print(TOOL_REPEAT_STOP)
+            _update_context(runtime)
+            return "repeated_tool_calls"

@@ -173,6 +173,134 @@ def test_loop_executes_registered_tool_and_returns(runtime_factory):
     assert runtime.session.context["enabled_tools"] == ["echo_tool", "history_read", "history_search"]
 
 
+def test_invalid_history_reference_is_a_tool_error_and_turn_continues(runtime_factory):
+    from agent_app.cli import run_agent_turn
+    from agent_app.features.sessions import SessionPersistence
+
+    runtime = runtime_factory([
+        tool_response("bad-ref", "history_read", {"ref": "call_00_not_an_archive_ref"}),
+        text_response("The archive lookup failed; I can continue."),
+    ])
+    runtime.sessions = SessionPersistence(runtime.config.workdir)
+    try:
+        run_agent_turn(runtime, "Check the archived result")
+        assert "归档引用无效" in tool_results(runtime)[0]["content"]
+        assert "history_search" in tool_results(runtime)[0]["content"]
+        assert len(runtime.llm.requests) == 2
+        assert assistant_texts(runtime)[-1] == "The archive lookup failed; I can continue."
+        assert runtime.sessions.store.load(runtime.sessions.session_id)['status'] == 'idle'
+    finally:
+        runtime.sessions.close()
+
+
+def test_shell_reads_test_named_workspace_and_returns_full_output_inline(runtime_factory):
+    command = 'ls -la /tmp/pamucode_test'
+    output = 'directory contents\n' * 20
+    runtime = runtime_factory([tool_response("ls", "bash", {"command": command}), text_response()])
+    runtime.tools.register(tool_schema("bash"), lambda command: output)
+    runtime.session.history.append({"role": "user", "content": "Inspect the workspace"})
+
+    run_agent_loop(runtime)
+
+    assert runtime.background.tasks == {}
+    assert tool_results(runtime)[0]['content'] == output
+    result_message = runtime.llm.requests[1]['messages'][-1]
+    assert result_message['content'][0]['content'] == output
+
+
+def test_identical_tool_limit_counts_across_batches_and_resets_next_turn(runtime_factory):
+    from agent_app.cli import run_agent_turn
+    from agent_app.tools.executor import TOOL_REPEAT_ERROR
+
+    first = {"value": "same", "options": {"a": 1, "b": 2}}
+    reordered = {"options": {"b": 2, "a": 1}, "value": "same"}
+    mixed = tool_response("blocked", "echo", reordered)
+    mixed.content.extend(tool_response("different", "echo", {"value": "different"}).content)
+    runtime = runtime_factory([
+        tool_response("one", "echo", first),
+        tool_response("two", "echo", reordered),
+        tool_response("three", "echo", first),
+        mixed,
+        text_response("completed using both results"),
+        tool_response("new-turn", "echo", first),
+        text_response("completed new turn"),
+    ])
+    invoked, approved = [], []
+    runtime.tools.register(tool_schema("echo"), lambda value, **_: invoked.append(value) or value)
+    runtime.hooks.register("PreToolUse", lambda block: approved.append(block.id))
+
+    run_agent_turn(runtime, "Inspect")
+    assert invoked == ["same", "same", "same", "different"]
+    assert approved == ["one", "two", "three", "different"]
+    blocked = next(result for result in tool_results(runtime) if result["tool_use_id"] == "blocked")
+    assert blocked["is_error"] and blocked["content"] == TOOL_REPEAT_ERROR
+    assert assistant_texts(runtime)[-1] == "completed using both results"
+
+    run_agent_turn(runtime, "Inspect again")
+    assert invoked[-1] == "same" and len(invoked) == 5
+
+
+def test_repeated_only_batches_stop_turn_without_more_tool_executions(runtime_factory, capsys):
+    from agent_app.tools.executor import TOOL_REPEAT_ERROR, TOOL_REPEAT_STOP
+
+    runtime = runtime_factory([tool_response(str(i), "echo", {}) for i in range(5)])
+    calls = []
+    runtime.tools.register(tool_schema("echo"), lambda: calls.append(True) or "ok")
+    runtime.session.history.append({"role": "user", "content": "Inspect"})
+
+    assert run_agent_loop(runtime) == "repeated_tool_calls"
+    assert calls == [True] * 3
+    assert len(runtime.llm.requests) == 5
+    assert all(result["is_error"] and result["content"] == TOOL_REPEAT_ERROR
+               for result in tool_results(runtime)[-2:])
+    assert TOOL_REPEAT_STOP in capsys.readouterr().out
+
+
+def test_repeat_limit_applies_before_background_dispatch(runtime_factory, monkeypatch):
+    from agent_app.tools.executor import TOOL_REPEAT_ERROR
+
+    args = {"command": "sleep 1", "run_in_background": True}
+    batch = tool_response("1", "bash", args)
+    for i in range(2, 5):
+        batch.content.extend(tool_response(str(i), "bash", args).content)
+    runtime = runtime_factory([batch, text_response()])
+    runtime.session.history.append({"role": "user", "content": "Run checks"})
+    runtime.tools.register(tool_schema("bash"), lambda **_: "ok")
+    dispatched = []
+
+    def dispatch(state, block, handlers, **_):
+        dispatched.append(block.id)
+        return f"bg_{block.id}"
+
+    monkeypatch.setattr("agent_app.core.loop.start_background_task", dispatch)
+    run_agent_loop(runtime)
+
+    assert dispatched == ["1", "2", "3"]
+    assert tool_results(runtime)[-1]["content"] == TOOL_REPEAT_ERROR
+
+
+@pytest.mark.parametrize("with_skill", [False, True])
+def test_model_can_list_workspace_skills_without_a_shell_scan(tmp_path, with_skill):
+    from agent_app.bootstrap import build_runtime
+
+    config = AppConfig.from_env(tmp_path, environ={"MODEL_ID": "test-model"})
+    if with_skill:
+        manifest = config.skills_dir / "verify" / "SKILL.md"
+        manifest.parent.mkdir(parents=True)
+        manifest.write_text("---\nname: verify\ndescription: Verify changes\n---\nInstructions")
+    adapter = FakeAdapter([tool_response("list", "list_skills", {}), text_response()])
+    runtime = build_runtime(config, None, adapter=adapter)
+    runtime.session.history.append({"role": "user", "content": "当前有哪些 skills？"})
+    try:
+        run_agent_loop(runtime)
+        assert "list_skills" in {tool["name"] for tool in adapter.requests[0]["tools"]}
+        assert "Use list_skills for questions about available skills" in adapter.requests[0]["system"]
+        expected = "- **verify**: Verify changes" if with_skill else "(no skills found)"
+        assert tool_results(runtime)[0]["content"] == expected
+    finally:
+        runtime.sessions.close()
+
+
 def test_compact_is_control_flow_and_skips_later_tools(runtime_factory, monkeypatch):
     compact = types.SimpleNamespace(
         type="tool_use", id="compact-1", name="compact", input={"focus": "next"}

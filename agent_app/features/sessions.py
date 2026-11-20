@@ -8,6 +8,7 @@ import time
 import uuid
 from pathlib import Path
 
+from ..adapters.common import value
 from .context_archive import ContextArchive
 from .session_codec import decode_history, encode_history, safe_preview
 from .session_store import SessionError, SessionLease, SessionStore
@@ -18,7 +19,66 @@ _INTERRUPTED_BACKGROUND = '[会话恢复] 之前的后台任务或子代理无�
 
 def _blocks(message, kind):
     content = message.get('content', [])
-    return [b for b in content if isinstance(b, dict) and b.get('type') == kind] if isinstance(content, list) else []
+    if not isinstance(content, (list, tuple)):
+        return []
+    return [block for block in content if value(block, 'type') == kind]
+
+
+def _repair_interrupted_history(history, tool_states, *, background_notice=True):
+    latest_batch = next((i for i in range(len(history) - 1, -1, -1)
+                         if history[i]['role'] == 'assistant'), None)
+    repaired = []
+    background = False
+    background_starts = set()
+    for i, message in enumerate(history):
+        repaired.append(message)
+        content = message.get('content', '')
+        texts = [content] if isinstance(content, str) else [
+            block.get('text', '') for block in content
+            if isinstance(block, dict) and block.get('type') == 'text'
+        ]
+        for text in texts:
+            if _INTERRUPTED_BACKGROUND in text:
+                background = False
+                background_starts.clear()
+            for notification in re.findall(r'<task_notification>(.*?)</task_notification>', text, re.DOTALL):
+                match = re.search(r'<task_id>(bg_\d+)</task_id>.*?<status>(completed|failed|cancelled)</status>', notification, re.DOTALL)
+                if match:
+                    background_starts.discard(match.group(1))
+        calls = _blocks(message, 'tool_use') if message['role'] == 'assistant' else []
+        if not calls:
+            continue
+        following = history[i + 1] if i + 1 < len(history) and history[i + 1]['role'] == 'user' else None
+        results = _blocks(following, 'tool_result') if following else []
+        done = {value(b, 'tool_use_id') for b in results}
+        missing = []
+        for call in calls:
+            call_id = value(call, 'id')
+            if call_id in done:
+                continue
+            state = tool_states.get(call_id) if i == latest_batch else None
+            if value(call, 'name') in ('task', 'spawn_teammate') and state != 'pending':
+                background = True
+            missing.append(dict(type='tool_result', tool_use_id=call_id, is_error=True,
+                content='上次会话中断，此工具未执行' if state == 'pending' else
+                '执行结果未知，可能已产生副作用，请先检查实际状态'))
+        if missing:
+            if following is not None and isinstance(following['content'], (list, tuple)):
+                content = following['content']
+                following['content'] = results + missing + [b for b in content if value(b, 'type') != 'tool_result']
+            else:
+                repaired.append({'role': 'user', 'content': missing})
+        for result in results:
+            match = re.search(r'\[Background task (bg_\d+) started\]', str(value(result, 'content')))
+            if match:
+                background_starts.add(match.group(1))
+        background |= any(value(call, 'name') == 'spawn_teammate' and any(
+            value(result, 'tool_use_id') == value(call, 'id') and "' spawned as " in str(value(result, 'content'))
+            for result in results) for call in calls)
+    background |= bool(background_starts)
+    if background and background_notice:
+        repaired.append({'role': 'user', 'content': _INTERRUPTED_BACKGROUND})
+    return repaired, latest_batch
 
 
 class SessionPersistence:
@@ -40,7 +100,7 @@ class SessionPersistence:
         if self._closed or self.failed:
             raise SessionError('会话保存已停止，请重新启动后恢复会话')
 
-    def checkpoint(self, runtime, *, status=None, tool_id=None, tool_status=None, _history=None, _context_state=None):
+    def checkpoint(self, runtime, *, status=None, tool_id=None, tool_status=None, _history=None, _context_state=None, _sources=None):
         with self._lock:
             self._check()
             try:
@@ -72,7 +132,7 @@ class SessionPersistence:
                     self.session_id = str(uuid.uuid4())
                     self._lease = self.store.acquire(self.session_id)
                 source_history = runtime.session.history if _history is None else _history
-                records = self._message_records(source_history)
+                records = self._message_records(source_history, sources=_sources)
                 context_state = copy.deepcopy(getattr(runtime.session, 'context_state', {}) if _context_state is None else _context_state)
                 context_state['_message_records'] = records
                 first = next((m['content'] for m in history if m['role'] == 'user'), '')
@@ -116,16 +176,17 @@ class SessionPersistence:
             self._record_history(history)
         return copy.deepcopy(self._archive)
 
-    def _message_records(self, history):
+    def _message_records(self, history, *, sources=None):
         """Track occurrences without adding provider-irrelevant fields to messages."""
         entries = []
         used = set()
         turn = ''
         for message in history:
+            original = sources.get(id(message), message) if sources is not None else message
             entry = None
             for equality in (False, True):
                 for index, (previous, record) in enumerate(self._live_records):
-                    if index not in used and (previous is message if not equality else previous == message):
+                    if index not in used and (previous is original if not equality else previous == original):
                         entry = copy.deepcopy(record)
                         used.add(index)
                         break
@@ -172,14 +233,14 @@ class SessionPersistence:
                 self.failed = True
                 raise SessionError('无法保存会话归档，请停止操作并检查存储状态') from None
 
-    def commit_history(self, runtime, candidate, context_state):
+    def commit_history(self, runtime, candidate, context_state, *, sources=None):
         """Archive evidence and durably save a candidate before publishing it."""
         with self._lock:
             self._check()
             previous_archive = copy.deepcopy(self._archive)
             try:
                 self.archive_history(runtime.session.history, candidate)
-                self.checkpoint(runtime, _history=candidate, _context_state=context_state)
+                self.checkpoint(runtime, _history=candidate, _context_state=context_state, _sources=sources)
             except Exception:
                 self._archive = previous_archive
                 raise
@@ -192,59 +253,7 @@ class SessionPersistence:
             if self.session_id is not None:
                 raise SessionError('当前运行时已有会话')
             history = decode_history(snapshot['history'])
-            latest_batch = next((i for i in range(len(history) - 1, -1, -1)
-                                 if history[i]['role'] == 'assistant'), None)
-            repaired = []
-            background = False
-            background_starts = set()
-            for i, message in enumerate(history):
-                repaired.append(message)
-                content = message.get('content', '')
-                texts = [content] if isinstance(content, str) else [
-                    block.get('text', '') for block in content
-                    if isinstance(block, dict) and block.get('type') == 'text'
-                ]
-                for text in texts:
-                    if _INTERRUPTED_BACKGROUND in text:
-                        background = False
-                        background_starts.clear()
-                    for notification in re.findall(r'<task_notification>(.*?)</task_notification>', text, re.DOTALL):
-                        match = re.search(r'<task_id>(bg_\d+)</task_id>.*?<status>(completed|failed)</status>', notification, re.DOTALL)
-                        if match:
-                            background_starts.discard(match.group(1))
-                calls = _blocks(message, 'tool_use') if message['role'] == 'assistant' else []
-                if not calls:
-                    continue
-                following = history[i + 1] if i + 1 < len(history) and history[i + 1]['role'] == 'user' else None
-                results = _blocks(following, 'tool_result') if following else []
-                done = {b['tool_use_id'] for b in results}
-                missing = []
-                for call in calls:
-                    if call['id'] in done:
-                        continue
-                    state = snapshot['tool_states'].get(call['id']) if i == latest_batch else None
-                    if call['name'] in ('task', 'spawn_teammate') and state != 'pending':
-                        background = True
-                    missing.append(dict(type='tool_result', tool_use_id=call['id'], is_error=True,
-                        content='上次会话中断，此工具未执行' if state == 'pending' else
-                        '执行结果未知，可能已产生副作用，请先检查实际状态'))
-                if missing:
-                    if following is not None and isinstance(following['content'], list):
-                        content = following['content']
-                        following['content'] = ([b for b in content if isinstance(b, dict) and b.get('type') == 'tool_result']
-                                                + missing + [b for b in content if not (isinstance(b, dict) and b.get('type') == 'tool_result')])
-                    else:
-                        repaired.append({'role': 'user', 'content': missing})
-                for result in results:
-                    match = re.search(r'\[Background task (bg_\d+) started\]', str(result['content']))
-                    if match:
-                        background_starts.add(match.group(1))
-                background |= any(call['name'] == 'spawn_teammate' and any(
-                    result['tool_use_id'] == call['id'] and "' spawned as " in str(result['content'])
-                    for result in results) for call in calls)
-            background |= bool(background_starts)
-            if background:
-                repaired.append({'role': 'user', 'content': _INTERRUPTED_BACKGROUND})
+            repaired, latest_batch = _repair_interrupted_history(history, snapshot['tool_states'])
             runtime.session.history[:] = repaired
             runtime.session.todos[:] = copy.deepcopy(snapshot['todos'])
             runtime.session.rounds_since_todo = snapshot['rounds_since_todo']
@@ -261,12 +270,26 @@ class SessionPersistence:
             self._tool_states = dict(snapshot['tool_states'])
             self._batch = (latest_batch, tuple(b['id'] for b in _blocks(history[latest_batch], 'tool_use'))) if latest_batch is not None else (None, ())
 
+    def delete_current(self):
+        with self._lock:
+            self._check()
+            if self.session_id is None or self._lease is None:
+                raise SessionError('当前会话尚未保存')
+            self.store.delete(self.session_id)
+            self._closed = True
+
     def close(self):
         with self._lock:
             self._closed = True
             if self._lease is not None:
                 self._lease.close()
                 self._lease = None
+
+    def interrupt(self, runtime):
+        with self._lock:
+            self._check()
+            _record_turn_interruption(runtime, self._tool_states)
+            self.checkpoint(runtime, status='interrupted')
 
 
 def checkpoint(runtime, **kwargs):
@@ -275,16 +298,32 @@ def checkpoint(runtime, **kwargs):
         coordinator.checkpoint(runtime, **kwargs)
 
 
+def _record_turn_interruption(runtime, tool_states):
+    repaired, _ = _repair_interrupted_history(runtime.session.history, tool_states, background_notice=False)
+    runtime.session.history[:] = repaired
+    runtime.session.history.append({'role': 'user', '_pamu_source': 'system', 'content':
+        '[用户中断] 用户主动停止了上一轮。保留已完成的工作，按用户接下来的指令处理。'
+        '未完成的工具可能已产生副作用，重试前先核实实际状态。后台任务和队友可能仍独立运行。'})
+
+
+def interrupt_turn(runtime):
+    coordinator = getattr(runtime, 'sessions', None)
+    if coordinator is not None:
+        coordinator.interrupt(runtime)
+    else:
+        _record_turn_interruption(runtime, {})
+
+
 def archive_history(runtime, before, after):
     coordinator = getattr(runtime, 'sessions', None)
     if coordinator is not None:
         coordinator.archive_history(before, after)
 
 
-def commit_history(runtime, candidate, context_state):
+def commit_history(runtime, candidate, context_state, *, sources=None):
     coordinator = getattr(runtime, 'sessions', None)
     if coordinator is not None:
-        coordinator.commit_history(runtime, candidate, context_state)
+        coordinator.commit_history(runtime, candidate, context_state, sources=sources)
     else:
         runtime.session.history[:] = candidate
         runtime.session.context_state = copy.deepcopy(context_state)

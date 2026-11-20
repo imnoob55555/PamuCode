@@ -3,6 +3,12 @@ from pathlib import Path
 
 import yaml
 
+LIST_SKILLS_SCHEMA = {
+    "name": "list_skills",
+    "description": "List the skills registered for this workspace and their descriptions.",
+    "input_schema": {"type": "object", "properties": {}},
+}
+
 
 @dataclass(slots=True)
 class SkillState:

@@ -1,4 +1,5 @@
 import json
+import pytest
 from pathlib import Path
 
 from agent_app.execution import execute
@@ -82,6 +83,20 @@ def test_tool_and_model_budgets(tmp_path):
     assert result['stop_reason'] == 'max_model_calls'
 
 
+def test_identical_tool_limit_has_structured_stop_reason(tmp_path):
+    replay = tmp_path / 'replay.json'
+    replay.write_text(json.dumps([
+        {'content': [{'type': 'tool_use', 'id': str(i), 'name': 'glob', 'input': {'pattern': '*'}}],
+         'stop_reason': 'tool_use'}
+        for i in range(5)
+    ]))
+    result = execute(task='inspect', workdir=tmp_path, output=tmp_path / 'out', model='test',
+                     protocol='anthropic_messages', replay=replay)
+    assert result['status'] == 'budget_exceeded'
+    assert result['stop_reason'] == 'repeated_tool_calls'
+    assert result['tool_calls'] == 3
+
+
 def test_auxiliary_budget_and_output_clamp(tmp_path):
     import pytest
     from agent_app.execution import TrackedAdapter, Ledger, ExecutionStop
@@ -143,7 +158,8 @@ def test_invalid_budgets(tmp_path):
             execute(task='x', workdir=tmp_path, output=tmp_path/'out', model='test', protocol='anthropic_messages', **kw)
 
 
-def test_sigterm_cleans_shell(tmp_path):
+@pytest.mark.parametrize('signal_name', ['SIGTERM', 'SIGINT'])
+def test_user_signal_cleans_shell(tmp_path, signal_name):
     import os
     import signal
     import subprocess
@@ -158,7 +174,7 @@ def test_sigterm_cleans_shell(tmp_path):
         while not (tmp_path/'started').exists() and time.monotonic()<deadline:
             time.sleep(.01)
         assert (tmp_path/'started').exists()
-        proc.send_signal(signal.SIGTERM)
+        proc.send_signal(getattr(signal, signal_name))
         stdout, stderr = proc.communicate(timeout=3)
         assert json.loads(stdout)['status'] == 'cancelled'
         time.sleep(.5)

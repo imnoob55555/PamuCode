@@ -13,6 +13,25 @@ from agent_app.cli import main
 from agent_app.config import MissingConfigurationError
 
 
+def test_interrupt_active_turn_keeps_repl_and_accepts_next_query(monkeypatch, capsys):
+    runtime = SimpleNamespace(stop_event=threading.Event(), agent_lock=threading.Lock(),
+                              hooks=SimpleNamespace(trigger=lambda *args: None))
+    queries = iter(['first', 'second', '/quit'])
+    monkeypatch.setattr('builtins.input', lambda _prompt: next(queries))
+    received = []
+
+    def turn(rt, query):
+        assert rt is runtime
+        received.append(query)
+        if query == 'first':
+            raise KeyboardInterrupt()
+
+    main(argv=[], runtime_factory=lambda: runtime, run_turn=turn,
+         start_threads=lambda rt: [], stop_threads=lambda *args: None)
+    assert received == ['first', 'second']
+    assert '已中断当前轮次' in capsys.readouterr().out
+
+
 def test_cli_explains_missing_model_configuration(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
 

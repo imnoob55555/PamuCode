@@ -6,6 +6,7 @@ from time import monotonic
 
 class ExitAction(Enum):
     QUIT = auto()
+    DELETE = auto()
 
 
 class QuitRequested(Exception):

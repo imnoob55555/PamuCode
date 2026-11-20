@@ -64,7 +64,6 @@ def _run_create_task_tool(
 ) -> str:
     task = create_task(store, subject, description, blockedBy)
     dependencies = f" (blocked by: {', '.join(blockedBy)})" if blockedBy else ""
-    print(f"  \033[34m[create] {task.subject}{dependencies}\033[0m")
     return f"Created {task.id}: {task.subject}{dependencies}"
 
 
@@ -216,7 +215,6 @@ def claim_task(store: TaskStore, task_id: str, owner: str = "agent") -> str:
         task.owner = owner
         task.status = "in_progress"
         _save_task_unlocked(store, task)
-    print(f"  \033[36m[claim] {task.subject} → in_progress (owner: {owner})\033[0m")
     return f"Claimed {task.id} ({task.subject})"
 
 
@@ -232,9 +230,7 @@ def complete_task(store: TaskStore, task_id: str) -> str:
         for candidate in list_tasks(store)
         if candidate.status == "pending" and candidate.blockedBy and can_start(store, candidate.id)
     ]
-    print(f"  \033[32m[complete] {task.subject} ✓\033[0m")
     message = f"Completed {task.id} ({task.subject})"
     if unblocked:
         message += f"\nUnblocked: {', '.join(unblocked)}"
-        print(f"  \033[33m[unblocked] {', '.join(unblocked)}\033[0m")
     return message

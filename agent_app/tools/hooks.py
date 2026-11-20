@@ -13,6 +13,8 @@ from typing import Any
 from ..logging_setup import get_logger
 from .builtin import safe_path
 
+LOGGER = get_logger("pamu.hooks")
+
 
 @dataclass(slots=True)
 class HookRegistry:
@@ -99,12 +101,10 @@ def make_permission_hook(
 
 
 def make_log_hook(root: Path, logger: logging.Logger | None = None):
-    hook_logger = logger or get_logger("pamu.hooks")
+    hook_logger = logger or LOGGER
 
     def log_hook(block, *, _root=root):
-        args_preview = str(list(block.input.values())[:2])[:60]
-        hook_logger.info("tool_use name=%s args=%s", block.name, args_preview)
-        print(f"\033[90m[HOOK] {block.name}({args_preview})\033[0m")
+        hook_logger.info("tool_use name=%s", block.name)
         return None
 
     return log_hook
@@ -112,8 +112,9 @@ def make_log_hook(root: Path, logger: logging.Logger | None = None):
 
 def make_large_output_hook(root: Path):
     def large_output_hook(block, output, *, _root=root):
-        if len(str(output)) > 100000:
-            print(f"\033[33m[HOOK] ⚠ Large output from {block.name}: {len(str(output))} chars\033[0m")
+        size = len(str(output))
+        if size > 100000:
+            LOGGER.warning("large tool output name=%s chars=%d", block.name, size)
         return None
 
     return large_output_hook
@@ -121,7 +122,7 @@ def make_large_output_hook(root: Path):
 
 def make_context_inject_hook(root: Path):
     def context_inject_hook(query: str, *, _root=root):
-        print(f"\033[90m[HOOK] UserPromptSubmit: working in {_root}\033[0m")
+        LOGGER.debug("prompt submitted workspace=%s", _root)
         return None
 
     return context_inject_hook
@@ -139,7 +140,7 @@ def make_summary_hook(root: Path):
             )
             if isinstance(block, dict) and block.get("type") == "tool_result"
         )
-        print(f"\033[90m[HOOK] Stop: session used {tool_count} tool calls\033[0m")
+        LOGGER.debug("turn stopped with %d tool results in context", tool_count)
         return None
 
     return summary_hook

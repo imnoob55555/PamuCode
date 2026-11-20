@@ -14,7 +14,7 @@ Experimental release: **0.1.0**, Python **3.13+**.
 - Streaming model responses with retry, fallback, continuation, and context recovery.
 - Anthropic Messages, OpenAI Responses, Chat Completions, and native Ollama adapters.
 - Inline terminal input with slash suggestions, `@` file completion, input history,
-  and a single footer showing workspace, model, thinking level, and work mode.
+  and a single footer showing workspace, context usage, model, thinking level, and work mode.
 - Explicit planning and execution modes, plus direct skill invocation.
 - Durable sessions, interrupted tool-call repair, context budgets, compaction,
   pinned constraints, and retrievable history evidence.
@@ -58,12 +58,40 @@ feedback above the input box for three seconds; successful results stay in the
 terminal transcript. Slash commands can be recalled through input history.
 Exit with `/quit` or two presses of Ctrl+C within one second at the REPL.
 
+The terminal shows an animated `Working` status while waiting for the model.
+Shell commands show a temporary `Running <command>` status that stays visible
+briefly for fast commands and is replaced by `Ran <command>` on exit.
+Redirected output records the final status.
+Operations requiring approval show the permission prompt and wait for your
+answer. Proposed file changes include a diff.
+
+While the agent is working, Ctrl+C interrupts the current turn and returns to the
+same session's prompt. It keeps completed edits, captured command output, and
+visible partial model text. Interrupted tool calls receive explicit error results;
+continuing or resuming does not automatically replay them. Cancelling a permission
+prompt leaves that tool unexecuted. Incomplete operations may have side effects:
+inspect their actual state before retrying.
+
+Each agent has up to three attempts per turn for the same tool and arguments.
+The model can use the error from a blocked attempt to change approach. Two
+consecutive batches containing only blocked repeats end the turn.
+
+Background commands and teammates run independently of the foreground turn.
+Use `/background` to list this session's background commands, `/stop bg_0001` to
+stop one, or `/stop all` to stop all background commands. A cancellation request
+is not reported as finished until the worker acknowledges it. Exiting requests
+cleanup of background commands too. Shell cleanup covers the process group;
+detached descendants and remote jobs may survive. These controls do not roll back
+changes or stop independent teammates. Mid-turn text steering and Esc-to-interrupt
+are not implemented; use Ctrl+C, then enter your new instruction.
+
 ## Commands
 
 | Command | Purpose |
 | --- | --- |
 | `pamu` | Start an interactive session |
-| `pamu resume [--last \| ID]` | Restore a workspace session |
+| `pamu continue` or `pamu -c` | Restore the most recently updated workspace session |
+| `pamu resume [ID]` or `pamu -r [ID]` | Pick a workspace session or restore it by ID |
 | `pamu login [provider] [--no-verify]` | Save provider credentials and model |
 | `pamu logout [provider]` | Remove saved credentials |
 | `pamu status` | Show effective configuration and login status |
@@ -86,6 +114,9 @@ Exit with `/quit` or two presses of Ctrl+C within one second at the REPL.
 | `/context pins` / `/context unpin <id>` | List or remove pinned constraints |
 | `/compact [focus]` | Compact earlier conversation |
 | `/resume [--last \| ID]` | Switch to another saved session |
+| `/delete` | Confirm deletion of the current session and exit |
+| `/background` | List this session's background commands |
+| `/stop <ID \| all>` | Stop selected background commands |
 | `/help` or `/h` | Show a concise command list |
 | `/quit` | Exit the session |
 
@@ -132,6 +163,8 @@ are invocation identifiers:
 
 The skill body and task are supplied to the current model. Work mode and security
 policy remain in force. Without an interactive UI, `/skill` lists available names.
+You can also ask PamuCode which skills are available. It reads the workspace's
+registered skills through `list_skills`.
 Skill loading is unavailable in the confined sandbox.
 
 ## Configuration
@@ -184,10 +217,27 @@ Endpoints must not embed credentials in their URL.
 ## Sessions and context
 
 Sessions are scoped to the workspace and stored in `.pamu/sessions/`. Use
-`pamu resume --last` or `/resume` to restore one. Restoring retains conversation
-and model selection, repairs interrupted tool-result pairs, and does not replay
-historical commands. Background processes and teammates are not automatically
-resumed; check their real state before continuing.
+`pamu continue` (or `pamu -c`) to restore the latest one. Use `pamu resume`
+(or `pamu -r`) to choose a session, or append an ID to restore it directly.
+On restore, PamuCode prints saved messages in order, including messages archived
+during context compaction. Shell commands have their own `Shell` entries,
+separate from PamuCode's replies. Replay preserves line breaks
+and code indentation, then opens the prompt in the same session. Press Ctrl+C
+during replay to skip to the prompt. Historical commands are never re-executed.
+Restoring also retains the model selection and repairs interrupted tool-result
+pairs. Background processes and teammates are not automatically resumed.
+
+In the interactive session, use `/delete` and confirm to permanently remove its
+snapshot and session archive, then exit. If work is still running or queued,
+finish it before deleting the session. Workspace files are outside the scope
+of session deletion.
+
+`Context used: xx%` in the footer estimates the share of the active model's
+context window occupied by the retained conversation, system instructions, and
+tools. It refreshes before each prompt. The window comes from the current
+provider and model configuration or a provisional default. Use `/context` to
+check its source and `/context window <tokens>` to set a session override.
+The percentage can exceed 100% when the estimate exceeds the window.
 
 `/context` reports estimated usage, window source, and output reserve. Usage
 reported by the provider is tracked separately. `/compact` summarizes older

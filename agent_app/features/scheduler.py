@@ -7,6 +7,9 @@ from datetime import datetime
 from typing import Any, cast
 
 from ..config import AppConfig
+from ..logging_setup import get_logger
+
+LOGGER = get_logger("pamu.scheduler")
 
 SCHEDULER_TOOL_SCHEMAS = [
     {"name": "schedule_cron",
@@ -229,7 +232,7 @@ def load_durable_jobs(state: SchedulerState, config: AppConfig):
                 state.jobs[job.id] = job
             valid = [job for job in jobs if job["id"] in state.jobs]
         if valid:
-            print(f"  \033[35m[cron] loaded {len(valid)} durable job(s)\033[0m")
+            LOGGER.info("loaded %d durable jobs", len(valid))
     except Exception:
         ...  # malformed durable file is ignored
 
@@ -256,7 +259,7 @@ def schedule_job(
         state.jobs[job.id] = job
     if durable:
         save_durable_jobs(state, config)
-    print(f"  \033[35m[cron register] {job.id} '{cron}' → {prompt[:40]}\033[0m")
+    LOGGER.info("registered cron job %s (%s)", job.id, cron)
     return job
 
 
@@ -267,7 +270,7 @@ def cancel_job(state: SchedulerState, config: AppConfig, job_id: str) -> str:
         return f"Job {job_id} not found"
     if job.durable:
         save_durable_jobs(state, config)
-    print(f"  \033[31m[cron cancel] {job_id}\033[0m")
+    LOGGER.info("cancelled cron job %s", job_id)
     return f"Cancelled {job_id}"
 
 
@@ -290,7 +293,7 @@ def cron_scheduler_loop(state: SchedulerState, config: AppConfig, stop_event, no
                         if state.last_fired.get(job.id) != minute_marker:
                             state.queue.append(job)
                             state.last_fired[job.id] = minute_marker
-                            print(f"  \033[35m[cron fire] {job.id} → {job.prompt[:40]}\033[0m")
+                            LOGGER.info("fired cron job %s", job.id)
                         if not job.recurring:
                             state.jobs.pop(job.id, None)
                             state.last_fired.pop(job.id, None)

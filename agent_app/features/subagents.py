@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from ..core.recovery import describe_model_error
+from ..logging_setup import get_logger
+from ..tools.executor import TOOL_REPEAT_ERROR, TOOL_REPEAT_STOP, ToolRepeatLimit
+
+LOGGER = get_logger("pamu.subagents")
 
 TASK_TOOL_SCHEMA = {
     "name": "task",
@@ -64,7 +68,7 @@ def spawn_subagent(
 ) -> str:
     """Run a fresh, bounded subagent conversation using only supplied tools."""
     active_model = model or config.primary_model
-    print("\n\033[35m[Subagent spawned]\033[0m")
+    LOGGER.info("subagent started")
     if context is None:
         from ..core.delegated_context import DelegatedContext
         context = DelegatedContext(config, llm, active_model)
@@ -73,6 +77,7 @@ def spawn_subagent(
     tools = [tool for tool in tools if tool["name"] not in private_names] + retrieval_schemas
     handlers = {**handlers, **retrieval_handlers}
     messages: list[dict] = [{"role": "user", "content": description}]
+    repeat_limit = ToolRepeatLimit()
 
     for _ in range(30):
         try:
@@ -92,8 +97,14 @@ def spawn_subagent(
         if not has_tool_use(response.content):
             break
         results: list[dict] = []
+        repeated = 0
         for block in response.content:
             if getattr(block, "type", None) != "tool_use":
+                continue
+            if not repeat_limit.allow(block.name, block.input):
+                repeated += 1
+                results.append({"type": "tool_result", "tool_use_id": block.id,
+                                "content": TOOL_REPEAT_ERROR, "is_error": True})
                 continue
             blocked = hooks.trigger("PreToolUse", block)
             if blocked:
@@ -105,12 +116,13 @@ def spawn_subagent(
             handler = handlers.get(block.name)
             output = handler(**block.input) if handler else f"Unknown: {block.name}"
             hooks.trigger("PostToolUse", block, output)
-            print(f"  \033[90m[sub] {block.name}: {str(output)[:100]}\033[0m")
             result = {"type": "tool_result", "tool_use_id": block.id, "content": output}
             if block.name in private_names and str(output).startswith("Error:"):
                 result["is_error"] = True
             results.append(result)
         messages.append({"role": "user", "content": results})
+        if repeat_limit.should_stop(len(results), repeated):
+            return TOOL_REPEAT_STOP
 
     result = extract_text(messages[-1]["content"])
     if not result:
@@ -120,5 +132,5 @@ def spawn_subagent(
                 break
         if not result:
             result = "Subagent stopped after 30 turns without final answer."
-    print("\033[35m[Subagent done]\033[0m")
+    LOGGER.info("subagent finished")
     return result

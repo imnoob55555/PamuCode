@@ -43,6 +43,22 @@ def test_subagent_uses_fresh_history(tmp_path, monkeypatch):
     ]
 
 
+def test_subagent_stops_repeating_an_identical_tool(tmp_path):
+    from agent_app.adapters.common import ToolUseBlock
+    from agent_app.tools.executor import TOOL_REPEAT_ERROR, TOOL_REPEAT_STOP
+
+    config = AppConfig.from_env(tmp_path, environ={"MODEL_ID": "test-model"})
+    replies = [types.SimpleNamespace(content=[ToolUseBlock(str(i), "inspect", {})]) for i in range(5)]
+    adapter = FakeAdapter(replies)
+    calls = []
+    result = spawn_subagent("inspect", adapter, config, "system", [],
+                            {"inspect": lambda: calls.append(True) or "ok"}, HookRegistry())
+
+    assert result == TOOL_REPEAT_STOP
+    assert calls == [True] * 3
+    assert adapter.calls[-1]["messages"][-1]["content"][0]["content"] == TOOL_REPEAT_ERROR
+
+
 def test_subagent_can_retrieve_own_externalized_result_but_not_sibling(tmp_path):
     import json
     import re

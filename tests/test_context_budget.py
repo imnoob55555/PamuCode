@@ -32,6 +32,24 @@ def test_windows_bound_to_startup_target_and_exact_origin():
     assert resolve_window(r)[0] == 200000
 
 
+def test_deepseek_official_window_yields_to_explicit_overrides():
+    from agent_app.core.context_budget import resolve_window
+    origin = 'https://api.deepseek.com/anthropic'
+    model = 'deepseek-v4-pro'
+    r = NS(config=NS(primary_model=model, context_window=None),
+           model=NS(primary_model=model, protocol='anthropic_messages', base_url=origin, llm=None),
+           session=NS(context_state={}))
+    assert resolve_window(r)[0] == 1_000_000
+    assert resolve_window(r, 'unknown')[0] == 16_384
+    r.session.context_state['window_overrides'] = {f'anthropic_messages|{origin}|{model}': 32_000}
+    assert resolve_window(r)[0] == 32_000
+    r.config.context_window = 64_000
+    r.config.context_window_target = ('anthropic_messages', origin, model)
+    assert resolve_window(r)[0] == 64_000
+    r.model.base_url = 'https://gateway.test/anthropic'
+    assert resolve_window(r)[0] == 16_384
+
+
 def test_estimate_strips_metadata_and_counts_tools():
     from agent_app.core.context_budget import estimate_request
     m = [{'role': 'user', 'content': '你好'}]

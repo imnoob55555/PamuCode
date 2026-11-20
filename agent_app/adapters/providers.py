@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..runtime import RuntimeContext
-from .anthropic import AnthropicAdapter
+from .anthropic import AnthropicAdapter, DEEPSEEK_MESSAGES_URL
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,7 +32,7 @@ PROVIDERS: dict[str, ProviderSpec] = {
     ),
     "deepseek": ProviderSpec(
         "deepseek",
-        "https://api.deepseek.com/anthropic",
+        DEEPSEEK_MESSAGES_URL,
         "DEEPSEEK_API_KEY",
         "deepseek-chat",
         "DeepSeek",

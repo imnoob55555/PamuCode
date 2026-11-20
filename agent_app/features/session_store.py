@@ -5,6 +5,7 @@ import json
 import math
 import os
 from pathlib import Path
+import shutil
 import stat
 import uuid
 from contextlib import contextmanager
@@ -329,6 +330,43 @@ class SessionStore:
         archive = ContextArchive(self.workdir, snapshot['id'])
         data = json.dumps(snapshot, ensure_ascii=False, allow_nan=False).encode('utf-8')
         archive._save(None, data, '', name='migration-v1.json')
+
+    def delete(self, session_id: str) -> None:
+        """Remove a session and its archive while the caller owns its lease."""
+        _id(session_id)
+        snapshot = session_id + '.json'
+        try:
+            with self._directory() as directory:
+                if directory is None:
+                    raise SessionError('会话文件不存在')
+                _regular(snapshot, dir_fd=directory)
+                archive = directory / session_id if isinstance(directory, Path) else session_id
+                dir_fd = directory if isinstance(directory, int) else None
+                try:
+                    mode = os.stat(archive, dir_fd=dir_fd, follow_symlinks=False).st_mode
+                except FileNotFoundError:
+                    has_archive = False
+                else:
+                    if not stat.S_ISDIR(mode):
+                        raise SessionError('会话归档路径无效')
+                    has_archive = True
+
+                # Unpublish the snapshot first so an incomplete cleanup cannot
+                # expose a resumable session with missing evidence.
+                _unlink(snapshot, directory)
+                try:
+                    if dir_fd is not None:
+                        os.fsync(dir_fd)
+                    if has_archive:
+                        shutil.rmtree(archive, dir_fd=dir_fd)
+                        if dir_fd is not None:
+                            os.fsync(dir_fd)
+                except OSError:
+                    raise SessionError('会话已从恢复列表移除，但归档清理或写盘未完成') from None
+                # Keep the empty lock file in place so a waiter cannot lock a
+                # different inode under the same name.
+        except OSError:
+            raise SessionError('无法删除会话快照') from None
 
     def save(self, snapshot: dict) -> None:
         try:

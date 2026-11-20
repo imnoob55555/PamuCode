@@ -8,6 +8,7 @@ from agent_app.config import AppConfig
 from agent_app.runtime import ModelRouter, SessionState
 from agent_app.features.sessions import SessionPersistence, checkpoint
 from agent_app.features.session_store import SessionError
+from agent_app.features.session_codec import encode_history
 
 
 def runtime(tmp_path):
@@ -136,8 +137,12 @@ def test_loop_checkpoints_completed_first_tool_and_running_later_tool(runtime_fa
         run_agent_turn(rt, 'go')
     saved = rt.sessions.store.load(rt.sessions.session_id)
     assert saved['status'] == 'interrupted'
-    assert saved['tool_states'] == {'a': 'completed', 'b': 'running'}
-    assert saved['history'][-1]['content'] == [result('a', 'first result')]
+    # A terminal error result closes the protocol pair, not a claim of success.
+    assert saved['tool_states'] == {'a': 'completed', 'b': 'completed'}
+    assert saved['history'][-2]['content'][0] == result('a', 'first result')
+    assert saved['history'][-2]['content'][1]['is_error']
+    assert '执行结果未知' in saved['history'][-2]['content'][1]['content']
+    assert '[用户中断]' in saved['history'][-1]['content']
     assert observed[0]['tool_states'] == {'a': 'running', 'b': 'pending'}
     assert observed[1]['history'][-1]['content'] == [result('a', 'first result')]
     rt.sessions.close()
@@ -287,9 +292,10 @@ def test_original_survives_interruption_during_auto_summary(runtime_factory):
     with pytest.raises(KeyboardInterrupt):
         run_agent_turn(rt)
     saved = rt.sessions.store.load(rt.sessions.session_id)
-    assert saved['history'] == original
+    assert saved['history'][:-1] == original
+    assert '[用户中断]' in saved['history'][-1]['content']
     assert saved['context_state'].get('generation', 0) == 0
-    assert rt.session.history == original
+    assert rt.session.history[:-1] == original
     assert not json.loads(rt.sessions.context_archive.search('old evidence'))['matches']
     rt.sessions.close()
 
@@ -336,19 +342,71 @@ def test_completed_result_is_saved_before_post_tool_hook_interrupts(runtime_fact
     with pytest.raises(KeyboardInterrupt):
         run_agent_turn(rt, 'go')
     saved = rt.sessions.store.load(rt.sessions.session_id)
-    assert saved['history'][-1]['content'] == [result('a', 'completed output')]
-    assert saved['tool_states'] == {'a': 'completed', 'b': 'pending'}
+    assert saved['history'][-2]['content'][0] == result('a', 'completed output')
+    assert saved['history'][-2]['content'][1]['is_error']
+    assert '此工具未执行' in saved['history'][-2]['content'][1]['content']
+    assert saved['tool_states'] == {'a': 'completed', 'b': 'completed'}
     rt.sessions.close()
 
 
-def test_restore_completed_subagent_and_background_do_not_warn(tmp_path):
+def test_interrupt_then_continue_keeps_session_and_never_replays_tools(runtime_factory):
+    from agent_app.adapters.common import ModelResponse, ToolUseBlock
+    batch = ModelResponse([ToolUseBlock(id, 'bash', {}) for id in ('done', 'interrupted', 'pending')], 'tool_use')
+    rt = runtime_factory([batch, text_response('continued')])
+    rt.sessions = SessionPersistence(rt.config.workdir)
+    calls = []
+    def handler(**kwargs):
+        calls.append('executed')
+        if len(calls) == 2:
+            raise KeyboardInterrupt()
+        return 'preserved-result'
+    rt.tools.register(tool_schema('bash'), handler)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            run_agent_turn(rt, 'original request')
+        sid = rt.sessions.session_id
+        saved = rt.sessions.store.load(sid)
+        results = saved['history'][-2]['content']
+        assert results[0] == result('done', 'preserved-result')
+        assert '结果未知' in results[1]['content']
+        assert '未执行' in results[2]['content']
+        run_agent_turn(rt, '只解释当前状态')
+        assert len(calls) == 2
+        assert rt.sessions.session_id == sid
+        sent = encode_history(rt.llm.requests[-1]['messages'])
+        assert any(m.get('content') == '只解释当前状态' for m in sent)
+        assert any(m.get('content') == results for m in sent)
+        assert any('[用户中断]' in str(m['content']) for m in sent)
+        assert rt.sessions.store.load(sid)['status'] == 'idle'
+    finally:
+        rt.sessions.close()
+
+
+def test_interrupt_during_permission_marks_tool_unexecuted(runtime_factory):
+    rt = runtime_factory([multi_response('permission')])
+    rt.sessions = SessionPersistence(rt.config.workdir)
+    rt.tools.register(tool_schema('bash'), lambda **kw: pytest.fail('must not execute'))
+    def cancel(*args):
+        raise KeyboardInterrupt()
+    rt.hooks.register('PreToolUse', cancel)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            run_agent_turn(rt, 'go')
+        saved = rt.sessions.store.load(rt.sessions.session_id)
+        assert '未执行' in saved['history'][-2]['content'][0]['content']
+    finally:
+        rt.sessions.close()
+
+
+@pytest.mark.parametrize('background_status', ['completed', 'cancelled'])
+def test_restore_completed_subagent_and_background_do_not_warn(tmp_path, background_status):
     rt = runtime(tmp_path)
     task = dict(call('sub'), name='task')
     rt.session.history[:] = [
         {'role': 'user', 'content': 'go'},
         {'role': 'assistant', 'content': [task, call('bg')]},
         {'role': 'user', 'content': [result('sub', 'finished'), result('bg', '[Background task bg_0001 started] command')]},
-        {'role': 'user', 'content': '<task_notification>\n  <task_id>bg_0001</task_id>\n  <status>completed</status>\n</task_notification>'},
+        {'role': 'user', 'content': f'<task_notification>\n  <task_id>bg_0001</task_id>\n  <status>{background_status}</status>\n</task_notification>'},
     ]
     checkpoint(rt)
     saved = rt.sessions.store.load(rt.sessions.session_id)

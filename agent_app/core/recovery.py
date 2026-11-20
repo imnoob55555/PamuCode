@@ -1,6 +1,11 @@
 import random
 import time
+from contextlib import nullcontext
 from dataclasses import dataclass
+
+from ..logging_setup import get_logger
+
+LOGGER = get_logger("pamu.recovery")
 
 
 @dataclass(slots=True)
@@ -103,6 +108,7 @@ def with_retry(
     max_transient_retries: int = 10,
     max_consecutive_529: int = 3,
     base_delay_ms: int = 500,
+    progress=nullcontext,
 ):
     for attempt in range(max_transient_retries):
         try:
@@ -130,12 +136,11 @@ def with_retry(
                     ):
                         state.current_model = state.fallback_model
                         state.consecutive_529 = 0
-                        print(f"  \033[31m[529 x{max_consecutive_529}]"
-                              f" switching to {state.fallback_model}\033[0m")
+                        LOGGER.warning("switching to fallback model %s after %d overloads",
+                                       state.fallback_model, max_consecutive_529)
                     else:
                         state.consecutive_529 = 0
-                        print(f"  \033[31m[529 x{max_consecutive_529}]"
-                              " no FALLBACK_MODEL_ID configured, continuing retry\033[0m")
+                        LOGGER.warning("no fallback model after %d overloads", max_consecutive_529)
 
             if attempt == max_transient_retries - 1:
                 raise
@@ -145,10 +150,10 @@ def with_retry(
                 extract_retry_after(e),
                 base_delay_ms=base_delay_ms,
             )
-            print(f"  \033[33m[529 overloaded] retry {attempt+1}/{max_transient_retries},"
-                  f" wait {delay:.1f}s\033[0m")
-
-            time.sleep(delay)
+            LOGGER.warning("%s, retry %d/%d after %.1fs", "rate limited" if is_429 else "overloaded",
+                           attempt + 1, max_transient_retries, delay)
+            with progress("Working"):
+                time.sleep(delay)
 
     raise RuntimeError("unreachable")
 
@@ -156,6 +161,8 @@ def with_retry(
 def describe_model_error(exc):
     """Keep status-based recovery intact and give users an actionable message."""
     status = get_status_code(exc)
+    if is_prompt_too_long_error(exc):
+        return "请求超过服务的上下文窗口，请使用 /context 检查窗口设置或缩减当前请求。"
     if status in (401, 403):
         return "服务认证失败，请检查当前供应商的 API Key 或访问权限。"
     if status == 404:

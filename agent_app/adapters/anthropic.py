@@ -7,33 +7,32 @@ from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from typing import Any
 
-from ..core.recovery import PartialStreamError
-from .common import anthropic_history, scope_anthropic
+from .common import anthropic_history, null_progress, scope_anthropic, visible_stream
+
+DEEPSEEK_MESSAGES_URL = 'https://api.deepseek.com/anthropic'
 
 
-class _NullProgress:
-    def __enter__(self):
-        return self
-
-    def stop(self) -> None:
-        pass
-
-    def __exit__(self, exc_type, exc, traceback):
-        return False
-
-
-def _null_progress(_label: str) -> AbstractContextManager:
-    return _NullProgress()
+def is_deepseek_messages_endpoint(origin: str) -> bool:
+    provider, separator, url = origin.partition('@')
+    # The adapter's replay origin can carry a provider prefix. Match the
+    # endpoint itself because users can reach it through the Anthropic preset.
+    endpoint = url if separator and '://' not in provider else origin
+    return endpoint.rstrip('/') == DEEPSEEK_MESSAGES_URL
 
 
 @dataclass(frozen=True, slots=True)
 class AnthropicAdapter:
     client: Any
-    progress: Callable[[str], AbstractContextManager] = _null_progress
+    progress: Callable[[str], AbstractContextManager] = null_progress
     origin: str = ""
 
     def project_request(self, *, system, messages, tools, model):
         return {'system': system, 'messages': anthropic_history(messages, origin=self.origin, model=model), 'tools': tools}
+
+    def _thinking(self, thinking):
+        if thinking is None and is_deepseek_messages_endpoint(self.origin):
+            return {'type': 'disabled'}
+        return thinking
 
     def create(
         self,
@@ -54,6 +53,7 @@ class AnthropicAdapter:
             request["system"] = system
         if tools is not None:
             request["tools"] = tools
+        thinking = self._thinking(thinking)
         if thinking is not None:
             request["thinking"] = thinking
         return scope_anthropic(self.client.messages.create(**request), self.origin, model)
@@ -75,26 +75,11 @@ class AnthropicAdapter:
             "tools": tools,
             "max_tokens": max_tokens,
         }
+        thinking = self._thinking(thinking)
         if thinking is not None:
             request["thinking"] = thinking
-        chunks = []
-        try:
-            with (
-                self.progress("Working") as progress,
-                self.client.messages.stream(**request) as stream,
-            ):
-                    for chunk in stream.text_stream:
-                        if not chunk:
-                            continue
-                        if not chunks:
-                            progress.stop()
-                        chunks.append(chunk)
-                        print(chunk, end="", flush=True)
-                    return scope_anthropic(stream.get_final_message(), self.origin, model)
-        except Exception as exc:
-            if chunks:
-                raise PartialStreamError("".join(chunks), exc) from exc
-            raise
-        finally:
-            if chunks and not chunks[-1].endswith("\n"):
-                print()
+        with visible_stream(self.progress) as emit, self.client.messages.stream(**request) as stream:
+            for chunk in stream.text_stream:
+                if chunk:
+                    emit(chunk)
+            return scope_anthropic(stream.get_final_message(), self.origin, model)

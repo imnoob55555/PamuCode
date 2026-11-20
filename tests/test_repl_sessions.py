@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import pytest
 from agent_app.cli import handle_slash_command, main
 from agent_app.features.sessions import checkpoint
-from agent_app.features.session_store import SessionStore
+from agent_app.features.session_store import SessionError, SessionStore
 from tests.test_session_runtime import runtime
 
 
@@ -21,7 +21,76 @@ def test_resume_action_and_help(tmp_path):
     assert '/resume' in help_text()
 
 
-def test_repl_switch_isolates_history(tmp_path, monkeypatch):
+@pytest.mark.parametrize('choice', ['delete', 'cancel'])
+def test_delete_current_session_from_repl(tmp_path, monkeypatch, capsys, choice):
+    monkeypatch.chdir(tmp_path)
+    other = ready(tmp_path)
+    other.session.history.append({'role': 'user', 'content': 'another session'})
+    checkpoint(other)
+    other_id = other.sessions.session_id
+    other.sessions.close()
+
+    rt = ready(tmp_path)
+    rt.stop_event = threading.Event()
+    rt.session.history.append({'role': 'user', 'content': 'current session'})
+    checkpoint(rt)
+    session_id = rt.sessions.session_id
+    archive = rt.sessions.context_archive
+    archive.save_history(rt.session.history)
+    snapshot = SessionStore(tmp_path).directory / f'{session_id}.json'
+    commands = iter(('/delete', '/quit'))
+    notices = []
+    ui = SimpleNamespace(prompt=lambda: next(commands), notify=notices.append,
+                         choose=lambda title, choices: choice)
+
+    assert main(argv=[], ui=ui, runtime_factory=lambda: rt,
+                start_threads=lambda _: [], stop_threads=lambda *_: None,
+                credentials_path=tmp_path / 'credentials.json') in (0, None)
+    store = SessionStore(tmp_path)
+    assert store.load(other_id)['history'][0]['content'] == 'another session'
+    assert snapshot.exists() == archive.directory.exists() == (choice == 'cancel')
+    if choice == 'delete':
+        assert next(commands) == '/quit'
+        assert [item['id'] for item in store.list_sessions()[0]] == [other_id]
+        assert '已删除当前会话。' in capsys.readouterr().out
+    else:
+        assert notices == ['已取消删除会话。']
+        assert not rt.stop_event.is_set()
+
+
+def test_active_turn_prevents_session_deletion(tmp_path):
+    from agent_app.repl_sessions import delete_current_session
+
+    rt = ready(tmp_path)
+    rt.session.history.append({'role': 'user', 'content': 'current session'})
+    checkpoint(rt)
+    try:
+        with rt.agent_lock:
+            assert '正在处理请求' in delete_current_session(rt)
+        assert rt.sessions.store.load(rt.sessions.session_id)['history'] == rt.session.history
+    finally:
+        rt.sessions.close()
+
+
+def test_delete_rejects_archive_symlink(tmp_path):
+    rt = ready(tmp_path)
+    rt.session.history.append({'role': 'user', 'content': 'current session'})
+    checkpoint(rt)
+    outside = tmp_path / 'unrelated'
+    outside.mkdir()
+    sentinel = outside / 'keep.txt'
+    sentinel.write_text('keep')
+    try:
+        rt.sessions.context_archive.directory.symlink_to(outside, target_is_directory=True)
+        with pytest.raises(SessionError, match='归档路径无效'):
+            rt.sessions.delete_current()
+        assert sentinel.read_text() == 'keep'
+        assert rt.sessions.store.load(rt.sessions.session_id)['history'] == rt.session.history
+    finally:
+        rt.sessions.close()
+
+
+def test_repl_switch_isolates_history(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     b = ready(tmp_path)
     b.session.history.append({'role': 'user', 'content': 'B question'})
@@ -46,6 +115,8 @@ def test_repl_switch_isolates_history(tmp_path, monkeypatch):
     assert seen[0][1] == [{'role': 'user', 'content': 'B question'}]
     assert SessionStore(tmp_path).load(aid)['history'][0]['content'] == 'A question'
     assert target.sessions.session_id == bid
+    output = capsys.readouterr().out
+    assert '用户：\nB question' in output and 'A question' not in output
 
 
 def test_current_session_noop_and_noninteractive_list(tmp_path, monkeypatch, capsys):
