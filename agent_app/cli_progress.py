@@ -266,9 +266,22 @@ def write_tool_lines(lines: list[str]) -> None:
             pass
 
 
+BACKGROUND_APPROVAL_DENIED = '后台操作需要确认，已自动拒绝；请在前台重新发起。'
+
+
 def terminal_confirmation(prompt: str) -> str:
-    """Keep command notices below the permission question and its input."""
+    """Keep command notices below the permission question and its input.
+
+    Only the main thread may read an answer. A background thread (scheduled
+    turns, workers) would compete with the prompt for stdin, so its request is
+    refused without reading. An unreadable stdin also counts as a refusal.
+    """
     global _approval_open
+    if threading.current_thread() is not threading.main_thread():
+        with _TERMINAL_LOCK:
+            _pending_shell_status.append(BACKGROUND_APPROVAL_DENIED)
+            _flush_shell_status()
+        return ''
     try:
         with _TERMINAL_LOCK:
             _approval_open = True
@@ -277,6 +290,8 @@ def terminal_confirmation(prompt: str) -> str:
     except (EOFError, KeyboardInterrupt):
         print()
         raise
+    except OSError:
+        return ''
     finally:
         with _TERMINAL_LOCK:
             _approval_open = False

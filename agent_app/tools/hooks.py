@@ -13,6 +13,7 @@ from typing import Any
 from .. import theme
 from ..logging_setup import get_logger
 from ..rendering import approval_panel, blocked_notice, diff_block
+from ..security.command_policy import ASK, DENY, classify
 from .builtin import safe_path
 
 LOGGER = get_logger("pamu.hooks")
@@ -53,7 +54,10 @@ def make_permission_hook(
     mcp_lock=None,
     *,
     mcp_state=None,
+    shell_approval: str = "ask",
 ):
+    session_allowed: set[str] = set()
+
     def resolve(value, default) -> Any:
         if value is None:
             return default
@@ -61,30 +65,34 @@ def make_permission_hook(
 
     def permission_hook(block, *, _root=root):
         if block.name == "bash":
-            for pattern in ["rm -rf /", "sudo", "shutdown", "reboot", "mkfs", "dd if="]:
-                if pattern in block.input.get("command", ""):
-                    if theme.rich_output():
-                        print(blocked_notice(pattern))
-                    else:
-                        print(f"\n⛔ Blocked: '{pattern}'")
-                    return "Permission denied by deny list"
-            for keyword in ["rm ", "> /etc/", "chmod 777", "curl"]:
-                if keyword in block.input.get("command", ""):
-                    agent = getattr(block, "agent", None)
-                    if theme.rich_output():
-                        rows = [("Tool", block.name), ("Command", str(block.input.get("command", "")))]
-                        print(approval_panel("Potentially destructive command",
-                                             rows + ([("Teammate", agent)] if agent else [])))
-                    else:
-                        print("\n⚠  Potentially destructive command")
-                        print(f"   Tool: {block.name}({block.input})")
-                    prompt = (
-                        f"  Allow teammate '{agent}' to apply this change? [y/N] "
-                        if agent
-                        else "  Allow this change? [y/N] "
-                    )
-                    if confirmation(prompt).strip().lower() not in ("y", "yes"):
-                        return "Permission denied by user"
+            command = block.input.get("command", "")
+            decision = classify(command)
+            if decision.action == DENY:
+                print(blocked_notice(decision.reason) if theme.rich_output() else f"\n⛔ Blocked: {decision.reason}")
+                return "Permission denied by deny list"
+            remembered = decision.rememberable and set(decision.prefixes) <= session_allowed
+            if decision.action == ASK and shell_approval != "auto" and not remembered:
+                agent = getattr(block, "agent", None)
+                rows = [("Tool", block.name), ("Command", str(command)), ("Reason", decision.reason)]
+                if agent:
+                    rows.append(("Teammate", agent))
+                if decision.rememberable:
+                    rows.append(("Always", f"a = 本会话不再询问 {', '.join(decision.prefixes)}"))
+                if theme.rich_output():
+                    print(approval_panel("Command needs approval", rows))
+                else:
+                    print("\n⚠  Command needs approval")
+                    print("\n".join(f"   {label}: {value}" for label, value in rows))
+                prompt = (
+                    f"  Allow teammate '{agent}' to apply this change? [y/N] "
+                    if agent
+                    else "  Allow this change? [y/N] "
+                )
+                answer = confirmation(prompt).strip().lower()
+                if answer in ("a", "always") and decision.rememberable:
+                    session_allowed.update(decision.prefixes)
+                elif answer not in ("y", "yes", "a", "always"):
+                    return "Permission denied by user"
 
         if block.name.startswith("mcp__"):
             state = resolve(mcp_state, None)

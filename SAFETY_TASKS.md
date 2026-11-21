@@ -19,52 +19,10 @@
   - PTY 测试设置 `NO_COLOR=1`，并以 `❯` 作为输入框就绪的标记。
   - 交互确认统一走 `agent_app/cli_progress.py:terminal_confirmation`。权限钩子在 `agent_app/tools/hooks.py:make_permission_hook`，在 `agent_app/bootstrap.py:_register_default_hooks` 里注册。
   - headless 模式（`pamu run`，`agent_app/execution/__init__.py`）有自己的预算和钩子，主循环在 headless 下不触发 `PreToolUse` 权限钩子。除非任务明确要求，否则不要改动 headless 的行为。
-- **共用的确认能力**：任务 1 会给 `terminal_confirmation` 加上「非主线程时直接拒绝」和「本会话总是允许」两个能力，后续任务直接复用，不要另写一套。
-
----
-
-## 任务 1：Shell 审批改为白名单，堵住重定向写文件
-
-**现状**
-- `make_permission_hook`（`agent_app/tools/hooks.py` 约第 64、71 行）靠子串匹配：
-  - 直接拒绝的只有 `rm -rf /`、`sudo`、`shutdown`、`reboot`、`mkfs`、`dd if=`，写成 `s\udo` 就能绕过；
-  - 只有命令里含 `rm `、`> /etc/`、`chmod 777`、`curl` 时才问。
-- `git push --force`、`git reset --hard`、`git clean -fdx`、`find -delete`、`wget`、`python -c` 等都不问。
-- `echo x > file.py` 能覆盖文件，并且绕过了 write_file/edit_file 的 diff 确认。
-
-**要做的**
-1. 新建 `agent_app/security/command_policy.py`，提供 `classify(command) -> CommandDecision(action, reason)`，`action` 取 `allow` / `ask` / `deny` 之一：
-   - 用 `shlex`（`punctuation_chars`，可参考 `agent_app/tools/executor.py:is_slow_operation` 的切分方式）按 `; && || | &` 和换行拆成多条简单命令。**每条都允许，整条命令才允许。**
-   - 解析失败、出现命令替换（`$(`、反引号）、`eval` / `exec` / `source` / `.`、子 shell 括号时，一律 `ask`。
-   - 只要有输出重定向 `>`、`>>`、`&>`、`2>`，且目标不是 `/dev/null`，就 `ask`，并在原因里说明「会写入文件」。
-   - **只读白名单**（直接允许）：`ls cat head tail wc grep rg fd pwd echo printf which file stat du df tree sort uniq cut tr diff cmp basename dirname realpath date true false test [ exit cd`。
-     - `find` 不带 `-delete -exec -execdir -ok -okdir -fprint -fprintf -fls` 时允许；
-     - `sed` 不带 `-i` 时允许；
-     - `git` 的子命令为 `status diff log show rev-parse ls-files blame describe grep` 时允许，`branch`/`remote`/`tag` 只有不带参数（或只带 `-v`、`-a`、`--list`）时允许。
-   - **硬拒绝**：程序名为 `sudo su doas shutdown reboot halt poweroff`、以 `mkfs` 开头，`dd` 带 `of=/dev/`，`rm` 带递归参数且目标是 `/`、`/*`、`~`、`$HOME`。
-   - 其余一律 `ask`。
-2. `make_permission_hook` 改用 `classify`：
-   - `deny` 时返回 `"Permission denied by deny list"`（这个字符串被 `session_cli._shell_status` 和 `tool_display.DENIALS` 用到，保持不变）；
-   - `ask` 时显示完整命令和原因，然后确认。
-   - 现有提示语 `Allow this change? [y/N]`、teammate 版本 `Allow teammate '<name>' to apply this change? [y/N]`，以及面板标题 `Potentially destructive command`，PTY 测试都在用，保留或同步修改测试。
-3. **确认能力**（后续任务复用）：
-   - `terminal_confirmation` 在非主线程调用时，不读 stdin，直接返回拒绝，并通过 `cli_progress` 打印一条「后台操作需要确认，已拒绝」的提示。这一点任务 3 依赖。
-   - 确认提示支持 `a` = 本会话总是允许：把这条命令的「程序名 + 子命令」前缀（例如 `uv run pytest`、`npm test`）加入会话白名单。白名单存在 runtime 里，不落盘。
-4. 新增配置 `PAMU_SHELL_APPROVAL=ask|auto`，默认 `ask`。`auto` 表示除硬拒绝外全部放行，README 里要标明这是危险选项。
-   - 配置读取在 `agent_app/config.py:AppConfig.from_env`；
-   - 需要让 Shell 无需确认的 PTY 测试，可以设置这个环境变量。
-
-**验收**
-- `tests/test_command_policy.py` 至少覆盖：
-  - 白名单命令直接允许；
-  - 管道和 `&&` 混合时逐条判断；
-  - 重定向写文件要问，写 `/dev/null` 不问；
-  - `$(...)` 要问；
-  - `s\udo`、`/usr/bin/sudo` 被拒绝；
-  - `git push --force`、`find . -delete`、`sed -i` 要问；
-  - `git status` 允许。
-- 权限钩子测试：`ask` 时调用确认；`a` 之后同一前缀不再询问；非主线程的确认直接拒绝。
-- 更新 `tests/test_cli_pty.py` 中受影响的用例。注意 `touch`、括号子 shell 现在会要求确认，相关用例改为设置 `PAMU_SHELL_APPROVAL=auto`，或在测试里回答 `y`。
+- **已有的确认能力**（任务 1 已完成，后续任务直接复用，不要另写一套）：
+  - `agent_app/cli_progress.py:terminal_confirmation` 在非主线程调用时不读 stdin，直接返回 `''`（视为拒绝），并打印 `BACKGROUND_APPROVAL_DENIED` 提示；stdin 不可读（`OSError`）时也返回 `''`。
+  - Shell 命令由 `agent_app/security/command_policy.py:classify` 判定为 `allow` / `ask` / `deny`，结果里的 `reason` 用于展示原因；`make_permission_hook` 里有本会话白名单 `session_allowed`（回答 `a` 时写入）。
+  - 配置 `PAMU_SHELL_APPROVAL=auto` 可让测试或用户跳过 Shell 确认；PTY 测试里在子进程脚本的 `AppConfig.from_env(environ=...)` 中传入即可。
 
 ---
 
@@ -81,7 +39,7 @@
    - 拒绝时抛 `SecurityDenied`，信息要让模型能看懂。
    - **例外**：`.pamu/task_outputs/` 必须仍然可读。`agent_app/core/compaction.py` 第 21–22 行会把大输出存到 `config.tool_result_dir`，并告诉模型「Full output: <path>」，模型会用 read_file 去读。
    - 写例外时用 `config.tool_result_dir` 这个精确路径，不要放开整个 `.pamu`。
-2. Shell 在 off 模式下没法做路径检查。在任务 1 的 `classify` 里加一条：命令里出现 `.ssh`、`.aws`、`.gnupg`、`.pamu`、`.env`、`credentials`、`id_rsa`、`id_ed25519`、`.git/hooks` 时强制 `ask`，原因写「可能访问敏感文件」。
+2. Shell 在 off 模式下没法做路径检查。在 `agent_app/security/command_policy.py:classify` 里加一条（结果需为不可记住的 `ask`，即不带 `prefixes`）：命令里出现 `.ssh`、`.aws`、`.gnupg`、`.pamu`、`.env`、`credentials`、`id_rsa`、`id_ed25519`、`.git/hooks` 时强制 `ask`，原因写「可能访问敏感文件」。
    - 这只是启发式检查，README 要说明：真正的隔离需要 `PAMU_SANDBOX=confined`。
 3. 不要改 `runtime_write_roots` 在 off 模式下的行为：在仓库里开发 PamuCode 本身时，需要能改 `agent_app/`。
 

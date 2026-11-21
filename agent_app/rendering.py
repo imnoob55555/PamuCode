@@ -175,8 +175,8 @@ def approval_panel(title: str, rows: list[tuple[str, str]], *, stream=None) -> s
     return "\n" + theme.render(panel, width=terminal_width(), stream=stream)
 
 
-def blocked_notice(pattern: str, *, stream=None) -> str:
-    return f"\n{theme.bullet('error', stream)} {theme.paint('Blocked', 'error.bold', stream)} 命中拒绝规则 '{pattern}'"
+def blocked_notice(reason: str, *, stream=None) -> str:
+    return f"\n{theme.bullet('error', stream)} {theme.paint('Blocked', 'error.bold', stream)} {reason}"
 
 
 def diff_block(diff_lines: list[str], *, stream=None) -> str:

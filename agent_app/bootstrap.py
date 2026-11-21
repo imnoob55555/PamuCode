@@ -212,7 +212,8 @@ def _register_default_hooks(
     hooks.register("UserPromptSubmit", make_context_inject_hook(config.workdir))
     hooks.register(
         "PreToolUse",
-        make_permission_hook(config.workdir, terminal_confirmation, mcp_state=mcp_state),
+        make_permission_hook(config.workdir, terminal_confirmation, mcp_state=mcp_state,
+                             shell_approval=config.shell_approval),
     )
     hooks.register("PreToolUse", make_log_hook(config.workdir))
     hooks.register("PreToolUse", make_diff_preview_hook(config.workdir, terminal_confirmation,

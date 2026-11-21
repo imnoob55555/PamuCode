@@ -58,6 +58,7 @@ class AppConfig:
     headless: bool = False
     sandbox_mode: str = "off"
     skill_dirs: tuple[Path, ...] = ()
+    shell_approval: str = "ask"
 
     @property
     def sessions_dir(self) -> Path:
@@ -80,6 +81,9 @@ class AppConfig:
         sandbox = environment.get("PAMU_SANDBOX", "off").strip()
         if sandbox not in {"off", "confined"}:
             raise ValueError("PAMU_SANDBOX must be 'off' or 'confined'")
+        shell_approval = environment.get("PAMU_SHELL_APPROVAL", "ask").strip() or "ask"
+        if shell_approval not in {"ask", "auto"}:
+            raise ValueError("PAMU_SHELL_APPROVAL must be 'ask' or 'auto'")
         root = repo_root.resolve()
         workspace = (workdir or repo_root).resolve()
         state_dir = workspace / ".pamu"
@@ -105,4 +109,5 @@ class AppConfig:
             fallback_model=environment.get("FALLBACK_MODEL_ID"),
             log_level=(environment.get("LOG_LEVEL") or "INFO").strip() or "INFO",
             sandbox_mode=sandbox,
+            shell_approval=shell_approval,
         )

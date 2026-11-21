@@ -77,6 +77,18 @@ glyphs. Set `NO_COLOR` to keep the layout but drop colors.
 Operations requiring approval show the permission prompt and wait for your
 answer. Proposed file changes include a diff.
 
+Shell commands run without asking only when every part of the command is a known
+read-only program (`ls`, `cat`, `rg`, `find` without `-delete`/`-exec`,
+`git status`/`diff`/`log`/`show`, and similar). Everything else asks first and
+shows the reason: unknown programs, writes through `>` or `>>`, command
+substitution, subshells, nested `sh -c` scripts, and commands that cannot be
+parsed. Answer `a` to stop asking for the same program and subcommand (for example
+`uv run pytest`) for the rest of the session; writes through redirection always ask.
+`sudo`, `su`, `doas`, `shutdown`, `reboot`, `mkfs`, `dd` to a device, and recursive
+`rm` of `/` or the home directory are refused, even when disguised as `s\udo` or
+`/usr/bin/sudo`. Approval questions raised by background work (such as scheduled
+turns) are refused instead of competing with the prompt for input.
+
 While the agent is working, Ctrl+C interrupts the current turn and returns to the
 same session's prompt. It keeps completed edits, captured command output, and
 visible partial model text. Interrupted tool calls receive explicit error results;
@@ -222,6 +234,7 @@ selected during login. `/model` and `/provider` take effect in the current sessi
 | `OPENAI_COMPATIBLE_PROTOCOL` | `openai_chat` or `openai_responses` |
 | `PAMU_CONTEXT_WINDOW` | Explicit context window for the startup model |
 | `PAMU_SANDBOX` | `off` (default) or `confined` |
+| `PAMU_SHELL_APPROVAL` | `ask` (default) or `auto`. **Dangerous:** `auto` runs every shell command except the refused ones without asking |
 | `LOG_LEVEL` | Runtime log verbosity |
 
 Provider entries: `anthropic`, `deepseek`, `moonshot`, `zhipu`, `openrouter`,
