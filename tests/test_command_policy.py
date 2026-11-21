@@ -76,3 +76,18 @@ def test_only_unknown_programs_can_be_remembered_for_the_session():
 ])
 def test_prefix_keeps_subcommands_for_tool_launchers(argv, expected):
     assert prefix(argv) == expected
+
+
+@pytest.mark.parametrize("command", [
+    "cat ~/.ssh/id_rsa", "cat .env", "head .env.local", "ls ~/.aws", "cat /Users/me/.pamu/credentials.json",
+    "cat .pamu/github-token", "grep token .settings", "ls .git/hooks", "wc -c < ~/.gnupg/secring",
+])
+def test_commands_touching_sensitive_files_always_ask_and_cannot_be_remembered(command):
+    decision = classify(command)
+    assert decision.action == ASK and "sensitive" in decision.reason
+    assert not decision.rememberable
+
+
+@pytest.mark.parametrize("command", ["cat .venv/pyvenv.cfg", "cat agent_app/features/auth.py", "cat dotenv.md"])
+def test_similar_names_are_not_treated_as_sensitive(command):
+    assert classify(command).action == ALLOW

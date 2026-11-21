@@ -44,6 +44,11 @@ SUBCOMMAND_PROGRAMS = frozenset({
     "docker", "kubectl", "brew", "gh", "make",
 })
 RUNNER_SUBCOMMANDS = frozenset({"run", "exec", "x", "dlx"})
+SENSITIVE = re.compile(
+    r"(^|/)\.(ssh|aws|gnupg|pamu|codex)(/|$)|(^|/)\.env(\.|$)|(^|/)\.settings$|(^|/)\.?credentials(\.json)?$|"
+    r"id_(rsa|dsa|ecdsa|ed25519)|\.git/(hooks|config)",
+    re.IGNORECASE,
+)
 DANGEROUS_RM_TARGETS = {"/", "/*", "~", "~/", "~/*", "$HOME", "${HOME}", "$HOME/", "${HOME}/", "/.", ".."}
 
 
@@ -188,6 +193,9 @@ def classify(command: str) -> CommandDecision:
     reasons, prefixes, structural = [], [], False
     if "$(" in command or "`" in command:
         reasons.append("contains command substitution")
+        structural = True
+    if any(SENSITIVE.search(token) for tokens in segments for token in tokens):
+        reasons.append("may access sensitive files")
         structural = True
     for tokens in segments:
         if "(" in tokens or ")" in tokens:

@@ -207,7 +207,7 @@ def _run_git(config: AppConfig, args: list[str]) -> tuple[bool, str]:
 
 
 def _register_default_hooks(
-    hooks: HookRegistry, config: AppConfig, mcp_state: mcp.MCPState
+    hooks: HookRegistry, config: AppConfig, mcp_state: mcp.MCPState, policy: ExecutionPolicy
 ) -> None:
     hooks.register("UserPromptSubmit", make_context_inject_hook(config.workdir))
     hooks.register(
@@ -216,8 +216,7 @@ def _register_default_hooks(
                              shell_approval=config.shell_approval),
     )
     hooks.register("PreToolUse", make_log_hook(config.workdir))
-    hooks.register("PreToolUse", make_diff_preview_hook(config.workdir, terminal_confirmation,
-                   policy=ExecutionPolicy(config.workdir, config.repo_root, mode=config.sandbox_mode)))
+    hooks.register("PreToolUse", make_diff_preview_hook(config.workdir, terminal_confirmation, policy=policy))
     hooks.register("PostToolUse", make_large_output_hook(config.workdir))
     hooks.register("Stop", make_summary_hook(config.workdir))
 
@@ -237,7 +236,10 @@ def build_runtime(
     shell_deadline: float | None = None,
 ) -> RuntimeContext:
     """Build one completely independent runtime from explicit dependencies."""
-    policy = execution_policy or ExecutionPolicy(config.workdir, config.repo_root, config.sandbox_mode)
+    policy = execution_policy or ExecutionPolicy(
+        config.workdir, config.repo_root, config.sandbox_mode,
+        state_roots=(config.tool_result_dir, config.worktrees_dir),
+    )
     if policy.workspace != config.workdir.resolve() or policy.install_root != config.repo_root.resolve():
         raise ValueError("Execution policy roots do not match runtime configuration")
     config = replace(config, sandbox_mode=policy.mode)
@@ -292,7 +294,7 @@ def build_runtime(
                 return f"Permission denied: {exc}"
         return None
     hooks.register("PreToolUse", security_hook)
-    _register_default_hooks(hooks, config, mcp_state)
+    _register_default_hooks(hooks, config, mcp_state, policy)
     if not config.headless:
         from .tool_display import ToolDisplay
 

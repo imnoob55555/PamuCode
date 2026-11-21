@@ -23,31 +23,7 @@
   - `agent_app/cli_progress.py:terminal_confirmation` 在非主线程调用时不读 stdin，直接返回 `''`（视为拒绝），并打印 `BACKGROUND_APPROVAL_DENIED` 提示；stdin 不可读（`OSError`）时也返回 `''`。
   - Shell 命令由 `agent_app/security/command_policy.py:classify` 判定为 `allow` / `ask` / `deny`，结果里的 `reason` 用于展示原因；`make_permission_hook` 里有本会话白名单 `session_allowed`（回答 `a` 时写入）。
   - 配置 `PAMU_SHELL_APPROVAL=auto` 可让测试或用户跳过 Shell 确认；PTY 测试里在子进程脚本的 `AppConfig.from_env(environ=...)` 中传入即可。
-
----
-
-## 任务 2：默认模式也保护敏感路径
-
-**现状**
-- `agent_app/security/policy.py:ExecutionPolicy.check_path` 在 `mode == "off"`（默认）时，只检查路径在工作区内就返回（约第 66 行），`.pamu`、`.env`、`.settings`、`.ssh` 只在 confined 模式下才拦。
-- 所以 read_file 能读到工作区里的 `.pamu/github-token`、`.env` 之类的文件；write_file 能改 `.git/hooks`，下次 `git commit` 时就会执行。
-
-**要做的**
-1. `check_path` 在 off 模式下：
-   - 读和写都拒绝：`SECRET_DIRECTORIES`、`.env` / `.env.*`、`.settings`；
-   - 写时额外拒绝：`.git/hooks`、`.git/config`。
-   - 拒绝时抛 `SecurityDenied`，信息要让模型能看懂。
-   - **例外**：`.pamu/task_outputs/` 必须仍然可读。`agent_app/core/compaction.py` 第 21–22 行会把大输出存到 `config.tool_result_dir`，并告诉模型「Full output: <path>」，模型会用 read_file 去读。
-   - 写例外时用 `config.tool_result_dir` 这个精确路径，不要放开整个 `.pamu`。
-2. Shell 在 off 模式下没法做路径检查。在 `agent_app/security/command_policy.py:classify` 里加一条（结果需为不可记住的 `ask`，即不带 `prefixes`）：命令里出现 `.ssh`、`.aws`、`.gnupg`、`.pamu`、`.env`、`credentials`、`id_rsa`、`id_ed25519`、`.git/hooks` 时强制 `ask`，原因写「可能访问敏感文件」。
-   - 这只是启发式检查，README 要说明：真正的隔离需要 `PAMU_SANDBOX=confined`。
-3. 不要改 `runtime_write_roots` 在 off 模式下的行为：在仓库里开发 PamuCode 本身时，需要能改 `agent_app/`。
-
-**验收**
-- off 模式下 read_file 读 `.env`、`.pamu/x`、`.ssh/x` 被拒绝；读 `.pamu/task_outputs/tool-results/x.txt` 正常。
-- write_file 写 `.git/hooks/pre-commit` 被拒绝；写普通文件正常。
-- Shell 命令 `cat ~/.ssh/id_rsa` 被分类为 `ask`。
-- 现有 confined 模式的测试保持通过。
+- **路径保护**（任务 2 已完成）：默认模式下 `ExecutionPolicy.check_path` 也会拒绝 `.pamu`、`.env*`、`.settings`、`.ssh` 等路径，以及写 `.git/hooks`、`.git/config`；`state_roots`（bootstrap 里传入 `config.tool_result_dir` 和 `config.worktrees_dir`）是例外。新功能如果需要让模型读写 `.pamu` 下的某个目录，要把它加进 `state_roots`，不要放开整个 `.pamu`。
 
 ---
 

@@ -388,6 +388,14 @@ isolation. Shell children still receive an allowlisted environment, a temporary
 HOME, and a fixed executable search path instead of inherited provider credentials.
 Commands that depend on the original shell environment may need explicit paths.
 
+Even without the sandbox, file tools refuse credential and runtime-state paths in
+the workspace (`.pamu`, `.env`, `.env.*`, `.settings`, `.ssh`, `.aws`, `.gnupg`,
+`.codex`) and refuse writes to `.git/hooks` and `.git/config`. Persisted tool output
+under `.pamu/task_outputs/tool-results/` and teammate worktrees under
+`.pamu/worktrees/` stay accessible. Shell commands that mention such paths always
+ask for approval, but this is a textual check: only `PAMU_SANDBOX=confined` actually
+stops a shell command from reading them.
+
 `PAMU_SANDBOX=confined` uses macOS Seatbelt for shell file/network restrictions
 and descriptor-based file tools. Unsupported platforms or unavailable backends
 fail closed. Credential paths and runtime control code are protected; worktree
