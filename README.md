@@ -149,6 +149,7 @@ are not implemented; use Ctrl+C, then enter your new instruction.
 | `/delete` | Confirm deletion of the current session and exit |
 | `/background` | List this session's background commands |
 | `/cron [cancel <id \| all>]` | List or cancel scheduled jobs |
+| `/memory [forget <name>]` | List automatic memories or delete one |
 | `/stop <ID \| all>` | Stop selected background commands |
 | `/help` or `/h` | Show a concise command list |
 | `/quit` | Exit the session |
@@ -174,6 +175,16 @@ Modes, pinned constraints, and the current request survive compaction and sessio
 restore. Delegates receive the original request and pinned constraints. In execution
 mode, natural-language limits still depend on model compliance; pinned text is not
 an execution deny rule. Use `/plan` when you need enforced read-only tool access.
+
+### Memory
+
+After each turn PamuCode asks the model to extract lasting preferences and project
+facts from what you typed and what it answered; tool output and runtime notices are
+left out. New memories are announced, credential-like text is never saved, and
+`/memory` lists or forgets them. Before consolidating memories, the previous files are
+copied to `.pamu/memory/.backup/` (the five most recent copies are kept), and an empty
+consolidation result keeps the existing memories. Set `PAMU_AUTO_MEMORY=off` to
+disable extraction and consolidation.
 
 ### Skills
 
@@ -245,6 +256,7 @@ selected during login. `/model` and `/provider` take effect in the current sessi
 | `PAMU_SANDBOX` | `off` (default) or `confined` |
 | `PAMU_MAX_TURN_MODEL_CALLS` / `PAMU_MAX_TURN_TOOL_CALLS` / `PAMU_MAX_TURN_TOKENS` | Per-turn limits in the interactive session (defaults 50 / 200 / 2,000,000). When one is reached PamuCode asks whether to continue; scheduled turns stop |
 | `PAMU_MAX_TEAMMATES` / `PAMU_MAX_BACKGROUND_TASKS` | Concurrent teammates and running background commands (defaults 4 / 8) |
+| `PAMU_AUTO_MEMORY` | `on` (default) or `off`. Automatic memory extraction after each turn |
 | `PAMU_SHELL_APPROVAL` | `ask` (default) or `auto`. **Dangerous:** `auto` runs every shell command except the refused ones without asking |
 | `LOG_LEVEL` | Runtime log verbosity |
 

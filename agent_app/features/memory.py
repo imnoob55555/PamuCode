@@ -1,7 +1,9 @@
 import json
 import re
+import shutil
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 from ..adapters.common import output_text
@@ -10,6 +12,16 @@ from ..logging_setup import get_logger
 LOGGER = get_logger("pamu.memory")
 MEMORY_TYPES = ["user", "feedback", "project", "reference"]
 CONSOLIDATE_THRESHOLD = 10
+BACKUPS_KEPT = 5
+SECRET_PATTERN = re.compile(
+    r"sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16}"
+    r"|xox[abpr]-[A-Za-z0-9-]{10,}|-----BEGIN [A-Z ]*PRIVATE KEY-----"
+    r"|(?i:api[_-]?key|token|secret|password|passwd)\s*[:=]\s*['\"]?[A-Za-z0-9_\-./+=]{12,}"
+)
+_INTERNAL_TEXT = (
+    "<task_notification>", "<reminder>", "[Scheduled:", "[Team inbox]", "[Compacted",
+    "[Reactive compact]", "[snipped ", "[会话恢复]", "[用户中断]",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,17 +198,73 @@ def load_memories(store: MemoryStore, messages: list, summarize, *, max_tokens=1
     return bounded_text("\n\n".join(parts), max_tokens)
 
 
-def extract_memories(store: MemoryStore, messages: list, summarize) -> list[dict]:
+def contains_secret(text: str) -> bool:
+    return bool(SECRET_PATTERN.search(text))
+
+
+def _authored_text(message) -> str:
+    """User-typed and assistant-written text only; tool results and runtime notices are excluded."""
+    role = message.get("role")
+    if role not in ("user", "assistant") or message.get("_pamu_source") == "system":
+        return ""
+    content = message.get("content", "")
+    blocks = [content] if isinstance(content, str) else [
+        block.get("text", "") if isinstance(block, dict) else getattr(block, "text", "")
+        for block in content
+        if (block.get("type") if isinstance(block, dict) else getattr(block, "type", None)) == "text"
+    ]
+    texts = [text for text in blocks if isinstance(text, str) and text.strip()]
+    if role == "user":
+        texts = [text for text in texts if not text.strip().startswith(_INTERNAL_TEXT)]
+    return " ".join(texts)
+
+
+def _safe_items(items) -> list[dict]:
+    safe = []
+    for memory in items if isinstance(items, list) else []:
+        if not isinstance(memory, dict):
+            continue
+        fields = [str(memory.get(key, "")) for key in ("name", "description", "body")]
+        if contains_secret("\n".join(fields)):
+            LOGGER.warning("skipped a memory that looks like it contains a credential")
+            continue
+        safe.append(memory)
+    return safe
+
+
+def backup_memories(store: MemoryStore, clock=datetime.now) -> Path | None:
+    """Copy the memory files aside, keeping only the most recent backups."""
+    files = [path for path in store.root.glob("*.md")] if store.root.exists() else []
+    if not files:
+        return None
+    backups = store.root / ".backup"
+    target = backups / clock().strftime("%Y%m%d-%H%M%S-%f")
+    target.mkdir(parents=True)
+    for path in files:
+        shutil.copy2(path, target / path.name)
+    for old in sorted(path for path in backups.iterdir() if path.is_dir())[:-BACKUPS_KEPT]:
+        shutil.rmtree(old, ignore_errors=True)
+    return target
+
+
+def forget_memory(store: MemoryStore, name: str) -> str | None:
+    """Delete the memory whose name or file stem matches; return its name."""
+    folded = name.strip().casefold()
+    for item in list_memory_files(store):
+        if folded in (item["name"].casefold(), Path(item["filename"]).stem.casefold()):
+            (store.root / item["filename"]).unlink()
+            rebuild_index(store)
+            return item["name"]
+    return None
+
+
+def extract_memories(store: MemoryStore, messages: list, summarize) -> list[str]:
+    """Persist new memories from the dialogue; return the names that were written."""
     dialogue_parts = []
     for message in messages:
-        role = message.get("role", "?")
-        content = message.get("content", "")
-        if isinstance(content, list):
-            content = output_text(content, separator=" ")
-        if isinstance(content, str) and content.strip():
-            if role == "user" and is_internal_reminder_text(content.strip()):
-                continue
-            dialogue_parts.append(f"{role}: {content}")
+        text = _authored_text(message)
+        if text:
+            dialogue_parts.append(f"{message['role']}: {text}")
     dialogue = "\n".join(dialogue_parts)
     if not dialogue.strip():
         return []
@@ -222,23 +290,19 @@ def extract_memories(store: MemoryStore, messages: list, summarize) -> list[dict
         match = re.search(r"\[.*\]", text, re.DOTALL)
         if not match:
             return []
-        items = json.loads(match.group())
-        if not items:
-            return []
-        count = 0
-        for memory in items:
-            name = memory.get("name", f"memory_{int(time.time())}")
-            memory_type = memory.get("type", "user")
-            description = memory.get("description", "")
-            body = memory.get("body", "")
+        written = []
+        for memory in _safe_items(json.loads(match.group())):
+            name = str(memory.get("name") or f"memory_{int(time.time())}")
+            description, body = str(memory.get("description", "")), str(memory.get("body", ""))
             if description and body:
-                write_memory_file(store, name, memory_type, description, body)
-                count += 1
-        if count:
-            LOGGER.info("extracted %d new memories", count)
+                write_memory_file(store, name, str(memory.get("type", "user")), description, body)
+                written.append(name)
+        if written:
+            LOGGER.info("extracted %d new memories", len(written))
+        return written
     except Exception:
+        LOGGER.warning("memory extraction failed", exc_info=True)
         return []
-    return []
 
 
 def consolidate_memories(store: MemoryStore, summarize):
@@ -264,7 +328,11 @@ def consolidate_memories(store: MemoryStore, summarize):
         match = re.search(r"\[.*\]", text, re.DOTALL)
         if not match:
             return
-        items = json.loads(match.group())
+        items = _safe_items(json.loads(match.group()))
+        if not items:
+            LOGGER.warning("memory consolidation returned nothing; keeping existing memories")
+            return
+        backup_memories(store)
         for path in store.root.glob("*.md"):
             if path.name != "MEMORY.md":
                 path.unlink()
@@ -277,7 +345,7 @@ def consolidate_memories(store: MemoryStore, summarize):
                 write_memory_file(store, name, memory_type, description, body)
         LOGGER.info("consolidated %d memories into %d", len(files), len(items))
     except Exception:
-        return
+        LOGGER.warning("memory consolidation failed", exc_info=True)
 
 
 def find_latest_text_user_message(messages: list) -> int | None:

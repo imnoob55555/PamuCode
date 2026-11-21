@@ -461,6 +461,23 @@ def _handle_slash_command(
     credentials_path = credentials_path or auth.CREDENTIALS_PATH
     command, _, rest = query.strip().partition(" ")
     argument = rest.strip()
+    if command == '/memory':
+        if runtime is None:
+            notify_or_print(ui, LOGIN_HINT, print_fn=print_fn)
+            return
+        from .features.memory import forget_memory, list_memory_files
+        action, _, target = argument.partition(' ')
+        if not action:
+            items = list_memory_files(runtime.memory)
+            state = '' if getattr(runtime.config, 'auto_memory', True) else '（自动记忆已关闭：PAMU_AUTO_MEMORY=off）\n'
+            print_fn(state + ('\n'.join(f"{item['name']}  [{item['type']}]  {item['description']}" for item in items)
+                              or '没有记忆。'))
+        elif action == 'forget' and target.strip():
+            name = forget_memory(runtime.memory, target)
+            notify_or_print(ui, f"已删除记忆：{name}" if name else f"记忆不存在：{target.strip()}", print_fn=print_fn)
+        else:
+            notify_or_print(ui, '用法：/memory 或 /memory forget <名称>', print_fn=print_fn)
+        return
     if command == '/cron':
         if runtime is None:
             notify_or_print(ui, LOGIN_HINT, print_fn=print_fn)

@@ -77,6 +77,7 @@ class AppConfig:
     max_turn_tokens: int = 2_000_000
     max_teammates: int = 4
     max_background_tasks: int = 8
+    auto_memory: bool = True
 
     @property
     def sessions_dir(self) -> Path:
@@ -109,6 +110,9 @@ class AppConfig:
                 ("max_background_tasks", "PAMU_MAX_BACKGROUND_TASKS", 8),
             )
         }
+        auto_memory = environment.get("PAMU_AUTO_MEMORY", "on").strip().lower() or "on"
+        if auto_memory not in {"on", "off"}:
+            raise ValueError("PAMU_AUTO_MEMORY must be 'on' or 'off'")
         shell_approval = environment.get("PAMU_SHELL_APPROVAL", "ask").strip() or "ask"
         if shell_approval not in {"ask", "auto"}:
             raise ValueError("PAMU_SHELL_APPROVAL must be 'ask' or 'auto'")
@@ -138,5 +142,6 @@ class AppConfig:
             log_level=(environment.get("LOG_LEVEL") or "INFO").strip() or "INFO",
             sandbox_mode=sandbox,
             shell_approval=shell_approval,
+            auto_memory=auto_memory == "on",
             **limits,
         )

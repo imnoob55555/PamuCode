@@ -27,34 +27,6 @@
 
 ---
 
-## 任务 5：自动记忆的过滤、可见性与备份
-
-**现状**
-- 每轮对话结束后，`run_agent_loop` 都会调用 `extract_memories`，并在条件满足时调用 `consolidate_memories`（`agent_app/core/loop.py` 约第 416–419 行）。
-- `extract_memories`（`agent_app/features/memory.py`）会把模型从对话里提取的内容写成长期记忆，以后每次请求都会带上。
-- 用户贴过的密钥、工具读到的文件里夹带的指令，都可能被存下来。
-- `consolidate_memories` 按模型输出删除文件（约第 270 行 `path.unlink()`），没有备份。
-- 两处都有 `except Exception` 把错误静默吞掉（约第 239、279 行）。
-
-**要做的**
-1. 写入前过滤疑似密钥：`sk-...`、`ghp_` / `gho_` / `github_pat_`、`AKIA...`、`xox[abp]-`、`-----BEGIN ... PRIVATE KEY-----`，以及 `api_key` / `token` / `secret` / `password` 后面紧跟的长字符串。命中时跳过这条记忆，并记一条日志（不要记录密钥本身）。
-2. 提取时只使用用户输入（排除 `_pamu_source == "system"` 和内部提醒）和助手正文，不包含工具结果，以减少注入。
-3. 可见性：
-   - 新记忆写入后，在终端打印「已记住：<name>」（交互模式下可以用 `theme.success`）；
-   - 新增 `/memory`（列出记忆）和 `/memory forget <name>`（删除）。
-4. 合并前把整个记忆目录备份到 `.pamu/memory/.backup/<时间戳>/`，只保留最近 5 份。
-5. 吞异常的地方改为 `LOGGER.warning(..., exc_info=True)`，返回值保持不变。
-6. 新增配置 `PAMU_AUTO_MEMORY=on|off`，默认 `on`；`off` 时完全不提取、不合并。
-
-**验收**
-- 含密钥的对话不会产生记忆文件。
-- 工具结果里的文本不会进入提取提示词。
-- 合并前存在备份，超过 5 份时清理最旧的。
-- `/memory` 的列出和删除有测试。
-- `PAMU_AUTO_MEMORY=off` 时不调用 summarize。
-
----
-
 ## 任务 6：文件检查点与 /undo
 
 **现状**：会话历史有快照，但文件没有。被 Ctrl+C 中断的轮次会保留已做的修改；不在 git 仓库里，或者有未提交改动时，改坏了没法撤销。

@@ -426,10 +426,13 @@ def run_agent_loop(runtime: RuntimeContext) -> str | None:
                 continue
             if _wait_for_team_activity(runtime):
                 continue
-            if not runtime.config.headless and getattr(runtime.config, 'sandbox_mode', 'off') != 'confined':
-                extract_memories(runtime.memory, pre_compact_messages, summarize)
+            remember = (not runtime.config.headless and getattr(runtime.config, 'auto_memory', True)
+                        and getattr(runtime.config, 'sandbox_mode', 'off') != 'confined')
+            if remember:
+                for name in extract_memories(runtime.memory, pre_compact_messages, summarize) or []:
+                    print(theme.success(f"已记住：{name}（/memory 查看，/memory forget {name} 删除）"))
             checkpoint(runtime)
-            if not runtime.config.headless and getattr(runtime.config, 'sandbox_mode', 'off') != 'confined':
+            if remember:
                 consolidate_memories(runtime.memory, summarize)
             checkpoint(runtime)
             _update_context(runtime)

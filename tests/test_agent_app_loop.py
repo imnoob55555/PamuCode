@@ -773,3 +773,19 @@ def test_background_dispatch_respects_the_running_task_limit(runtime_factory):
     run_agent_loop(runtime)
     result = tool_results(runtime)[-1]
     assert result["is_error"] and "PAMU_MAX_BACKGROUND_TASKS" in result["content"]
+
+
+def test_loop_announces_new_memories_and_respects_auto_memory_off(runtime_factory, monkeypatch, capsys):
+    monkeypatch.setattr("agent_app.core.loop.extract_memories", lambda *_args: ["tabs"])
+    monkeypatch.setattr("agent_app.core.loop.consolidate_memories", lambda *_args: None)
+    runtime = runtime_factory([text_response()])
+    runtime.session.history.append({"role": "user", "content": "use tabs"})
+    run_agent_loop(runtime)
+    assert "已记住：tabs" in capsys.readouterr().out
+
+    monkeypatch.setattr("agent_app.core.loop.extract_memories", lambda *_args: pytest.fail("extracted while off"))
+    monkeypatch.setattr("agent_app.core.loop.consolidate_memories", lambda *_args: pytest.fail("consolidated while off"))
+    runtime = runtime_factory([text_response()])
+    runtime.config = replace(runtime.config, auto_memory=False)
+    runtime.session.history.append({"role": "user", "content": "use tabs"})
+    run_agent_loop(runtime)
