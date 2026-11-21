@@ -39,7 +39,7 @@ class UI:
 
 @pytest.fixture
 def runtime(tmp_path):
-    manifest = tmp_path / "skills" / "review" / "SKILL.md"
+    manifest = tmp_path / ".pamu" / "skills" / "review" / "SKILL.md"
     manifest.parent.mkdir(parents=True)
     manifest.write_text("---\nname: Code Review\ndescription: Inspect changes\n---\nRead the diff and report defects.")
     config = replace(AppConfig.from_env(tmp_path, environ={"MODEL_ID": "test"}), headless=True)
@@ -63,7 +63,7 @@ def test_skill_picker_uses_directory_key_and_display_name(runtime):
     ui = UI()
     result = cli.handle_slash_command(runtime, "/skill", ui=ui)
     assert isinstance(result, SkillInvocation)
-    assert ui.choices == [("review", "Code Review — Inspect changes")]
+    assert ui.choices == [("review", "review: Inspect changes (name: Code Review) [.pamu/skills]")]
 
 
 @pytest.mark.parametrize("command,selection", [("/skill", None), ("/skill missing", "review")])
@@ -79,7 +79,7 @@ def test_cancelled_or_missing_skill_leaves_no_chat_or_loaded_context(runtime, ca
 
 def test_no_ui_lists_skills_without_invoking(runtime, capsys):
     assert cli.handle_slash_command(runtime, "/skill") is None
-    assert "review — Inspect changes" in capsys.readouterr().out
+    assert "review: Inspect changes (name: Code Review) [.pamu/skills]" in capsys.readouterr().out
     assert not runtime.session.context_state.get("loaded_skills")
 
 
@@ -112,6 +112,6 @@ def test_no_skills_or_no_runtime_only_notifies(runtime):
     ui = UI()
     cli.handle_slash_command(None, "/skill", ui=ui)
     assert "配置" in ui.notices[-1]
-    runtime.skills.registry.clear()
+    (runtime.config.skills_dir / "review" / "SKILL.md").unlink()
     cli.handle_slash_command(runtime, "/skill", ui=ui)
-    assert "没有可用技能" in ui.notices[-1]
+    assert "没有可用技能" in ui.notices[-1] and ".pamu/skills" in ui.notices[-1]

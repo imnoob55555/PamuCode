@@ -144,7 +144,22 @@ an execution deny rule. Use `/plan` when you need enforced read-only tool access
 
 ### Skills
 
-Create `skills/<name>/SKILL.md` in the workspace:
+A skill is a directory containing `SKILL.md`. PamuCode searches these
+directories, highest priority first:
+
+| Directory | Scope |
+| --- | --- |
+| `<workspace>/.pamu/skills/` | This project, private (ignored by `.pamu/.gitignore`) |
+| `<workspace>/.agents/skills/` | This project, shareable through the repository |
+| `<workspace>/.claude/skills/` | This project, shared with Claude Code |
+| `~/.pamu/skills/` | All projects for the current user |
+| `~/.agents/skills/` | All projects, shared with other agent tools |
+| `~/.claude/skills/` | All projects, shared with Claude Code |
+
+When two directories define the same skill name, the higher-priority one wins,
+so project skills override user skills. A visible `skills/` folder in the
+project root is not read, so ordinary project folders are never mistaken for
+skills.
 
 ```markdown
 ---
@@ -154,17 +169,21 @@ description: Review the current changes
 Read the diff, identify defects, and report findings before editing.
 ```
 
-Restart PamuCode after adding a skill. `/skill` opens the picker; directory names
-are invocation identifiers:
+The directory name (for example `review` in `.pamu/skills/review/SKILL.md`) is
+the identifier; the frontmatter `name` is accepted as an alias, case-insensitively.
+Without a `description`, the first line of the body is used. Skills are picked up
+when they are added, edited, or removed, without a restart. An unreadable
+`SKILL.md` is skipped and reported instead of stopping PamuCode.
 
 ```text
 /skill review Check the authentication changes
 ```
 
-The skill body and task are supplied to the current model. Work mode and security
-policy remain in force. Without an interactive UI, `/skill` lists available names.
-You can also ask PamuCode which skills are available. It reads the workspace's
-registered skills through `list_skills`.
+`/skill` opens the picker and shows where each skill comes from. The skill body
+and task are supplied to the current model. Work mode and security policy remain
+in force. Without an interactive UI, `/skill` lists available names.
+You can also ask PamuCode which skills are available. It reads the registry
+through `list_skills`, which also names the searched directories when it is empty.
 Skill loading is unavailable in the confined sandbox.
 
 ## Configuration

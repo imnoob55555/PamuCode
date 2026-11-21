@@ -34,7 +34,7 @@ def test_context_uses_runtime_snapshots(tmp_path, monkeypatch):
     runtime_view = SimpleNamespace(
         config=config,
         session=session,
-        skills=SkillState(root=config.skills_dir),
+        skills=SkillState((config.skills_dir,)),
         memory=MemoryStore(
             root=config.memory_dir,
             index_path=config.memory_index,

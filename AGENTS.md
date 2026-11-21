@@ -27,7 +27,7 @@ Priority order (README "Configuration"): process environment > `<workspace>/.pam
 
 ## Tests
 
-- There is no `conftest.py`; helpers such as `tests/agent_app_fakes.py` and fixtures are defined per file. Tests set `MODEL_ID` via `monkeypatch.setenv` where needed.
+- `tests/conftest.py` only holds an autouse fixture that points `agent_app.config.USER_HOME` at a temp dir, so the developer's `~/.claude/skills`, `~/.agents/skills` and `~/.pamu/skills` never leak into tests. Other helpers such as `tests/agent_app_fakes.py` and fixtures are defined per file. Tests set `MODEL_ID` via `monkeypatch.setenv` where needed.
 - Tests that build a runtime or call `cli.main` inject `credentials_path=...` or monkeypatch `bootstrap.CREDENTIALS_PATH`. Follow that pattern — the default `auth.CREDENTIALS_PATH` points at the developer's real home directory.
 - `cli.main`'s keyword injection surface (`runtime_factory`, `run_turn`, `start_threads`, `stop_threads`, `ui`, `credentials_path`, `configuration_check`) is exercised by tests; keep it compatible.
 - `tests/test_cli_pty.py` drives a real PTY (`pty`, `termios`, `fcntl`) and cannot run on Windows.

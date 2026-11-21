@@ -4,6 +4,8 @@ import hashlib
 import math
 from pathlib import Path
 
+from ..features.skills import refresh_skills
+
 
 def text_tokens(text):
     return math.ceil(len(text.encode('utf-8')) * .55)
@@ -94,32 +96,18 @@ def optional_materials(runtime, tokens):
         remaining -= text_tokens(value)
     state = runtime.session.context_state
     # References and already-loaded instructions have priority over broad catalogs.
+    registry = refresh_skills(runtime.skills)
     skill_parts = []
     for record in state.get('loaded_skills', [])[-32:]:
         name = record.get('name', '')
-        if name not in runtime.skills.registry:
+        skill = registry.get(name)
+        if skill is None:
             continue
-        raw_path = runtime.skills.root / name / 'SKILL.md'
-        path = safe_material(runtime.config.workdir, raw_path)
-        # Workspace skill roots are often under .pamu: permit that specific root,
-        # still rejecting symlinks and never guessing new skill paths.
-        if path is None and raw_path.is_file() and not any(p.is_symlink() for p in [raw_path, *raw_path.parents]):
-            try:
-                raw_path.resolve().relative_to(runtime.skills.root.resolve())
-                if Path(name).name == name:
-                    path = raw_path
-            except ValueError:
-                pass
         header = f"技能 {name[:128]}（load_skill({name[:128]!r})；原哈希 {record.get('sha256', '')[:64]}）"
-        if path is None:
-            skill_parts.append(header + '：当前不可读取')
-            continue
-        try:
-            changed = file_hash(path) != record.get('sha256')
-            body = bounded_text(_read_prefix(path, remaining * 2), max(0, remaining // 3))
-            skill_parts.append(header + (' [已变化，以当前正文为准]' if changed else '') + '\n' + body)
-        except (OSError, UnicodeError):
-            skill_parts.append(header + '：当前不可读取')
+        content = skill['content']
+        changed = hashlib.sha256(content.encode('utf-8')).hexdigest() != record.get('sha256')
+        body = bounded_text(content, max(0, remaining // 3))
+        skill_parts.append(header + (' [已变化，以当前正文为准]' if changed else '') + '\n' + body)
     allocate('loaded_skills', '\n\n'.join(skill_parts), tokens // 2)
     file_parts = []
     snippets = 0
@@ -164,7 +152,11 @@ def optional_materials(runtime, tokens):
     except (OSError, UnicodeError):
         memory = ''
     allocate('memories', memory, remaining // 2)
-    catalog = '\n'.join(f"- {str(item['name'])[:128]}: {str(item['description'])[:256]}" for item in list(runtime.skills.registry.values())[:64])
+    catalog = '\n'.join(
+        f"- {key[:128]}: {skill['description'][:256]}"
+        + (f" (name: {skill['name'][:128]})" if skill['name'].casefold() != key.casefold() else '')
+        for key, skill in list(registry.items())[:64]
+    )
     allocate('skills', catalog, remaining // 2)
     result['optional_remaining_tokens'] = remaining
     result['optional_budget_tokens'] = tokens

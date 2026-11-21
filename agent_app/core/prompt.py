@@ -86,8 +86,9 @@ def assemble_system_prompt(context: dict) -> str:
         )
     if "list_skills" in context.get("enabled_tools", []):
         sections.append(
-            "Use list_skills for questions about available skills. Its results are the workspace registry, "
-            "including when it is empty. Do not look for skills by scanning the filesystem."
+            "Use list_skills for questions about available skills. Its results are the complete registry "
+            "from the project and user skill directories, including when it is empty; when no skills exist, "
+            "tell the user which directories it searched. Do not look for skills by scanning the filesystem."
         )
 
     for key, label in (("loaded_skills", "Previously loaded skills (current local material)"),

@@ -15,6 +15,7 @@ from pathlib import Path
 from .adapters.anthropic import AnthropicAdapter
 from .adapters.common import null_progress
 from .cli_progress import show_shell_status, terminal_confirmation, terminal_progress
+from . import config as config_module
 from .config import AppConfig
 from .core.prompt import PromptBuilder
 from .core.delegated_context import DelegatedContext
@@ -263,7 +264,11 @@ def build_runtime(
     scheduler_state = scheduler.SchedulerState()
     background_state = background.BackgroundState()
     task_store = tasks.TaskStore(config.task_dir)
-    skill_state = skills.SkillState(config.skills_dir)
+    skill_state = skills.SkillState(
+        config.skill_dirs if policy.mode != "confined" else (),
+        workspace=config.workdir,
+        home=config_module.USER_HOME,
+    )
     memory_store = memory.MemoryStore(config.memory_dir, config.memory_index)
     message_bus = team_bus.MessageBus(config.mailbox_dir)
     protocols = team_protocol.ProtocolStore()
@@ -274,8 +279,7 @@ def build_runtime(
         root=config.worktrees_dir,
         run_git=lambda args: _run_git(config, args),
     )
-    if policy.mode != "confined":
-        skills.scan_skills(skill_state)
+    skills.scan_skills(skill_state)
 
     shell_executor = ShellExecutor(policy, report=None if config.headless else show_shell_status)
     hooks = HookRegistry()
@@ -319,9 +323,10 @@ def build_runtime(
     def run_skill(name):
         if policy.mode == "confined":
             return "Error: load_skill is unavailable in confined mode"
+        key = skills.resolve_skill(skill_state, name)
         output = skills.load_skill(skill_state, name)
-        if name in skill_state.registry:
-            remember_skill(session, name, output)
+        if key is not None:
+            remember_skill(session, key, output)
         return output
 
     builtin_handlers = {

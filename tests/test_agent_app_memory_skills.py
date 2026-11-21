@@ -9,10 +9,10 @@ import pytest
 
 
 def test_skill_scan_has_no_import_time_side_effect(tmp_path):
-    state = SkillState(root=tmp_path / "skills")
+    state = SkillState((tmp_path / "skills",))
 
     assert state.registry == {}
-    assert not state.root.exists()
+    assert not state.roots[0].exists()
 
 
 def test_skill_scan_populates_explicit_state(tmp_path):
@@ -23,7 +23,7 @@ def test_skill_scan_populates_explicit_state(tmp_path):
         "---\nname: review\ndescription: Review code\n---\n\nInstructions",
         encoding="utf-8",
     )
-    state = SkillState(root=root)
+    state = SkillState((root,))
 
     scan_skills(state)
 
