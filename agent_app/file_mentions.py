@@ -274,14 +274,12 @@ def render_matches(
     rows: list[tuple[str, str]] = []
     for position, path in enumerate(matches):
         selected = position == index % len(matches)
-        rows.append(
-            (
-                "class:selected" if selected else "",
-                f"{'❯' if selected else ' '} {path}",
-            )
+        style = "class:selected" if selected else (
+            "class:menu.directory" if path.endswith("/") else "class:menu.name"
         )
+        rows.append((style, f"{'❯' if selected else ' '} {path}"))
         rows.append(("", "\n"))
     if total > len(matches):
         rows.append(("class:muted", f"  匹配 {total} 个，显示前 {len(matches)} 个\n"))
-    rows.append(("class:muted", "  ↑↓ 选择 · Enter 选中 · Esc 关闭"))
+    rows.append(("class:muted", "  ↑↓ 选择 · Enter 选中 · Tab 补全 · Esc 关闭"))
     return rows

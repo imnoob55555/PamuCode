@@ -12,9 +12,11 @@ from pathlib import Path
 
 from .adapters import providers
 from .provider_config import resolve_provider_config, normalize_base_url, ProviderConfigurationError
+from . import theme
 from .bootstrap import build_default_runtime
 from .branding import render_startup_screen
 from .cli_exit import ExitAction, ExitGesture, QuitRequested
+from .cli_progress import write_user_message
 from .config import MissingConfigurationError
 from .core.interruption import protect_interrupt_cleanup
 from .core.context_manager import estimate_current_context
@@ -31,6 +33,7 @@ from .features.scheduler import (
     has_cron_queue,
     load_durable_jobs,
 )
+from .rendering import help_block
 from .repl_sessions import ResumeAction, delete_current_session, resume_runtime
 from .runtime import RuntimeContext
 from .logging_setup import get_logger
@@ -42,6 +45,7 @@ COMMANDS = ("login", "logout", "status", "use")
 
 SLASH_HELP = help_text()
 LOGIN_HINT = "尚未配置模型服务，请输入 /login 选择供应商、服务地址和模型。"
+SHUTDOWN = "Shutting down PamuCode…"
 
 
 def notify_or_print(ui, message: str, *, print_fn=print) -> None:
@@ -520,7 +524,7 @@ def _handle_slash_command(
             from .working_mode import switch_mode
             try:
                 message = switch_mode(runtime, command[1:])
-                print_fn(message)
+                print_fn(theme.success(message))
             except ValueError as exc:
                 notify_or_print(ui, str(exc), print_fn=print_fn)
         return
@@ -585,7 +589,10 @@ def _handle_slash_command(
         return ExitAction.QUIT
 
     if command in ("/help", "/h"):
-        print_fn(SLASH_HELP)
+        if theme.rich_output():
+            print_fn(help_block(SLASH_COMMANDS))
+        else:
+            print_fn(SLASH_HELP)
         return
 
     if command == "/login":
@@ -672,7 +679,7 @@ def _handle_slash_command(
                 return
         runtime.model.switch_model(argument)
         LOGGER.info("switch model=%s provider=%s", argument, runtime.model.provider)
-        print_fn(f"模型已切换为 {argument}（当前会话立即生效）。")
+        print_fn(theme.success(f"模型已切换为 {argument}（当前会话立即生效）。"))
         return
 
     if command == "/thinking":
@@ -715,7 +722,7 @@ def _handle_slash_command(
                 return
         runtime.model.switch_thinking(selected)
         LOGGER.info("switch thinking=%s provider=%s", selected, provider)
-        print_fn(f"思考程度已切换为 {selected}（{THINKING_LABELS[selected]}）。")
+        print_fn(theme.success(f"思考程度已切换为 {selected}（{THINKING_LABELS[selected]}）。"))
         return
 
     if command == "/provider":
@@ -776,7 +783,7 @@ def _handle_slash_command(
         auth.set_active(spec.name, credentials_path)
         LOGGER.info("switch provider=%s", spec.name)
         model = resolved.model
-        print_fn(f"供应商已切换为 {spec.label}（模型 {model}），并已设为默认。")
+        print_fn(theme.success(f"供应商已切换为 {spec.label}（模型 {model}），并已设为默认。"))
         return
 
     notify_or_print(ui, f"未知命令：{command}。输入 /help 查看可用命令。", print_fn=print_fn)
@@ -943,13 +950,13 @@ def main(
             except EOFError:
                 break
             except QuitRequested:
-                print("Shutting down PamuCode…")
+                print(theme.paint(SHUTDOWN, "muted"))
                 break
             except KeyboardInterrupt:
                 if ui is not None:
                     continue
                 if exit_gesture.press():
-                    print("Shutting down PamuCode…")
+                    print(theme.paint(SHUTDOWN, "muted"))
                     break
                 print("再次按 Ctrl+C 退出 PamuCode")
                 continue
@@ -962,12 +969,12 @@ def main(
                         client_factory=client_factory, ui=ui,
                     )
                 except QuitRequested:
-                    print("Shutting down PamuCode…")
+                    print(theme.paint(SHUTDOWN, "muted"))
                     break
                 except (EOFError, KeyboardInterrupt):
                     continue
                 if selected is ExitAction.QUIT:
-                    print("Shutting down PamuCode…")
+                    print(theme.paint(SHUTDOWN, "muted"))
                     break
                 if selected is ExitAction.DELETE:
                     with protect_interrupt_cleanup():
@@ -1003,7 +1010,7 @@ def main(
                 notify_or_print(ui, LOGIN_HINT)
                 continue
             if ui is not None:
-                print(query)
+                write_user_message(query)
             _run_interactive_turn(runtime, query, run_turn, ui)
     except SessionError as error:
         print(f"会话错误：{error}", file=sys.stderr)

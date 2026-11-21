@@ -1,9 +1,20 @@
 import threading
 
+import pytest
+
 from agent_app.cli_progress import (
     TerminalSpinner, finish_model_text, show_shell_status, terminal_confirmation,
     terminal_progress, write_model_text,
 )
+
+
+@pytest.fixture(autouse=True)
+def plain_glyphs(monkeypatch):
+    """Keep exact-byte assertions independent of the developer's color support."""
+    from agent_app import cli_progress
+
+    monkeypatch.setenv("NO_COLOR", "1")
+    monkeypatch.setattr(cli_progress, "_shell_block_open", False)
 
 
 class FakeStream:
@@ -65,7 +76,7 @@ def test_tty_spinner_animates_then_clears_and_joins():
     with spinner:
         pass
 
-    assert "\rA Working" in "".join(stream.writes)
+    assert "\rA Working…" in "".join(stream.writes)
     assert stream.writes[-1] == "\r\033[2K"
     assert created[0].daemon is True
     assert created[0].name == "pamu-working-spinner"
@@ -137,7 +148,9 @@ def test_shell_status_clears_spinner_and_replaces_running_line(monkeypatch):
         show_shell_status("running", "printf ok", None)
         show_shell_status("finished", "printf ok", 0)
 
-    assert "".join(stream.writes) == "\rA Working\033[K\r\033[2KRunning printf ok\r\033[2KRan printf ok\n"
+    assert "".join(stream.writes) == (
+        "\rA Working…\033[K\r\033[2K\n● Running printf ok\r\033[2K● Ran printf ok\n"
+    )
 
 
 def test_background_status_waits_for_permission_input(monkeypatch, capsys):
@@ -163,7 +176,7 @@ def test_fast_foreground_shell_running_line_has_time_to_be_seen(monkeypatch):
     monkeypatch.setattr(cli_progress, "monotonic", lambda: clock[0])
 
     def sleep(delay):
-        assert "".join(stream.writes) == "Running :"
+        assert "".join(stream.writes) == "\n● Running :"
         clock[0] += delay
 
     monkeypatch.setattr(cli_progress, "sleep", sleep)
@@ -171,7 +184,7 @@ def test_fast_foreground_shell_running_line_has_time_to_be_seen(monkeypatch):
     clock[0] = .005
     show_shell_status("finished", ":", 0)
     assert clock[0] >= .2
-    assert "".join(stream.writes) == "Running :\r\033[2KRan :\n"
+    assert "".join(stream.writes) == "\n● Running :\r\033[2K● Ran :\n"
 
 
 def test_stop_waits_until_worker_has_started_before_joining():

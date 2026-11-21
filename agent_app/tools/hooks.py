@@ -10,7 +10,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .. import theme
 from ..logging_setup import get_logger
+from ..rendering import approval_panel, blocked_notice, diff_block
 from .builtin import safe_path
 
 LOGGER = get_logger("pamu.hooks")
@@ -23,6 +25,8 @@ class HookRegistry:
             "UserPromptSubmit": [],
             "PreToolUse": [],
             "PostToolUse": [],
+            "ToolStart": [],
+            "ToolResult": [],
             "Stop": [],
         }
     )
@@ -59,13 +63,21 @@ def make_permission_hook(
         if block.name == "bash":
             for pattern in ["rm -rf /", "sudo", "shutdown", "reboot", "mkfs", "dd if="]:
                 if pattern in block.input.get("command", ""):
-                    print(f"\n\033[31m⛔ Blocked: '{pattern}'\033[0m")
+                    if theme.rich_output():
+                        print(blocked_notice(pattern))
+                    else:
+                        print(f"\n⛔ Blocked: '{pattern}'")
                     return "Permission denied by deny list"
             for keyword in ["rm ", "> /etc/", "chmod 777", "curl"]:
                 if keyword in block.input.get("command", ""):
-                    print("\n\033[33m⚠  Potentially destructive command\033[0m")
-                    print(f"   Tool: {block.name}({block.input})")
                     agent = getattr(block, "agent", None)
+                    if theme.rich_output():
+                        rows = [("Tool", block.name), ("Command", str(block.input.get("command", "")))]
+                        print(approval_panel("Potentially destructive command",
+                                             rows + ([("Teammate", agent)] if agent else [])))
+                    else:
+                        print("\n⚠  Potentially destructive command")
+                        print(f"   Tool: {block.name}({block.input})")
                     prompt = (
                         f"  Allow teammate '{agent}' to apply this change? [y/N] "
                         if agent
@@ -87,12 +99,19 @@ def make_permission_hook(
             if not tool_metadata:
                 return "Permission denied: unknown MCP tool metadata"
             if tool_metadata.get("destructive"):
-                print("\n\033[33m⚠  Potentially destructive MCP tool\033[0m")
-                print(
-                    f"  Server: {tool_metadata['server']}\n"
-                    f"  Tool: {tool_metadata['original_name']}\n"
-                    f"  Input: {block.input}"
-                )
+                if theme.rich_output():
+                    print(approval_panel("Potentially destructive MCP tool", [
+                        ("Server", str(tool_metadata["server"])),
+                        ("Tool", str(tool_metadata["original_name"])),
+                        ("Input", str(block.input)),
+                    ]))
+                else:
+                    print("\n⚠  Potentially destructive MCP tool")
+                    print(
+                        f"  Server: {tool_metadata['server']}\n"
+                        f"  Tool: {tool_metadata['original_name']}\n"
+                        f"  Input: {block.input}"
+                    )
                 if confirmation("  Allow this MCP action? [y/N] ").strip().lower() not in ("y", "yes"):
                     return "Permission denied by user"
         return None
@@ -176,7 +195,10 @@ def make_diff_preview_hook(root: Path, confirmation: Callable[[str], str], *, po
             old_text.splitlines(), new_text.splitlines(),
             fromfile=f"{path}before", tofile=f"{path}after", lineterm="",
         )
-        print("\n".join(diff) or "(no diff)")
+        if theme.rich_output():
+            print(diff_block(list(diff)))
+        else:
+            print("\n".join(diff) or "(no diff)")
         if confirmation("  Apply change? [y/N] ").strip().lower() not in ("y", "yes"):
             return "File change rejected by user"
         return None

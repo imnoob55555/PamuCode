@@ -23,7 +23,7 @@ from prompt_toolkit.layout import (
 )
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.layout.dimension import Dimension
-from prompt_toolkit.layout.processors import BeforeInput, PasswordProcessor, Processor
+from prompt_toolkit.layout.processors import AfterInput, PasswordProcessor, Processor
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.styles import Style
 from prompt_toolkit.utils import get_cwidth
@@ -39,6 +39,10 @@ from .file_mentions import (
     workspace_entries,
 )
 from .slash_commands import match_commands
+from .theme import (
+    ACCENT, ACCENT_SOFT, BORDER, DIM, ERROR, INFO, MUTED, PLAN, PROMPT_MARK,
+    SUCCESS, TEXT, WARNING,
+)
 from .thinking import (
     DEFAULT_THINKING_LEVEL,
     THINKING_COLORS,
@@ -48,21 +52,98 @@ from .thinking import (
 
 STYLE = Style.from_dict(
     {
-        "selected": "bg:#164e63 #ffffff bold",
-        "muted": "#888888",
-        "error": "#ff6666",
+        "selected": f"{ACCENT} bold",
+        "muted": MUTED,
+        "dim": DIM,
+        "error": ERROR,
+        "notice": WARNING,
+        "notice.icon": f"{WARNING} bold",
+        "border": BORDER,
+        "title": f"{ACCENT} bold",
+        "prompt": f"{ACCENT} bold",
+        "placeholder": f"{DIM} italic",
+        "running": ACCENT_SOFT,
+        "menu.name": TEXT,
+        "menu.description": MUTED,
+        "menu.directory": INFO,
+        "status.branch": ACCENT_SOFT,
+        "status.context.ok": SUCCESS,
+        "status.context.warn": WARNING,
+        "status.context.high": ERROR,
+        "status.model": TEXT,
+        "status.plan": f"{PLAN} bold",
         **{f"thinking-{level}": color for level, color in THINKING_COLORS.items()},
     }
 )
 NOTICE_SECONDS = 3.0
+PLACEHOLDER = "输入消息 · / 命令 · @ 引用文件"
+SEPARATOR = " · "
 
 
-def model_status(model: str, level: str) -> str:
-    """Footer label under the prompt box, formatted like pi's status line."""
-    if not model:
+def git_branch(path: Path | None) -> str:
+    """Current branch (or short commit) of the repository containing ``path``."""
+    if path is None:
         return ""
-    level = normalize_level(level) or DEFAULT_THINKING_LEVEL
-    return f"{model} • {'thinking off' if level == 'off' else level}"
+    for directory in (path, *path.parents):
+        marker = directory / ".git"
+        try:
+            if marker.is_file():
+                gitdir = marker.read_text().strip().removeprefix("gitdir:").strip()
+                marker = (directory / gitdir).resolve()
+            if not marker.is_dir():
+                continue
+            head = (marker / "HEAD").read_text().strip()
+        except (OSError, UnicodeDecodeError):
+            return ""
+        return head.removeprefix("ref: refs/heads/") if head.startswith("ref:") else head[:7]
+    return ""
+
+
+def display_path(path: Path) -> str:
+    try:
+        return "~/" + path.relative_to(Path.home()).as_posix() if path != Path.home() else "~"
+    except ValueError:
+        return str(path)
+
+
+def _context_class(percent: int) -> str:
+    if percent >= 80:
+        return "class:status.context.high"
+    return "class:status.context.warn" if percent >= 50 else "class:status.context.ok"
+
+
+def rounded_box(body, *, style="class:border"):
+    """Surround ``body`` with a rounded border, one column of inner padding."""
+
+    def edge(left, right):
+        return VSplit(
+            [
+                Window(char=left, width=1, height=1, style=style),
+                Window(char="─", height=1, style=style),
+                Window(char=right, width=1, height=1, style=style),
+            ],
+            height=1,
+        )
+
+    return HSplit(
+        [
+            edge("╭", "╮"),
+            VSplit(
+                [
+                    Window(char="│", width=1, style=style),
+                    Window(width=1),
+                    body,
+                    Window(width=1),
+                    Window(char="│", width=1, style=style),
+                ]
+            ),
+            edge("╰", "╯"),
+        ]
+    )
+
+
+def _hint(text):
+    return Window(FormattedTextControl(text), height=1, style="class:muted")
 
 
 class TerminalUI:
@@ -76,6 +157,7 @@ class TerminalUI:
         self.working_mode = "execute"
         self.context_used: int | None = None
         self.workdir = Path(workdir) if workdir is not None else None
+        self.branch = ""
         self._entry_index = None
         self.notice = ""
         self._notice_deadline = 0.0
@@ -85,15 +167,47 @@ class TerminalUI:
         # The REPL enables the shared two-press gesture before prompting.
         self.repl_mode = False
 
+    def _mode_label(self) -> str:
+        return "⏸ plan · 只读" if self.working_mode == "plan" else "⏵ execute"
+
+    def status_fragments(self) -> list[tuple[str, str]]:
+        """Right-aligned context, model, thinking level and mode under the prompt box."""
+        parts: list[list[tuple[str, str]]] = []
+        if self.context_used is not None:
+            parts.append([("class:muted", "Context "),
+                          (_context_class(self.context_used), f"{self.context_used}%")])
+        if self.model_name:
+            level = normalize_level(self.thinking_level) or DEFAULT_THINKING_LEVEL
+            parts.append([("class:status.model", self.model_name)])
+            parts.append([(style_class(level), "thinking off" if level == "off" else level)])
+            parts.append([("class:status.plan" if self.working_mode == "plan" else "class:muted",
+                           self._mode_label())])
+        result: list[tuple[str, str]] = []
+        for index, part in enumerate(parts):
+            if index:
+                result.append(("class:dim", SEPARATOR))
+            result.extend(part)
+        return result
+
     def status_text(self) -> str:
-        """Right-aligned context, model and mode under the prompt box."""
-        status = model_status(self.model_name, self.thinking_level)
-        if status:
-            status += f" • {'plan · 只读' if self.working_mode == 'plan' else 'execute'}"
-        if self.context_used is None:
-            return status
-        usage = f"Context used: {self.context_used}%"
-        return f"{usage} • {status}" if status else usage
+        return "".join(text for _, text in self.status_fragments())
+
+    def _status_width(self) -> Dimension:
+        width = get_cwidth(self.status_text())
+        if self._active_app is not None:
+            width = min(width, max(0, self._active_app.output.get_size().columns - 6))
+        return Dimension(min=width, preferred=width, max=width)
+
+    def location_fragments(self) -> list[tuple[str, str]]:
+        if self.workdir is None:
+            return []
+        result = [("class:muted", display_path(self.workdir))]
+        if self.branch:
+            result += [("class:dim", " git:("), ("class:status.branch", self.branch), ("class:dim", ")")]
+        return result
+
+    def location_text(self) -> str:
+        return "".join(text for _, text in self.location_fragments())
 
     def notify(self, text):
         self.notice = text
@@ -134,18 +248,31 @@ class TerminalUI:
 
     def _notice_window(self):
         return ConditionalContainer(
-            Window(
-                FormattedTextControl(lambda: self.notice),
-                dont_extend_height=True,
-                style="class:error",
-                wrap_lines=True,
+            VSplit(
+                [
+                    Window(width=1),
+                    Window(FormattedTextControl("● "), width=2, style="class:notice.icon"),
+                    Window(
+                        FormattedTextControl(lambda: self.notice),
+                        dont_extend_height=True,
+                        style="class:notice",
+                        wrap_lines=True,
+                    ),
+                ]
             ),
             Condition(lambda: bool(self.notice)),
         )
 
     def _run(self, root, bindings, *, focus=None):
         running_shell = ConditionalContainer(
-            Window(FormattedTextControl(background_shell_status), height=1, style="class:muted", wrap_lines=False),
+            VSplit(
+                [
+                    Window(width=1),
+                    Window(FormattedTextControl("● "), width=2, style="class:running"),
+                    Window(FormattedTextControl(background_shell_status), style="class:muted", wrap_lines=False),
+                ],
+                height=1,
+            ),
             Condition(lambda: bool(background_shell_status(mark_visible=False))),
         )
         app = Application(
@@ -198,6 +325,12 @@ class TerminalUI:
         def accept(event):
             event.app.exit(result=choices[index][0])
 
+        for number in range(1, min(len(choices), 9) + 1):
+
+            @bindings.add(str(number))
+            def pick(event, _position=number - 1):
+                event.app.exit(result=choices[_position][0])
+
         @bindings.add("escape")
         @bindings.add("c-c")
         @bindings.add("c-d")
@@ -211,16 +344,18 @@ class TerminalUI:
                 return
             event.app.exit(result=None)
 
+        width = len(str(len(choices)))
+
         def rows():
             result = []
             for position, (_, label) in enumerate(choices):
                 selected = position == index
-                result.append(
-                    (
-                        "class:selected" if selected else "",
-                        f"{'❯' if selected else ' '} {label}",
-                    )
-                )
+                number = f"{position + 1:>{width}}. "
+                if selected:
+                    result += [("class:selected", f"{PROMPT_MARK} "), ("class:selected", number),
+                               ("class:selected", label)]
+                else:
+                    result += [("", "  "), ("class:muted", number), ("", label)]
                 if position < len(choices) - 1:
                     result.append(("", "\n"))
             return result
@@ -230,16 +365,22 @@ class TerminalUI:
             focusable=True,
             get_cursor_position=lambda: Point(x=0, y=index),
         )
+        shortcuts = "↑↓ 选择 · Enter 确认 · Esc 取消"
+        if len(choices) > 1:
+            shortcuts = f"↑↓ 选择 · Enter 确认 · 1-{min(len(choices), 9)} 快选 · Esc 取消"
         return self._run(
             HSplit(
                 [
-                    Window(FormattedTextControl(title), height=1),
-                    Window(control, height=Dimension(max=10), dont_extend_height=True),
-                    Window(
-                        FormattedTextControl("↑↓ 选择 · Enter 确认 · Esc 取消"),
-                        height=1,
-                        style="class:muted",
+                    rounded_box(
+                        HSplit(
+                            [
+                                Window(FormattedTextControl(title), height=1, style="class:title"),
+                                Window(height=1),
+                                Window(control, height=Dimension(max=10), dont_extend_height=True),
+                            ]
+                        )
                     ),
+                    _hint("  " + shortcuts),
                 ]
             ),
             bindings,
@@ -291,22 +432,30 @@ class TerminalUI:
                 return
             event.app.exit(exception=KeyboardInterrupt())
 
-        processors: list[Processor] = [PasswordProcessor()] if password else []
-        processors.append(BeforeInput("API Key: " if password else "输入: "))
+        processors: list[Processor] = [PasswordProcessor(char="•")] if password else []
         control = BufferControl(buffer, input_processors=processors)
+        label = "API Key " if password else ""
         root = HSplit(
             [
-                Window(FormattedTextControl(title), height=1),
-                Window(control, height=1),
-                Window(
-                    FormattedTextControl(
-                        "Ctrl+S 保存 · Esc 返回"
-                        if password
-                        else "Enter 确认 · Esc 返回"
-                    ),
-                    height=1,
-                    style="class:muted",
+                rounded_box(
+                    HSplit(
+                        [
+                            Window(FormattedTextControl(title), height=1, style="class:title"),
+                            Window(height=1),
+                            VSplit(
+                                [
+                                    Window(
+                                        FormattedTextControl([("class:muted", label), ("class:prompt", f"{PROMPT_MARK} ")]),
+                                        dont_extend_width=True,
+                                    ),
+                                    Window(control),
+                                ],
+                                height=1,
+                            ),
+                        ]
+                    )
                 ),
+                _hint("  Ctrl+S 保存 · Esc 返回" if password else "  Enter 确认 · Esc 返回"),
             ]
         )
         try:
@@ -471,58 +620,80 @@ class TerminalUI:
             items = match_commands(buffer.text)
             if not items:
                 return [("class:muted", "  无匹配命令")]
+            column = max(get_cwidth(item.name) for item in items) + 3
             result = []
             for position, item in enumerate(items):
                 selected = position == index % len(items)
-                result.append(
-                    (
-                        "class:selected" if selected else "",
-                        f"{'❯' if selected else ' '} {item.usage:<23} {item.description}",
-                    )
-                )
+                padding = " " * (column - get_cwidth(item.name))
+                if selected:
+                    result += [("class:selected", f"{PROMPT_MARK} {item.name}{padding}{item.description}")]
+                else:
+                    result += [("class:menu.name", f"  {item.name}{padding}"),
+                               ("class:menu.description", item.description)]
+                if item.arguments:
+                    result.append(("class:dim", f"  {item.arguments}"))
                 result.append(("", "\n"))
-            result.append(("class:muted", "  ↑↓ 选择 · Enter 执行选中命令 · Tab 补全"))
+            result.append(("class:muted", "  ↑↓ 选择 · Enter 执行选中命令 · Tab 补全 · Esc 关闭"))
             return result
 
-        control = BufferControl(buffer)
+        menu_visible = Condition(lambda: visible() or mention_state() is not None)
+        self.branch = git_branch(self.workdir)
+        control = BufferControl(
+            buffer,
+            input_processors=[
+                AfterInput(lambda: "" if buffer.text else PLACEHOLDER, style="class:placeholder"),
+            ],
+        )
         border_style = style_class(self.thinking_level)
+        input_row = VSplit(
+            [
+                Window(
+                    FormattedTextControl(f"{PROMPT_MARK} "),
+                    width=2,
+                    style="class:prompt",
+                    dont_extend_height=True,
+                ),
+                Window(control, wrap_lines=True, dont_extend_height=True),
+            ]
+        )
         return self._run(
             HSplit(
                 [
-                    Window(char="─", height=1, style=border_style),
-                    Window(control, height=1),
-                    Window(char="─", height=1, style=border_style),
+                    rounded_box(input_row, style=border_style),
                     ConditionalContainer(
                         VSplit(
                             [
+                                Window(width=1),
                                 Window(
-                                    FormattedTextControl(lambda: str(self.workdir) if self.workdir is not None else ""),
+                                    FormattedTextControl(self.location_fragments),
                                     wrap_lines=False,
                                     style="class:muted",
                                 ),
                                 Window(
-                                    FormattedTextControl(self.status_text),
-                                    width=lambda: Dimension(
-                                        min=0,
-                                        preferred=get_cwidth(self.status_text()),
-                                        max=get_cwidth(self.status_text()),
-                                    ),
+                                    FormattedTextControl(self.status_fragments),
+                                    width=self._status_width,
                                     align=WindowAlign.RIGHT,
                                     wrap_lines=False,
                                     style="class:muted",
                                 ),
+                                Window(width=1),
                             ],
                             height=1,
                             padding=1,
                         ),
-                        Condition(lambda: self.workdir is not None or bool(self.model_name)),
+                        Condition(lambda: self.workdir is not None or bool(self.model_name)) & ~menu_visible,
                     ),
                     ConditionalContainer(
-                        Window(
-                            FormattedTextControl(cast(Any, hints)),
-                            dont_extend_height=True,
+                        VSplit(
+                            [
+                                Window(width=1),
+                                Window(
+                                    FormattedTextControl(cast(Any, hints)),
+                                    dont_extend_height=True,
+                                ),
+                            ]
                         ),
-                        Condition(lambda: visible() or mention_state() is not None),
+                        menu_visible,
                     ),
                 ]
             ),

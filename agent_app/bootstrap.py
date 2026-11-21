@@ -292,6 +292,12 @@ def build_runtime(
         return None
     hooks.register("PreToolUse", security_hook)
     _register_default_hooks(hooks, config, mcp_state)
+    if not config.headless:
+        from .tool_display import ToolDisplay
+
+        display = ToolDisplay()
+        hooks.register("ToolStart", display.start)
+        hooks.register("ToolResult", display.result)
     registry = ToolRegistry()
 
     def run_bash(command, run_in_background=False, cwd=None):
