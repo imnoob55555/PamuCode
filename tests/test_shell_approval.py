@@ -102,3 +102,11 @@ def test_shell_approval_setting_is_validated(tmp_path):
     assert AppConfig.from_env(tmp_path, environ={"MODEL_ID": "m", "PAMU_SHELL_APPROVAL": "auto"}).shell_approval == "auto"
     with pytest.raises(ValueError, match="PAMU_SHELL_APPROVAL"):
         AppConfig.from_env(tmp_path, environ={"MODEL_ID": "m", "PAMU_SHELL_APPROVAL": "yes"})
+
+
+def test_limit_settings_must_be_positive_integers(tmp_path):
+    config = AppConfig.from_env(tmp_path, environ={"MODEL_ID": "m", "PAMU_MAX_TURN_MODEL_CALLS": "7"})
+    assert (config.max_turn_model_calls, config.max_turn_tool_calls, config.max_teammates) == (7, 200, 4)
+    for value in ("0", "-1", "many"):
+        with pytest.raises(ValueError, match="PAMU_MAX_TEAMMATES"):
+            AppConfig.from_env(tmp_path, environ={"MODEL_ID": "m", "PAMU_MAX_TEAMMATES": value})

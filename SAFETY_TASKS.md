@@ -27,34 +27,6 @@
 
 ---
 
-## 任务 4：交互模式的轮次与资源上限
-
-**现状**
-- `agent_app/core/loop.py:run_agent_loop` 是 `while True`（约第 185 行），唯一的自动刹车是 `ToolRepeatLimit`：同工具同参数最多 3 次。
-- headless 模式已经有 `max_model_calls`、`max_tool_calls`、`max_tokens`、`timeout` 四道上限（`agent_app/execution/__init__.py`），交互模式一道都没有。
-- 后台任务（`agent_app/features/background.py:start_background_task`）和队友（`agent_app/features/teams/teammates.py:spawn_teammate_thread`）的数量没有上限。
-
-**要做的**
-1. 新增配置，在 `AppConfig.from_env` 里读取并校验为正整数：
-   - `PAMU_MAX_TURN_MODEL_CALLS`，默认 50；
-   - `PAMU_MAX_TURN_TOOL_CALLS`，默认 200；
-   - `PAMU_MAX_TURN_TOKENS`，默认 2,000,000。token 数用 `record_usage` 返回的真实用量；provider 不返回用量时，退回到 `prepare_budget` 的估算值。
-2. 在 `run_agent_loop` 里按轮计数。达到任一上限时：
-   - 主线程交互模式：用 `terminal_confirmation` 询问「本轮已调用模型 X 次、工具 Y 次、约 Z tokens，是否继续？[y/N]」。选 y 则计数清零继续；否则结束本轮，打印提示，并保存检查点（保持会话状态为 `idle`）。
-   - 非主线程（定时任务）：直接结束本轮。
-   - headless 模式不受影响（它有自己的预算）。
-3. 并发上限：
-   - `PAMU_MAX_TEAMMATES`，默认 4，超出时 `spawn_teammate` 返回错误；
-   - `PAMU_MAX_BACKGROUND_TASKS`，默认 8（指同时处于 running 的数量），超出时后台派发返回错误，提示模型等已有任务结束。
-
-**验收**
-- 用假 adapter 让模型持续返回不同参数的工具调用，测试到达上限后：回答 n 时停止，回答 y 时继续。
-- 非主线程直接停止。
-- 超出队友上限、后台任务上限时返回错误，有对应测试。
-- 原有的循环测试保持通过（默认上限足够大）。
-
----
-
 ## 任务 5：自动记忆的过滤、可见性与备份
 
 **现状**

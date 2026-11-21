@@ -15,6 +15,19 @@ def skill_search_dirs(workspace: Path, home: Path) -> tuple[Path, ...]:
     return tuple(dict.fromkeys(candidates))
 
 
+def _positive_int(environment: Mapping[str, str], name: str, default: int) -> int:
+    raw = environment.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 0
+    if value <= 0:
+        raise ValueError(f"{name} must be a positive integer")
+    return value
+
+
 class MissingConfigurationError(ValueError):
     """A required PamuCode configuration value was not provided."""
 
@@ -59,6 +72,11 @@ class AppConfig:
     sandbox_mode: str = "off"
     skill_dirs: tuple[Path, ...] = ()
     shell_approval: str = "ask"
+    max_turn_model_calls: int = 50
+    max_turn_tool_calls: int = 200
+    max_turn_tokens: int = 2_000_000
+    max_teammates: int = 4
+    max_background_tasks: int = 8
 
     @property
     def sessions_dir(self) -> Path:
@@ -81,6 +99,16 @@ class AppConfig:
         sandbox = environment.get("PAMU_SANDBOX", "off").strip()
         if sandbox not in {"off", "confined"}:
             raise ValueError("PAMU_SANDBOX must be 'off' or 'confined'")
+        limits = {
+            field: _positive_int(environment, name, default)
+            for field, name, default in (
+                ("max_turn_model_calls", "PAMU_MAX_TURN_MODEL_CALLS", 50),
+                ("max_turn_tool_calls", "PAMU_MAX_TURN_TOOL_CALLS", 200),
+                ("max_turn_tokens", "PAMU_MAX_TURN_TOKENS", 2_000_000),
+                ("max_teammates", "PAMU_MAX_TEAMMATES", 4),
+                ("max_background_tasks", "PAMU_MAX_BACKGROUND_TASKS", 8),
+            )
+        }
         shell_approval = environment.get("PAMU_SHELL_APPROVAL", "ask").strip() or "ask"
         if shell_approval not in {"ask", "auto"}:
             raise ValueError("PAMU_SHELL_APPROVAL must be 'ask' or 'auto'")
@@ -110,4 +138,5 @@ class AppConfig:
             log_level=(environment.get("LOG_LEVEL") or "INFO").strip() or "INFO",
             sandbox_mode=sandbox,
             shell_approval=shell_approval,
+            **limits,
         )

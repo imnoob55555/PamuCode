@@ -243,6 +243,8 @@ selected during login. `/model` and `/provider` take effect in the current sessi
 | `OPENAI_COMPATIBLE_PROTOCOL` | `openai_chat` or `openai_responses` |
 | `PAMU_CONTEXT_WINDOW` | Explicit context window for the startup model |
 | `PAMU_SANDBOX` | `off` (default) or `confined` |
+| `PAMU_MAX_TURN_MODEL_CALLS` / `PAMU_MAX_TURN_TOOL_CALLS` / `PAMU_MAX_TURN_TOKENS` | Per-turn limits in the interactive session (defaults 50 / 200 / 2,000,000). When one is reached PamuCode asks whether to continue; scheduled turns stop |
+| `PAMU_MAX_TEAMMATES` / `PAMU_MAX_BACKGROUND_TASKS` | Concurrent teammates and running background commands (defaults 4 / 8) |
 | `PAMU_SHELL_APPROVAL` | `ask` (default) or `auto`. **Dangerous:** `auto` runs every shell command except the refused ones without asking |
 | `LOG_LEVEL` | Runtime log verbosity |
 

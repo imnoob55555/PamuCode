@@ -28,6 +28,7 @@ class HookRegistry:
             "PostToolUse": [],
             "ToolStart": [],
             "ToolResult": [],
+            "TurnLimit": [],
             "Stop": [],
         }
     )

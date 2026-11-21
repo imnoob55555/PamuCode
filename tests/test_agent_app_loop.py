@@ -711,3 +711,65 @@ def test_todo_reminder_round_counter_is_session_owned(runtime_factory):
     assert "<reminder>" not in str(second.llm.requests[0]["messages"])
     assert first.session.rounds_since_todo == 0
     assert second.session.rounds_since_todo == 0
+
+
+def _endless_tools(count=100):
+    return [tool_response(f"call-{index}", "echo_tool", {"value": str(index)}) for index in range(count)]
+
+
+@pytest.mark.parametrize("answers,expected_calls", [([], 3), ([True], 6), ([True, False], 6)])
+def test_turn_limit_pauses_a_looping_model_until_the_user_continues(runtime_factory, capsys, answers, expected_calls):
+    runtime = runtime_factory(_endless_tools())
+    runtime.config = replace(runtime.config, max_turn_model_calls=3)
+    runtime.tools.register(tool_schema("echo_tool"), lambda value: value)
+    pending = list(answers)
+    asked = []
+    runtime.hooks.register("TurnLimit", lambda summary: asked.append(summary) or (pending.pop(0) if pending else None))
+    runtime.session.history.append({"role": "user", "content": "loop"})
+
+    assert run_agent_loop(runtime) == "turn_limit"
+
+    assert len(runtime.llm.requests) == expected_calls
+    assert asked[0].startswith("本轮已调用模型 3 次、工具 3 次")
+    assert "已达到单轮上限并停止" in capsys.readouterr().out
+    assert runtime.session.history[-1]["content"][-1]["type"] == "tool_result"
+
+
+def test_turn_limit_counts_tool_calls_and_reported_tokens(runtime_factory):
+    runtime = runtime_factory(_endless_tools())
+    runtime.config = replace(runtime.config, max_turn_tool_calls=2)
+    runtime.tools.register(tool_schema("echo_tool"), lambda value: value)
+    runtime.session.history.append({"role": "user", "content": "loop"})
+    assert run_agent_loop(runtime) == "turn_limit"
+    assert len(runtime.llm.requests) == 2
+
+    from agent_app.core.turn_budget import TurnBudget
+    budget = TurnBudget(10, 10, 1000)
+    budget.record_model_call(types.SimpleNamespace(input_tokens=600, output_tokens=500), 10)
+    assert budget.exceeded() and budget.tokens == 1100
+    budget.reset()
+    budget.record_model_call(None, 400)
+    assert budget.tokens == 400 and not budget.exceeded()
+
+
+def test_headless_turns_are_not_paused_by_interactive_limits(runtime_factory):
+    runtime = runtime_factory(_endless_tools(5) + [text_response("done")])
+    runtime.config = replace(runtime.config, max_turn_model_calls=1, headless=True)
+    runtime.tools.register(tool_schema("echo_tool"), lambda value: value)
+    runtime.session.history.append({"role": "user", "content": "loop"})
+    assert run_agent_loop(runtime) is None
+    assert len(runtime.llm.requests) == 6
+
+
+def test_background_dispatch_respects_the_running_task_limit(runtime_factory):
+    runtime = runtime_factory([
+        tool_response("bg", "bash", {"command": "sleep 5", "run_in_background": True}),
+        text_response(),
+    ])
+    runtime.config = replace(runtime.config, max_background_tasks=1)
+    runtime.background.tasks["bg_0001"] = {"status": "running"}
+    runtime.tools.register(tool_schema("bash"), lambda **_kwargs: pytest.fail("dispatched past the limit"))
+    runtime.session.history.append({"role": "user", "content": "run"})
+    run_agent_loop(runtime)
+    result = tool_results(runtime)[-1]
+    assert result["is_error"] and "PAMU_MAX_BACKGROUND_TASKS" in result["content"]

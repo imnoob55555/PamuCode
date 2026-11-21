@@ -298,6 +298,12 @@ def build_runtime(
     if not config.headless:
         from .tool_display import ToolDisplay
 
+        def continue_after_limit(summary):
+            answer = terminal_confirmation(f"\n  {summary}，已达到单轮上限。继续执行？[y/N] ")
+            return answer.strip().lower() in ("y", "yes")
+
+        hooks.register("TurnLimit", continue_after_limit)
+
         display = ToolDisplay()
         hooks.register("ToolStart", display.start)
         hooks.register("ToolResult", display.result)
@@ -419,6 +425,11 @@ def build_runtime(
         )
 
     def spawn_teammate(name: str, role: str, prompt: str) -> str:
+        with team_state.lock:
+            crowded = name not in team_state.active and len(team_state.active) >= config.max_teammates
+        if crowded:
+            return (f"Error: 已有 {config.max_teammates} 个队友，达到上限 PAMU_MAX_TEAMMATES。"
+                    "请先让现有队友完成或关闭后再创建。")
         from .working_mode import delegated_scope
         prompt = delegated_scope(session) + "\n\nDelegated task:\n" + prompt
         with model_router.lock:
