@@ -426,8 +426,14 @@ def run_agent_loop(runtime: RuntimeContext) -> str | None:
         results = []
         result_message = {"role": "user", "content": results}
 
+        tool_blocks = {
+            _block_value(block, "id"): block
+            for block in response.content if _block_value(block, "type") == "tool_use"
+        }
+
         def add_result(result):
             text = str(result.get('content', ''))
+            runtime.hooks.trigger("ToolResult", tool_blocks.get(result["tool_use_id"]), result)
             result_limit = min(4000, max(128, report.budget.input_limit * 15 // 100))
             replacement = archive_result(runtime, text, result_limit)
             if replacement != text:
@@ -489,6 +495,7 @@ def run_agent_loop(runtime: RuntimeContext) -> str | None:
                 compacted_now = True
                 break
 
+            runtime.hooks.trigger("ToolStart", block)
             blocked = None if runtime.config.headless else runtime.hooks.trigger("PreToolUse", block)
             if blocked:
                 add_result(

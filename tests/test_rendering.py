@@ -115,8 +115,9 @@ def test_approval_panel_and_diff_block(monkeypatch):
     panel = rendering.approval_panel("Potentially destructive command", [("Command", "rm [a].txt")])
     assert "⚠ Potentially destructive command" in panel
     assert "rm [a].txt" in panel and "╭" in panel and "╯" in panel
-    diff = rendering.diff_block("Edit", "note.txt", ["--- a", "+++ b", "@@ -1 +1 @@", "-before", "+after"])
-    assert diff == "\n● Edit note.txt\n  @@ -1 +1 @@\n  -before\n  +after"
+    diff = rendering.diff_block(["--- a", "+++ b", "@@ -1 +1 @@", "-before", "+after"])
+    assert diff == "  @@ -1 +1 @@\n  -before\n  +after"
+    assert rendering.diff_block(["--- a", "+++ b"]) == "  (no diff)"
 
 
 def test_transcript_entries_render_roles(monkeypatch):

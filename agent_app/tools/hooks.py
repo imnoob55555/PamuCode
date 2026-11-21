@@ -25,6 +25,8 @@ class HookRegistry:
             "UserPromptSubmit": [],
             "PreToolUse": [],
             "PostToolUse": [],
+            "ToolStart": [],
+            "ToolResult": [],
             "Stop": [],
         }
     )
@@ -194,7 +196,7 @@ def make_diff_preview_hook(root: Path, confirmation: Callable[[str], str], *, po
             fromfile=f"{path}before", tofile=f"{path}after", lineterm="",
         )
         if theme.rich_output():
-            print(diff_block("Write" if block.name == "write_file" else "Edit", path, list(diff)))
+            print(diff_block(list(diff)))
         else:
             print("\n".join(diff) or "(no diff)")
         if confirmation("  Apply change? [y/N] ").strip().lower() not in ("y", "yes"):

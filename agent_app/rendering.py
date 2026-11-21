@@ -179,8 +179,9 @@ def blocked_notice(pattern: str, *, stream=None) -> str:
     return f"\n{theme.bullet('error', stream)} {theme.paint('Blocked', 'error.bold', stream)} 命中拒绝规则 '{pattern}'"
 
 
-def diff_block(action: str, path: str, diff_lines: list[str], *, stream=None) -> str:
-    output = [f"\n{theme.bullet('accent', stream)} {theme.paint(action, 'bold', stream)} {path}"]
+def diff_block(diff_lines: list[str], *, stream=None) -> str:
+    """Indented, colored unified diff shown under the tool call header."""
+    output = []
     body = [line for line in diff_lines if not line.startswith(("---", "+++"))]
     if not body:
         output.append(INDENT + theme.paint("(no diff)", "muted", stream))

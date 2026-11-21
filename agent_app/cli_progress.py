@@ -29,6 +29,7 @@ _pending_shell_status: list[str] = []
 _foreground_shell: tuple[Any, float] | None = None
 _invalidate_shell_status: Callable[[], None] | None = None
 _shell_block_open = False
+_shell_runs: dict[int, int] = {}
 
 
 @dataclass(slots=True)
@@ -208,6 +209,7 @@ def show_shell_status(event: str, command: str, exit_code: int | None) -> None:
         _keep_running_visible(worker, main_thread)
     with _TERMINAL_LOCK:
         if event == 'running':
+            _shell_runs[worker] = _shell_runs.get(worker, 0) + 1
             single_line = text.replace('\n', ' ').expandtabs()
             line = f'{label} {single_line}'
             if main_thread and not (_model_line_open or _approval_open or _invalidate_shell_status):
@@ -235,6 +237,27 @@ def show_shell_status(event: str, command: str, exit_code: int | None) -> None:
             invalidate()
         except RuntimeError:
             # The prompt can close its event loop while a worker is finishing.
+            pass
+
+
+def shell_run_count() -> int:
+    """Shell commands this thread has started, to tell run tools from skipped ones."""
+    with _TERMINAL_LOCK:
+        return _shell_runs.get(threading.get_ident(), 0)
+
+
+def write_tool_lines(lines: list[str]) -> None:
+    """Print tool call lines in the same block as shell statuses."""
+    global _model_line_open
+    with _TERMINAL_LOCK:
+        try:
+            _erase_spinner()
+            if _model_line_open:
+                print()
+                _model_line_open = False
+            _open_shell_block(sys.stdout)
+            print('\n'.join(lines), flush=True)
+        except (OSError, ValueError):
             pass
 
 

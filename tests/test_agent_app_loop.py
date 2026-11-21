@@ -377,6 +377,27 @@ def test_permission_denial_does_not_dispatch_handler(runtime_factory):
     assert tool_results(runtime)[-1]["content"] == "Permission denied"
 
 
+def test_tool_display_events_wrap_main_loop_tools_in_order(runtime_factory):
+    runtime = runtime_factory([
+        tool_response("ok-1", "echo_tool", {"value": "hi"}),
+        tool_response("deny-1", "echo_tool", {"value": "no"}),
+        text_response(),
+    ])
+    events = []
+    runtime.tools.register(tool_schema("echo_tool"), lambda value: events.append(("run", value)) or value)
+    runtime.hooks.register("ToolStart", lambda block: events.append(("start", block.id)))
+    runtime.hooks.register("PreToolUse", lambda block: "Permission denied" if block.id == "deny-1" else None)
+    runtime.hooks.register("ToolResult", lambda block, result: events.append(("result", block.id, result["content"])))
+    runtime.session.history.append({"role": "user", "content": "run"})
+
+    run_agent_loop(runtime)
+
+    assert events == [
+        ("start", "ok-1"), ("run", "hi"), ("result", "ok-1", "hi"),
+        ("start", "deny-1"), ("result", "deny-1", "Permission denied"),
+    ]
+
+
 def test_max_tokens_pairs_tool_use_then_continues(runtime_factory):
     truncated = tool_response("truncated-1", "echo", {})
     truncated.stop_reason = "max_tokens"

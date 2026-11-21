@@ -19,6 +19,10 @@ Experimental release: **0.1.0**, Python **3.13+**.
 - Styled transcript: `>` marks your messages, `●` marks model replies and shell
   statuses, and streamed Markdown (headings, lists, inline code, fenced code with
   syntax highlighting) is formatted line by line.
+- Tool calls appear as `● Read(path)` with a `⎿` summary line (lines read, files
+  found, `+added −removed` for edits, a checklist for todos). Shell commands keep
+  their `Running`/`Ran` status and only get a tool line when they were denied,
+  blocked, or sent to the background.
 - Explicit planning and execution modes, plus direct skill invocation.
 - Durable sessions, interrupted tool-call repair, context budgets, compaction,
   pinned constraints, and retrievable history evidence.
