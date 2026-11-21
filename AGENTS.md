@@ -2,6 +2,10 @@
 
 PamuCode is a Python 3.13+ terminal coding-agent runtime (layered: CLI → agent loop → adapters/tools/features). The repository root is the install root, but the CLI treats **the current working directory as the workspace** and creates runtime state in `<cwd>/.pamu/`.
 
+## Active work
+
+- `SAFETY_TASKS.md` is a hand-off plan for the safety guardrail work on branch `fix/safety-guardrails`. Follow it in order, one task per commit, and delete each task's section in the same commit that completes it.
+
 ## Commands
 
 - Setup: `uv sync` — installs the project plus the `dev` dependency group (pytest only).
