@@ -94,6 +94,20 @@ def make_permission_hook(
                 elif answer not in ("y", "yes", "a", "always"):
                     return "Permission denied by user"
 
+        if block.name == "schedule_cron" and (block.input.get("recurring") or block.input.get("durable")):
+            rows = [("Cron", str(block.input.get("cron", ""))), ("Prompt", str(block.input.get("prompt", "")))]
+            if block.input.get("recurring"):
+                rows.append(("Recurring", "repeats until cancelled or 7 days pass"))
+            if block.input.get("durable"):
+                rows.append(("Durable", "saved to disk and reloaded on every start"))
+            if theme.rich_output():
+                print(approval_panel("Scheduled task needs approval", rows))
+            else:
+                print("\n⚠  Scheduled task needs approval")
+                print("\n".join(f"   {label}: {value}" for label, value in rows))
+            if confirmation("  Allow this scheduled task? [y/N] ").strip().lower() not in ("y", "yes"):
+                return "Permission denied by user"
+
         if block.name.startswith("mcp__"):
             state = resolve(mcp_state, None)
             if state is not None:

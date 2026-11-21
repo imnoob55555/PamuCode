@@ -229,6 +229,7 @@ def test_queue_processor_holds_agent_lock_while_running_turn(monkeypatch):
     )
     queue_checks = iter([True, True])
     monkeypatch.setattr(cli, "has_cron_queue", lambda _state: next(queue_checks))
+    monkeypatch.setattr(cli, "queued_jobs", lambda _state: [SimpleNamespace(id="cron_000001")])
     monkeypatch.setattr(
         cli,
         "run_agent_turn",

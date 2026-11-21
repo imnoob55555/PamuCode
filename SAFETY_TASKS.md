@@ -27,32 +27,6 @@
 
 ---
 
-## 任务 3：收紧定时任务
-
-**现状**
-- `schedule_cron` 默认 `recurring=True, durable=True`（`agent_app/features/scheduler.py` 约第 52 行），也就是默认永久重复，并写入 `.pamu/scheduled_tasks.json`。
-- 启动时 `load_durable_jobs` 会自动加载这些任务，没有过期时间，不需要确认，也没有斜杠命令可以查看或管理。
-- 任务触发后，由 `agent_app/cli.py:_queue_processor_loop` 在后台线程里跑一整轮对话。中途需要确认时，`terminal_confirmation` 在后台线程里调用 `input()`，会和输入框抢 stdin。
-
-**要做的**
-1. 默认值改为 `recurring=False, durable=False`，同时更新 schema 描述。
-2. 创建 `durable` 或 `recurring` 的任务时，要用户确认：在 `make_permission_hook` 里给 `schedule_cron` 加分支，复用任务 1 的确认能力。在后台线程里会被自动拒绝。
-3. 重复任务默认 7 天过期：`CronJob` 增加 `expires_at`；`load_durable_jobs` 丢弃已过期的任务；调度循环跳过并删除过期任务。
-4. 新增斜杠命令（同时更新 `agent_app/slash_commands.py` 和 `cli._handle_slash_command`）：
-   - `/cron` 列出任务：ID、cron 表达式、prompt 摘要、是否重复、是否持久、过期时间；
-   - `/cron cancel <ID|all>` 取消任务。
-5. 启动时如果加载了持久任务，打印一行提示：「已加载 N 个持久定时任务，输入 /cron 查看」。
-6. 定时任务触发时，在输入框上方打一行通知（通过 `cli_progress` 打印或 `ui.notify`），让用户知道后台正在执行哪个任务。
-
-**验收**
-- 不传参数时，创建的是一次性、不落盘的任务。
-- 创建 durable 或 recurring 任务时会询问；拒绝后不创建。
-- 过期任务不会被加载，也不会被触发。
-- `/cron` 和 `/cron cancel` 有测试。
-- 后台线程需要确认时直接拒绝，且不读 stdin，用 mock 断言不会调用 `input`。
-
----
-
 ## 任务 4：交互模式的轮次与资源上限
 
 **现状**

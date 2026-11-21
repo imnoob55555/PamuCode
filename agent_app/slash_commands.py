@@ -26,6 +26,7 @@ SLASH_COMMANDS = (
     SlashCommand("/resume", "[--last | 会话编号]", "恢复当前工作区的其他会话"),
     SlashCommand("/delete", "", "删除当前会话并退出"),
     SlashCommand("/background", "", "查看当前会话的后台命令"),
+    SlashCommand("/cron", "[cancel <任务编号 | all>]", "查看或取消定时任务"),
     SlashCommand("/stop", "<后台任务编号 | all>", "停止指定后台命令或全部后台命令"),
     SlashCommand("/help", "", "显示命令帮助", ("/h",)),
     SlashCommand("/plan", "", "进入规划模式，只读探索并制定计划"),

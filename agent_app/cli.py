@@ -29,9 +29,13 @@ from .features.session_store import SessionError
 from .features import auth, skills
 from .features.skills import SkillInvocation
 from .features.scheduler import (
+    cancel_job,
     cron_scheduler_loop,
+    describe_job,
     has_cron_queue,
+    list_jobs,
     load_durable_jobs,
+    queued_jobs,
 )
 from .rendering import help_block
 from .repl_sessions import ResumeAction, delete_current_session, resume_runtime
@@ -128,6 +132,8 @@ def _queue_processor_loop(runtime) -> None:
                 return
             if has_cron_queue(runtime.scheduler):
                 LOGGER.debug("delivering scheduled work")
+                names = ", ".join(job.id for job in queued_jobs(runtime.scheduler))
+                print(theme.paint(f"⏰ 定时任务 {names} 开始执行；需要确认的操作会被自动拒绝。", "muted"))
                 run_agent_turn(runtime)
         except SessionError as exc:
             print(str(exc))
@@ -138,7 +144,8 @@ def _queue_processor_loop(runtime) -> None:
 
 
 def start_runtime_threads(runtime) -> list[threading.Thread]:
-    load_durable_jobs(runtime.scheduler, runtime.config)
+    if load_durable_jobs(runtime.scheduler, runtime.config):
+        print(f"已加载 {len(list_jobs(runtime.scheduler))} 个持久定时任务，输入 /cron 查看或取消。")
     scheduler = threading.Thread(
         target=cron_scheduler_loop,
         args=(runtime.scheduler, runtime.config, runtime.stop_event),
@@ -454,6 +461,23 @@ def _handle_slash_command(
     credentials_path = credentials_path or auth.CREDENTIALS_PATH
     command, _, rest = query.strip().partition(" ")
     argument = rest.strip()
+    if command == '/cron':
+        if runtime is None:
+            notify_or_print(ui, LOGIN_HINT, print_fn=print_fn)
+            return
+        action, _, target = argument.partition(' ')
+        target = target.strip()
+        if not action:
+            jobs = list_jobs(runtime.scheduler)
+            print_fn('\n'.join(f"{job.id}  '{job.cron}'  {describe_job(job)}  → {job.prompt[:60]}" for job in jobs)
+                     or '没有定时任务。')
+        elif action == 'cancel' and target:
+            ids = [job.id for job in list_jobs(runtime.scheduler)] if target == 'all' else [target]
+            print_fn('\n'.join(cancel_job(runtime.scheduler, runtime.config, job_id) for job_id in ids)
+                     or '没有定时任务。')
+        else:
+            notify_or_print(ui, '用法：/cron 或 /cron cancel <任务编号 | all>', print_fn=print_fn)
+        return
     if command in ('/background', '/stop'):
         if runtime is None:
             notify_or_print(ui, LOGIN_HINT, print_fn=print_fn)

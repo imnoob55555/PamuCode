@@ -1,6 +1,7 @@
 import json
 import random
 import threading
+import time
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
@@ -22,9 +23,11 @@ SCHEDULER_TOOL_SCHEMAS = [
                           "prompt": {"type": "string",
                                      "description": "Message to inject when fired"},
                           "recurring": {"type": "boolean",
-                                        "description": "True=recurring, False=one-shot"},
+                                        "description": "True=recurring (expires after 7 days), "
+                                                       "False=one-shot. Default false; true needs user approval."},
                           "durable": {"type": "boolean",
-                                      "description": "True=persist to disk"}},
+                                      "description": "True=persist across restarts. "
+                                                     "Default false; true needs user approval."}},
                       "required": ["cron", "prompt"]}},
     {"name": "list_crons",
      "description": "List all registered cron jobs.",
@@ -49,13 +52,13 @@ def register_scheduler_tools(registry, scheduler_state: Any, config) -> None:
                 scheduler_state() if callable(scheduler_state) else scheduler_state,
             )
 
-        def run_schedule(cron, prompt, recurring=True, durable=True):
+        def run_schedule(cron, prompt, recurring=False, durable=False):
             result = schedule_job(
                 current_state(), config, cron, prompt, recurring, durable
             )
             if isinstance(result, str):
                 return f"Error: {result}"
-            return f"Scheduled {result.id}: '{cron}' → '{prompt}'"
+            return f"Scheduled {result.id}: '{cron}' → '{prompt}' [{describe_job(result)}]"
 
         def run_list():
             jobs = list_jobs(current_state())
@@ -63,12 +66,7 @@ def register_scheduler_tools(registry, scheduler_state: Any, config) -> None:
                 return "No cron jobs. Use schedule_cron to add one."
             lines = []
             for job in jobs:
-                tag = "recurring" if job.recurring else "one-shot"
-                durability = "durable" if job.durable else "session"
-                lines.append(
-                    f"  {job.id}: '{job.cron}' → {job.prompt[:40]} "
-                    f"[{tag}, {durability}]"
-                )
+                lines.append(f"  {job.id}: '{job.cron}' → {job.prompt[:40]} [{describe_job(job)}]")
             return "\n".join(lines)
 
         handlers = {
@@ -82,6 +80,9 @@ def register_scheduler_tools(registry, scheduler_state: Any, config) -> None:
         registry.register(schema, handlers[schema["name"]])
 
 
+RECURRING_TTL_SECONDS = 7 * 24 * 3600
+
+
 @dataclass
 class CronJob:
     id: str
@@ -89,6 +90,18 @@ class CronJob:
     prompt: str
     recurring: bool
     durable: bool
+    expires_at: float | None = None
+
+
+def is_expired(job: CronJob, now: float) -> bool:
+    return job.expires_at is not None and now >= job.expires_at
+
+
+def describe_job(job: CronJob) -> str:
+    parts = ["recurring" if job.recurring else "one-shot", "durable" if job.durable else "session"]
+    if job.expires_at is not None:
+        parts.append("expires " + datetime.fromtimestamp(job.expires_at).strftime("%Y-%m-%d %H:%M"))
+    return ", ".join(parts)
 
 
 @dataclass(slots=True)
@@ -212,17 +225,24 @@ def save_durable_jobs(state: SchedulerState, config: AppConfig):
     with state.lock:
         durable = [asdict(job) for job in state.jobs.values() if job.durable]
         temp_path = config.scheduled_tasks_path.with_suffix(".tmp")
+        temp_path.parent.mkdir(parents=True, exist_ok=True)
         temp_path.write_text(
             json.dumps(durable, indent=2, ensure_ascii=False), encoding="utf-8"
         )
     temp_path.replace(config.scheduled_tasks_path)
 
 
-def load_durable_jobs(state: SchedulerState, config: AppConfig):
+def load_durable_jobs(state: SchedulerState, config: AppConfig, clock=time.time) -> int:
+    """Load persisted jobs, dropping expired ones; return how many were loaded.
+
+    Recurring jobs saved before expiry existed get a fresh expiry window.
+    """
     if not config.scheduled_tasks_path.exists():
-        return
+        return 0
+    now = clock()
     try:
         jobs = json.loads(config.scheduled_tasks_path.read_text())
+        loaded, changed = [], False
         with state.lock:
             for serialized in jobs:
                 job = CronJob(**serialized)
@@ -230,12 +250,21 @@ def load_durable_jobs(state: SchedulerState, config: AppConfig):
                 if error:
                     print("  " + theme.paint(f"[cron] skipping invalid job {job.id}: {error}", "error"))
                     continue
+                if job.recurring and job.expires_at is None:
+                    job.expires_at, changed = now + RECURRING_TTL_SECONDS, True
+                if is_expired(job, now):
+                    changed = True
+                    continue
                 state.jobs[job.id] = job
-            valid = [job for job in jobs if job["id"] in state.jobs]
-        if valid:
-            LOGGER.info("loaded %d durable jobs", len(valid))
+                loaded.append(job.id)
+        if changed:
+            save_durable_jobs(state, config)
+        if loaded:
+            LOGGER.info("loaded %d durable jobs", len(loaded))
+        return len(loaded)
     except Exception:
-        ...  # malformed durable file is ignored
+        LOGGER.warning("ignored malformed durable cron file", exc_info=True)
+        return 0
 
 
 def schedule_job(
@@ -243,8 +272,9 @@ def schedule_job(
     config: AppConfig,
     cron: str,
     prompt: str,
-    recurring: bool = True,
-    durable: bool = True,
+    recurring: bool = False,
+    durable: bool = False,
+    clock=time.time,
 ) -> CronJob | str:
     error = validate_cron(cron)
     if error:
@@ -255,6 +285,7 @@ def schedule_job(
         prompt=prompt,
         recurring=recurring,
         durable=durable,
+        expires_at=clock() + RECURRING_TTL_SECONDS if recurring else None,
     )
     with state.lock:
         state.jobs[job.id] = job
@@ -289,6 +320,12 @@ def cron_scheduler_loop(state: SchedulerState, config: AppConfig, stop_event, no
             if state.paused:
                 continue
             for job in list(state.jobs.values()):
+                if is_expired(job, current_time.timestamp()):
+                    state.jobs.pop(job.id, None)
+                    state.last_fired.pop(job.id, None)
+                    durable_changed = durable_changed or job.durable
+                    LOGGER.info("expired cron job %s", job.id)
+                    continue
                 try:
                     if cron_matches(job.cron, current_time):
                         if state.last_fired.get(job.id) != minute_marker:
@@ -310,6 +347,11 @@ def consume_cron_queue(state: SchedulerState) -> list[CronJob]:
         fired = list(state.queue)
         state.queue.clear()
     return fired
+
+
+def queued_jobs(state: SchedulerState) -> list[CronJob]:
+    with state.lock:
+        return list(state.queue)
 
 
 def has_cron_queue(state: SchedulerState) -> bool:

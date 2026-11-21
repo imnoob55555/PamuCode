@@ -101,6 +101,14 @@ The model can use the error from a blocked attempt to change approach. Two
 consecutive batches containing only blocked repeats end the turn.
 
 Background commands and teammates run independently of the foreground turn.
+The model can schedule prompts with cron expressions. Jobs are one-shot and last
+only for the current session unless the model asks for a recurring or durable job,
+which needs your approval. Recurring jobs expire after seven days; durable jobs are
+saved in `.pamu/scheduled_tasks.json`, and PamuCode reports how many it loaded at
+startup. A scheduled turn announces itself, and any approval it would need is
+refused. Use `/cron` to list jobs and `/cron cancel <id>` or `/cron cancel all` to
+remove them.
+
 Use `/background` to list this session's background commands, `/stop bg_0001` to
 stop one, or `/stop all` to stop all background commands. A cancellation request
 is not reported as finished until the worker acknowledges it. Exiting requests
@@ -140,6 +148,7 @@ are not implemented; use Ctrl+C, then enter your new instruction.
 | `/resume [--last \| ID]` | Switch to another saved session |
 | `/delete` | Confirm deletion of the current session and exit |
 | `/background` | List this session's background commands |
+| `/cron [cancel <id \| all>]` | List or cancel scheduled jobs |
 | `/stop <ID \| all>` | Stop selected background commands |
 | `/help` or `/h` | Show a concise command list |
 | `/quit` | Exit the session |
