@@ -14,8 +14,8 @@ import re
 from prompt_toolkit.utils import get_cwidth
 
 from . import theme
-from .cli_progress import shell_run_count, write_tool_lines
-from .features.session_codec import safe_preview
+from .cli_progress import shell_line, shell_run_count, write_tool_lines
+from .features.session_codec import safe_preview, safe_terminal_text
 from .rendering import terminal_width
 
 RESULT_MARK = "⎿"
@@ -164,6 +164,46 @@ def is_error(content: str, result: dict) -> bool:
         or content in DENIALS
 
 
+def outcome_lines(name: str, tool_input, result: dict, *, header_shown: bool = False) -> list[str]:
+    """The ``⎿`` result lines for a completed call, preceded by its header unless shown."""
+    content = str(result.get("content", ""))
+    background = BACKGROUND.match(content)
+    failed = is_error(content, result)
+    if background:
+        lines = [_result_line(f"Running in background · {background[1]}")]
+    elif failed:
+        denial = DENIALS.get(content)
+        lines = [_result_line(denial or _first_line(content), "warning" if denial else "error")]
+    elif name == "todo_write":
+        lines = _todo_lines(tool_input) or [_result_line(summary(name, tool_input, content))]
+    else:
+        lines = [_result_line(summary(name, tool_input, content))]
+    if not header_shown:
+        dot = "warning" if failed and content in DENIALS else "error" if failed else "success"
+        lines.insert(0, header(name, tool_input, dot))
+    return lines
+
+
+def replay_lines(call: dict, result: dict | None, status: str) -> list[str]:
+    """Render a saved tool call when a session is resumed.
+
+    ``status`` is the resume classification of the call: recorded, not run,
+    interrupted, unknown, or submitted to the background.
+    """
+    name = str(call.get("name", ""))
+    tool_input = call.get("input") if isinstance(call.get("input"), dict) else {}
+    content = str(result.get("content", "")) if result else ""
+    if status.startswith("已提交后台"):
+        return [header(name, tool_input, "success"), _result_line(f"Sent to background · {status.split()[-1]}")]
+    if result is None or status in ("未执行", "结果未知"):
+        reason = status if result is None else DENIALS.get(content) or _first_line(content) or status
+        return [header(name, tool_input, "warning"), _result_line(reason, "warning")]
+    if name == "bash" and (status == "已中断" or not is_error(content, result)):
+        command = safe_terminal_text(str(tool_input.get("command", ""))).replace("\n", "\n  ")
+        return [shell_line("interrupted" if status == "已中断" else "finished", command)]
+    return outcome_lines(name, tool_input, result)
+
+
 class ToolDisplay:
     """Print one tool call per block, tracking headers already shown early."""
 
@@ -184,25 +224,10 @@ class ToolDisplay:
         if block is None or not theme.rich_output():
             return
         name, tool_id = _value(block, "name"), _value(block, "id")
-        tool_input = _value(block, "input", {})
-        content = str(result.get("content", ""))
         early = tool_id in self.headers
         self.headers.discard(tool_id)
         runs = self.started.pop(tool_id, None)
-        background = BACKGROUND.match(content)
-        failed = is_error(content, result)
+        background = BACKGROUND.match(str(result.get("content", "")))
         if name == "bash" and not background and runs is not None and shell_run_count() != runs:
             return
-        if background:
-            lines = [_result_line(f"Running in background · {background[1]}")]
-        elif failed:
-            denial = DENIALS.get(content)
-            lines = [_result_line(denial or _first_line(content), "warning" if denial else "error")]
-        elif name == "todo_write":
-            lines = _todo_lines(tool_input) or [_result_line(summary(name, tool_input, content))]
-        else:
-            lines = [_result_line(summary(name, tool_input, content))]
-        if not early:
-            dot = "warning" if failed and content in DENIALS else "error" if failed else "success"
-            lines.insert(0, header(name, tool_input, dot))
-        write_tool_lines(lines)
+        write_tool_lines(outcome_lines(name, _value(block, "input", {}), result, header_shown=early))

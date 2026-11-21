@@ -430,7 +430,7 @@ def test_resume_replays_long_multiline_messages_and_labels_interruptions(saved, 
     assert '已回到此会话，可以继续输入。' in output
 
 
-def test_resume_displays_shell_entries_separately_and_matches_each_batch(saved, tmp_path, monkeypatch, capsys):
+def _save_mixed_tool_history(saved, tmp_path):
     def shell(tool_id, command):
         return {'type': 'tool_use', 'id': tool_id, 'name': 'bash', 'input': {'command': command}}
 
@@ -458,6 +458,9 @@ def test_resume_displays_shell_entries_separately_and_matches_each_batch(saved, 
     saved['tool_states'] = {'reused': 'pending'}
     SessionStore(tmp_path).save(saved)
 
+
+def test_resume_displays_shell_entries_separately_and_matches_each_batch(saved, tmp_path, monkeypatch, capsys):
+    _save_mixed_tool_history(saved, tmp_path)
     launch(tmp_path, monkeypatch, ['-r', saved['id']])
     output = capsys.readouterr().out
     entries = ['PamuCode：\nChecking the workspace.', 'Shell（结果已记录）：\n$ printf ok\n  :',
@@ -467,6 +470,26 @@ def test_resume_displays_shell_entries_separately_and_matches_each_batch(saved, 
     assert positions == sorted(positions)
     assert 'HIDDEN_' not in output
     assert not (tmp_path / 'never-created').exists()
+
+
+def test_terminal_resume_replays_every_tool_call_like_the_live_transcript(saved, tmp_path, monkeypatch, capsys):
+    from agent_app import theme
+
+    _save_mixed_tool_history(saved, tmp_path)
+    monkeypatch.setattr(theme, 'rich_output', lambda stream=None: True)
+    monkeypatch.setenv('NO_COLOR', '1')
+    monkeypatch.setenv('COLUMNS', '80')
+    launch(tmp_path, monkeypatch, ['-r', saved['id']])
+    output = capsys.readouterr().out
+    entries = ['> Run several checks', '● Checking the workspace.\n', '● Ran printf ok\n  :\n',
+               '● Bash(rm blocked.txt)\n  ⎿  Denied by user\n',
+               '● Bash(sleep 1)\n  ⎿  Sent to background · bg_0001\n',
+               '● Read(HIDDEN_PATH)\n  ⎿  Read 1 lines\n\n',
+               '● Done checking.\n', '● Bash(touch never-created)\n  ⎿  未执行\n\n']
+    positions = [output.index(entry) for entry in entries]
+    assert positions == sorted(positions)
+    assert 'HIDDEN_STDOUT' not in output and 'HIDDEN_FILE_CONTENT' not in output
+    assert 'Shell（' not in output
 
 
 @pytest.mark.parametrize('old_ids', [False, True])
@@ -553,7 +576,7 @@ def test_missing_archived_dialogue_does_not_prevent_continuing(saved, tmp_path, 
 def test_interrupting_history_replay_leaves_the_restored_session_open(saved, tmp_path, monkeypatch, capsys):
     from agent_app import session_cli
 
-    def interrupt(_):
+    def interrupt(_snapshot, **_options):
         raise KeyboardInterrupt
 
     monkeypatch.setattr(session_cli, '_session_dialogue', interrupt)

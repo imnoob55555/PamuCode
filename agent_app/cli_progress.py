@@ -149,6 +149,12 @@ def _shell_segments(event: str, command: str, exit_code: int | None) -> list[tup
     return segments
 
 
+def shell_line(event: str, command: str, exit_code: int | None = None) -> str:
+    """A finished ``● Ran <command>`` style status painted for the terminal."""
+    return ''.join(theme.paint(part, style) if style else part
+                   for part, style in _shell_segments(event, command, exit_code))
+
+
 def _show_foreground_shell(line: str, segments=None) -> None:
     global _foreground_shell
     stream = sys.stdout
@@ -222,8 +228,7 @@ def show_shell_status(event: str, command: str, exit_code: int | None) -> None:
             command_text = text.replace('\n', '\n  ')
             line = f'{label} {command_text}{suffix}'
             if theme.rich_output(sys.stdout):
-                segments = _shell_segments(event, command_text, exit_code)
-                line = ''.join(theme.paint(part, style) if style else part for part, style in segments)
+                line = shell_line(event, command_text, exit_code)
             _background_shell_status.pop(worker, None)
             if main_thread and _foreground_shell is not None:
                 _clear_foreground_shell()

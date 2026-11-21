@@ -22,7 +22,8 @@ Experimental release: **0.1.0**, Python **3.13+**.
 - Tool calls appear as `● Read(path)` with a `⎿` summary line (lines read, files
   found, `+added −removed` for edits, a checklist for todos). Shell commands keep
   their `Running`/`Ran` status and only get a tool line when they were denied,
-  blocked, or sent to the background.
+  blocked, or sent to the background. Resuming a session replays these lines too; redirected
+  output keeps the plain `Shell（status）` records.
 - Explicit planning and execution modes, plus direct skill invocation.
 - Durable sessions, interrupted tool-call repair, context budgets, compaction,
   pinned constraints, and retrievable history evidence.

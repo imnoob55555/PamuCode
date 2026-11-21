@@ -6,6 +6,7 @@ from pathlib import Path
 
 from . import theme
 from .rendering import section, transcript_entry
+from .tool_display import replay_lines
 from .core.context_history import compacted_prefix_length
 from .features.context_archive import ContextArchive
 from .features.session_codec import safe_preview, safe_terminal_text
@@ -118,7 +119,10 @@ def _shell_status(result, state):
     return '结果已记录'
 
 
-def _transcript_entries(messages, latest_assistant, tool_states):
+TOOL_ENTRY = '__tool__'
+
+
+def _transcript_entries(messages, latest_assistant, tool_states, tools=False):
     for message, following in pairwise(chain(messages, (None,))):
         if message is None:
             yield None
@@ -126,26 +130,29 @@ def _transcript_entries(messages, latest_assistant, tool_states):
         if entry := _dialogue_entry(message):
             yield entry
         calls = [block for block in _tool_blocks(message, 'assistant', 'tool_use')
-                 if block['name'] == 'bash' and isinstance(block['input'].get('command'), str)]
+                 if tools or block['name'] == 'bash' and isinstance(block['input'].get('command'), str)]
         if not calls:
             continue
         # Tool IDs can recur in later turns. Only the following user message
         # carries results for this batch of calls.
         results = {block['tool_use_id']: block for block in _tool_blocks(following, 'user', 'tool_result')}
         for call in calls:
-            command = safe_terminal_text(call['input']['command']).replace('\n', '\n  ')
             state = tool_states.get(call['id']) if message is latest_assistant else None
             status = _shell_status(results.get(call['id']), state)
+            if tools:
+                yield TOOL_ENTRY, call, results.get(call['id']), status
+                continue
+            command = safe_terminal_text(call['input']['command']).replace('\n', '\n  ')
             yield f'Shell（{status}）', f'$ {command}'
 
 
-def _legacy_dialogue(snapshot, latest_assistant):
+def _legacy_dialogue(snapshot, latest_assistant, tools=False):
     # V1 archives contain successive snapshots without message IDs. Their
     # retained tail may reappear at the start of the next snapshot.
     previous = []
     previous_start = None
     for history in (*snapshot['archive'], snapshot['history']):
-        dialogue = list(_transcript_entries(history, latest_assistant, snapshot['tool_states']))
+        dialogue = list(_transcript_entries(history, latest_assistant, snapshot['tool_states'], tools))
         start = history[0]['content'] if history else None
         reset = isinstance(start, str) and start.startswith('[Compacted]\n') and start != previous_start
         overlap = 0
@@ -188,12 +195,13 @@ def _session_messages(snapshot):
         yield history[index]
 
 
-def _session_dialogue(snapshot):
+def _session_dialogue(snapshot, tools=False):
+    """Yield ``(role, text)`` entries; with ``tools`` every call is a ``TOOL_ENTRY``."""
     latest_assistant = next((m for m in reversed(snapshot['history']) if m['role'] == 'assistant'), None)
     if snapshot['schema_version'] == 1:
-        yield from _legacy_dialogue(snapshot, latest_assistant)
+        yield from _legacy_dialogue(snapshot, latest_assistant, tools)
     else:
-        yield from _transcript_entries(_session_messages(snapshot), latest_assistant, snapshot['tool_states'])
+        yield from _transcript_entries(_session_messages(snapshot), latest_assistant, snapshot['tool_states'], tools)
 
 
 def show_restored_session(snapshot, runtime):
@@ -220,16 +228,26 @@ def show_restored_session(snapshot, runtime):
             print('\n' + section('历史对话') + '\n')
         else:
             print('\n历史对话\n')
-        for entry in _session_dialogue(snapshot):
+        tool_group = False
+        for entry in _session_dialogue(snapshot, tools=rich):
             if entry is None:
                 missing = True
                 continue
+            shown = True
+            if entry[0] == TOOL_ENTRY:
+                print('\n'.join(replay_lines(*entry[1:])))
+                tool_group = True
+                continue
+            if tool_group:
+                print()
+                tool_group = False
             role, text = entry
             if rich:
                 print(transcript_entry(role, text) + '\n')
             else:
                 print(f'{role}：\n{text}\n')
-            shown = True
+        if tool_group:
+            print()
         if missing:
             print('部分归档消息无法读取。')
         elif not shown:
