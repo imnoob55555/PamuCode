@@ -31,7 +31,8 @@ def test_app_config_separates_installation_workspace_and_state_paths(
     assert config.repo_root == install_root.resolve()
     assert config.workdir == workspace.resolve()
     assert config.state_dir == workspace.resolve() / ".pamu"
-    assert config.skills_dir == workspace.resolve() / "skills"
+    assert config.skills_dir == config.state_dir / "skills"
+    assert config.skill_dirs[0] == config.skills_dir
     assert config.memory_dir == config.state_dir / "memory"
     assert config.memory_index == config.state_dir / "memory" / "MEMORY.md"
     assert config.transcripts_dir == config.state_dir / "transcripts"

@@ -9,7 +9,7 @@ from agent_app.features.memory import MemoryStore
 
 def rt(path):
     return SimpleNamespace(config=SimpleNamespace(workdir=path, primary_model='test', default_max_tokens=1024, context_window=4096, context_window_target=None),
-        model=ModelRouter(primary_model='test'), session=SessionState(), skills=SkillState(path/'skills'),
+        model=ModelRouter(primary_model='test'), session=SessionState(), skills=SkillState((path/'skills',)),
         memory=MemoryStore(path/'memory', path/'memory'/'MEMORY.md'),
         mcp=SimpleNamespace(lock=threading.Lock(), clients={}), team=SimpleNamespace(lock=threading.Lock(), active={}))
 
@@ -58,7 +58,7 @@ def test_secret_symlink_and_outside_files_never_rehydrated(tmp_path):
 def test_loaded_skill_rereads_current_registry_path(tmp_path):
     from agent_app.core.context_materials import remember_skill
     runtime = rt(tmp_path)
-    directory = runtime.skills.root/'example'
+    directory = runtime.skills.roots[0]/'example'
     directory.mkdir(parents=True)
     (directory/'SKILL.md').write_text('old skill')
     runtime.skills.registry['example'] = {'name': 'example', 'description': 'test', 'content': 'old skill'}

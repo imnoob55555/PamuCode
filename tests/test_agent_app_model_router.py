@@ -69,7 +69,7 @@ def _make_runtime(tmp_path, monkeypatch, adapter):
             root=config.worktrees_dir,
             run_git=lambda _args: (True, "ok"),
         ),
-        skills=SkillState(root=config.skills_dir),
+        skills=SkillState((config.skills_dir,)),
         memory=MemoryStore(root=config.memory_dir, index_path=config.memory_index),
         bus=MessageBus(root=config.mailbox_dir),
         protocols=ProtocolStore(),

@@ -24,7 +24,7 @@ from .features.background import (
 )
 from .features.sessions import checkpoint, interrupt_turn
 from .features.session_store import SessionError
-from .features import auth
+from .features import auth, skills
 from .features.skills import SkillInvocation
 from .features.scheduler import (
     cron_scheduler_loop,
@@ -482,9 +482,10 @@ def _handle_slash_command(
         if runtime.config.sandbox_mode == "confined":
             notify_or_print(ui, "当前沙箱模式不支持加载技能。", print_fn=print_fn)
             return
-        catalog = runtime.skills.registry
+        catalog = skills.refresh_skills(runtime.skills)
         if not catalog:
-            notify_or_print(ui, "没有可用技能，请在 skills/<名称>/SKILL.md 添加技能后重启。", print_fn=print_fn)
+            places = "、".join(skills.root_label(runtime.skills, root) for root in runtime.skills.roots)
+            notify_or_print(ui, f"没有可用技能。可在以下目录添加 <名称>/SKILL.md，无需重启：{places}", print_fn=print_fn)
             return
         parts = argument.split(maxsplit=1)
         name = parts[0] if parts else None
@@ -492,19 +493,20 @@ def _handle_slash_command(
         if name is None:
             if ui is None:
                 print_fn("可用技能：\n" + "\n".join(
-                    f"  {key} — {skill['description']}" for key, skill in sorted(catalog.items())
+                    f"  {skills.describe_skill(runtime.skills, key)}" for key in sorted(catalog)
                 ) + "\n使用 /skill <名称> [任务描述] 调用。")
                 return
             name = ui.choose("选择技能", [
-                (key, f"{skill['name']} — {skill['description']}")
-                for key, skill in sorted(catalog.items())
+                (key, skills.describe_skill(runtime.skills, key)) for key in sorted(catalog)
             ])
             if name is None:
                 notify_or_print(ui, "已取消技能调用。", print_fn=print_fn)
                 return
-        if name not in catalog:
+        key = skills.resolve_skill(runtime.skills, name)
+        if key is None:
             notify_or_print(ui, f"技能不存在：{name}。输入 /skill 查看可用技能。", print_fn=print_fn)
             return
+        name = key
         content = runtime.tools.snapshot()[1]["load_skill"](name=name)
         checkpoint(runtime)
         print_fn(f"已调用技能：{name}" + (f" · {task}" if task else ""))

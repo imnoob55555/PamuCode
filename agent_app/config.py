@@ -5,6 +5,15 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+USER_HOME = Path.home()
+SKILL_PARENTS = (".pamu", ".agents", ".claude")
+
+
+def skill_search_dirs(workspace: Path, home: Path) -> tuple[Path, ...]:
+    """Project skill directories first, then the user's, without duplicates."""
+    candidates = [base / parent / "skills" for base in (workspace, home) for parent in SKILL_PARENTS]
+    return tuple(dict.fromkeys(candidates))
+
 
 class MissingConfigurationError(ValueError):
     """A required PamuCode configuration value was not provided."""
@@ -48,6 +57,7 @@ class AppConfig:
     permission_timeout: float = 300.0
     headless: bool = False
     sandbox_mode: str = "off"
+    skill_dirs: tuple[Path, ...] = ()
 
     @property
     def sessions_dir(self) -> Path:
@@ -79,7 +89,8 @@ class AppConfig:
             repo_root=root,
             workdir=workspace,
             state_dir=state_dir,
-            skills_dir=workspace / "skills",
+            skills_dir=state_dir / "skills",
+            skill_dirs=skill_search_dirs(workspace, USER_HOME),
             memory_dir=memory_dir,
             memory_index=memory_dir / "MEMORY.md",
             transcripts_dir=state_dir / "transcripts",

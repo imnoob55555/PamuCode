@@ -104,7 +104,7 @@ def runtime_factory(tmp_path, monkeypatch):
                 root=config.worktrees_dir,
                 run_git=lambda _args: (True, "ok"),
             ),
-            skills=SkillState(root=config.skills_dir),
+            skills=SkillState((config.skills_dir,)),
             memory=MemoryStore(
                 root=config.memory_dir,
                 index_path=config.memory_index,
@@ -295,8 +295,11 @@ def test_model_can_list_workspace_skills_without_a_shell_scan(tmp_path, with_ski
         run_agent_loop(runtime)
         assert "list_skills" in {tool["name"] for tool in adapter.requests[0]["tools"]}
         assert "Use list_skills for questions about available skills" in adapter.requests[0]["system"]
-        expected = "- **verify**: Verify changes" if with_skill else "(no skills found)"
-        assert tool_results(runtime)[0]["content"] == expected
+        content = tool_results(runtime)[0]["content"]
+        if with_skill:
+            assert content == "- verify: Verify changes [.pamu/skills]"
+        else:
+            assert content.startswith("(no skills found)") and "- .agents/skills" in content
     finally:
         runtime.sessions.close()
 
