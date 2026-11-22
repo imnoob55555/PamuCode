@@ -33,7 +33,7 @@ SLASH_COMMANDS = (
     SlashCommand("/help", "", "显示命令帮助", ("/h",)),
     SlashCommand("/plan", "", "进入规划模式，只读探索并制定计划"),
     SlashCommand("/execute", "", "进入执行模式，按用户要求实施"),
-    SlashCommand("/skill", "[名称] [任务描述]", "选择并调用技能"),
+    SlashCommand("/skill", "[名称 [任务描述] | trust]", "选择并调用技能，或信任项目自带技能"),
     SlashCommand("/quit", "", "退出当前 PamuCode 会话"),
 )
 

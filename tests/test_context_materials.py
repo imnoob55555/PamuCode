@@ -72,7 +72,7 @@ def test_runtime_records_only_successful_tools(tmp_path):
     from agent_app.bootstrap import build_runtime
     from agent_app.config import AppConfig
     from tests.test_agent_app_bootstrap import FakeSDKClient
-    config = AppConfig.from_env(tmp_path, environ={'MODEL_ID': 'test'})
+    config = AppConfig.from_env(tmp_path, environ={'MODEL_ID': 'test', 'PAMU_TRUST_PROJECT_SKILLS': '1'})
     skill = config.skills_dir/'demo'/'SKILL.md'
     skill.parent.mkdir(parents=True)
     skill.write_text('---\nname: demo\ndescription: example\n---\nSkill instructions')

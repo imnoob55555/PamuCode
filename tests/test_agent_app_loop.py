@@ -283,7 +283,7 @@ def test_repeat_limit_applies_before_background_dispatch(runtime_factory, monkey
 def test_model_can_list_workspace_skills_without_a_shell_scan(tmp_path, with_skill):
     from agent_app.bootstrap import build_runtime
 
-    config = AppConfig.from_env(tmp_path, environ={"MODEL_ID": "test-model"})
+    config = AppConfig.from_env(tmp_path, environ={"MODEL_ID": "test-model", "PAMU_TRUST_PROJECT_SKILLS": "1"})
     if with_skill:
         manifest = config.skills_dir / "verify" / "SKILL.md"
         manifest.parent.mkdir(parents=True)

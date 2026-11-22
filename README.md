@@ -140,6 +140,7 @@ are not implemented; use Ctrl+C, then enter your new instruction.
 | `/plan` | Enter read-only exploration and planning mode |
 | `/execute` | Permit implementation within the user's request |
 | `/skill [name] [task]` | Select or explicitly invoke a skill |
+| `/skill trust` | Load the skills that come with this workspace |
 | `/context` | Inspect the context budget |
 | `/context window <tokens>` | Set a session window override |
 | `/context pin <text>` | Preserve a constraint verbatim |
@@ -214,7 +215,16 @@ directories, highest priority first:
 | `~/.claude/skills/` | All projects, shared with Claude Code |
 
 When two directories define the same skill name, the higher-priority one wins,
-so project skills override user skills. A visible `skills/` folder in the
+so project skills override user skills.
+
+Skills that come with the workspace (its `.pamu`, `.agents` and `.claude` skill
+directories) are loaded only after you trust them, because their descriptions enter
+the system prompt. The first time PamuCode finds them it lists them and asks; you can
+also run `/skill trust` later. Trust is stored per workspace in
+`~/.pamu/trusted_workspaces.json` for that exact set of skills, so adding or editing a
+project skill asks again. Until then those skills are not listed to the model, and
+`list_skills` says they are waiting. User-level skills are always trusted, and
+`PAMU_TRUST_PROJECT_SKILLS=1` trusts project skills without asking. A visible `skills/` folder in the
 project root is not read, so ordinary project folders are never mistaken for
 skills.
 
@@ -269,6 +279,7 @@ selected during login. `/model` and `/provider` take effect in the current sessi
 | `PAMU_SANDBOX` | `off` (default) or `confined` |
 | `PAMU_MAX_TURN_MODEL_CALLS` / `PAMU_MAX_TURN_TOOL_CALLS` / `PAMU_MAX_TURN_TOKENS` | Per-turn limits in the interactive session (defaults 50 / 200 / 2,000,000). When one is reached PamuCode asks whether to continue; scheduled turns stop |
 | `PAMU_MAX_TEAMMATES` / `PAMU_MAX_BACKGROUND_TASKS` | Concurrent teammates and running background commands (defaults 4 / 8) |
+| `PAMU_TRUST_PROJECT_SKILLS` | `1` loads the workspace's own skills without asking for trust |
 | `PAMU_AUTO_MEMORY` | `on` (default) or `off`. Automatic memory extraction after each turn |
 | `PAMU_SHELL_APPROVAL` | `ask` (default) or `auto`. **Dangerous:** `auto` runs every shell command except the refused ones without asking |
 | `LOG_LEVEL` | Runtime log verbosity |

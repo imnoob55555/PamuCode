@@ -268,10 +268,15 @@ def build_runtime(
     scheduler_state = scheduler.SchedulerState()
     background_state = background.BackgroundState()
     task_store = tasks.TaskStore(config.task_dir)
+    from .features.skill_trust import SkillTrustStore, TrustEverything
+
     skill_state = skills.SkillState(
         config.skill_dirs if policy.mode != "confined" else (),
         workspace=config.workdir,
         home=config_module.USER_HOME,
+        project_roots=config.project_skill_dirs,
+        trust_store=TrustEverything() if config.trust_project_skills
+        else SkillTrustStore(config_module.USER_HOME / ".pamu" / "trusted_workspaces.json"),
     )
     memory_store = memory.MemoryStore(config.memory_dir, config.memory_index)
     message_bus = team_bus.MessageBus(config.mailbox_dir)

@@ -61,6 +61,25 @@ def notify_or_print(ui, message: str, *, print_fn=print) -> None:
         print_fn(message)
 
 
+def offer_project_skill_trust(runtime, ui) -> None:
+    """Ask once per skill set whether the workspace's own skills may load."""
+    state = getattr(runtime, "skills", None)
+    if state is None or getattr(runtime.config, "sandbox_mode", "off") == "confined":
+        return
+    skills.refresh_skills(state)
+    if not state.pending or state.asked_fingerprint == state.pending_fingerprint:
+        return
+    state.asked_fingerprint = state.pending_fingerprint
+    choice = ui.choose(
+        f"此项目自带 {len(state.pending)} 个技能：{skills.describe_pending(state)}。"
+        "它们会进入系统提示词并可被模型加载，是否信任？",
+        [("no", "暂不信任（之后可输入 /skill trust）"), ("yes", "信任此项目的技能")],
+    )
+    if choice == "yes":
+        names = skills.trust_project_skills(state)
+        print(theme.success(f"已信任此项目的技能：{', '.join(names)}"))
+
+
 def _save_background_results(runtime):
     notifications = collect_background_results(runtime.background)
     runtime.session.history.extend(
@@ -557,6 +576,16 @@ def _handle_slash_command(
             notify_or_print(ui, "当前沙箱模式不支持加载技能。", print_fn=print_fn)
             return
         catalog = skills.refresh_skills(runtime.skills)
+        if argument == "trust":
+            names = skills.trust_project_skills(runtime.skills)
+            notify_or_print(
+                ui, theme.success(f"已信任此项目的技能：{', '.join(names)}") if names else "没有等待信任的项目技能。",
+                print_fn=print_fn,
+            )
+            return
+        if runtime.skills.pending:
+            notify_or_print(ui, f"此项目自带的技能尚未信任：{skills.describe_pending(runtime.skills)}。"
+                                "输入 /skill trust 加载。", print_fn=print_fn)
         if not catalog:
             places = "、".join(skills.root_label(runtime.skills, root) for root in runtime.skills.roots)
             notify_or_print(ui, f"没有可用技能。可在以下目录添加 <名称>/SKILL.md，无需重启：{places}", print_fn=print_fn)
@@ -999,6 +1028,7 @@ def main(
             notify_or_print(ui, LOGIN_HINT)
         while True:
             if ui is not None and runtime is not None:
+                offer_project_skill_trust(runtime, ui)
                 _provider, ui.model_name = runtime.model.snapshot()[:2]
                 ui.thinking_level = runtime.model.thinking_snapshot()
                 from .working_mode import working_mode

@@ -157,7 +157,7 @@ def _runtime(tmp_path, monkeypatch, **overrides):
     from agent_app.bootstrap import build_runtime
 
     monkeypatch.setattr(config_module, "USER_HOME", tmp_path / "home")
-    config = replace(AppConfig.from_env(tmp_path / "ws", environ={"MODEL_ID": "m"}), headless=True, **overrides)
+    config = replace(AppConfig.from_env(tmp_path / "ws", environ={"MODEL_ID": "m", "PAMU_TRUST_PROJECT_SKILLS": "1"}), headless=True, **overrides)
     return build_runtime(config, None, adapter=object())
 
 

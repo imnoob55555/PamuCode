@@ -9,6 +9,13 @@ USER_HOME = Path.home()
 SKILL_PARENTS = (".pamu", ".agents", ".claude")
 
 
+def project_skill_dirs(workspace: Path, home: Path) -> tuple[Path, ...]:
+    """Skill directories that come with the workspace and therefore need trust."""
+    if Path(workspace).resolve() == Path(home).resolve():
+        return ()
+    return tuple(workspace / parent / "skills" for parent in SKILL_PARENTS)
+
+
 def skill_search_dirs(workspace: Path, home: Path) -> tuple[Path, ...]:
     """Project skill directories first, then the user's, without duplicates."""
     candidates = [base / parent / "skills" for base in (workspace, home) for parent in SKILL_PARENTS]
@@ -71,6 +78,8 @@ class AppConfig:
     headless: bool = False
     sandbox_mode: str = "off"
     skill_dirs: tuple[Path, ...] = ()
+    project_skill_dirs: tuple[Path, ...] = ()
+    trust_project_skills: bool = False
     shell_approval: str = "ask"
     max_turn_model_calls: int = 50
     max_turn_tool_calls: int = 200
@@ -131,6 +140,9 @@ class AppConfig:
             state_dir=state_dir,
             skills_dir=state_dir / "skills",
             skill_dirs=skill_search_dirs(workspace, USER_HOME),
+            project_skill_dirs=project_skill_dirs(workspace, USER_HOME),
+            trust_project_skills=environment.get("PAMU_TRUST_PROJECT_SKILLS", "").strip().lower()
+            in {"1", "true", "yes", "on"},
             memory_dir=memory_dir,
             memory_index=memory_dir / "MEMORY.md",
             transcripts_dir=state_dir / "transcripts",

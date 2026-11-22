@@ -2,10 +2,6 @@
 
 PamuCode is a Python 3.13+ terminal coding-agent runtime (layered: CLI → agent loop → adapters/tools/features). The repository root is the install root, but the CLI treats **the current working directory as the workspace** and creates runtime state in `<cwd>/.pamu/`.
 
-## Active work
-
-- `SAFETY_TASKS.md` is a hand-off plan for the safety guardrail work on branch `fix/safety-guardrails`. Follow it in order, one task per commit, and delete each task's section in the same commit that completes it.
-
 ## Commands
 
 - Setup: `uv sync` — installs the project plus the `dev` dependency group (pytest only).
@@ -20,6 +16,7 @@ PamuCode is a Python 3.13+ terminal coding-agent runtime (layered: CLI → agent
 - `agent_app/bootstrap.py` is the composition root (`build_default_runtime`) that wires config, adapters, tools, hooks, and features.
 - `agent_app/core/` holds the agent loop, prompt/context, compaction, recovery. `agent_app/adapters/` holds provider/model adapters and provider specs. `agent_app/features/` holds stateful features (auth, memory, tasks, teams, scheduler, MCP, subagents, worktrees, todos). `agent_app/tools/` holds tool schemas, registry, executor, hooks. `agent_app/terminal.py` is the prompt-toolkit UI.
 - `agent_app/config.py` distinguishes `repo_root` (install root) from `workdir` (current directory) and derives all `.pamu/` state paths from the workspace.
+- Safety guardrails: `agent_app/security/command_policy.py` classifies shell commands (allow / ask / deny) for `tools/hooks.py:make_permission_hook`; `security/policy.py:ExecutionPolicy` protects credential paths even without the sandbox (`state_roots` are the only `.pamu` exceptions); `core/turn_budget.py` pauses long interactive turns; `features/checkpoints.py` backs `/undo`; `features/skill_trust.py` gates workspace skills. `cli_progress.terminal_confirmation` refuses approvals from non-main threads — reuse it for any new confirmation.
 
 ## Configuration and credentials
 
