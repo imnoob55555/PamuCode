@@ -136,7 +136,7 @@ are not implemented; use Ctrl+C, then enter your new instruction.
 | --- | --- |
 | `/login` | Configure provider access |
 | `/status` | Inspect current session and provider configuration |
-| `/model` | Select a model |
+| `/model` | Select a model from any provider configured locally (via `/login` or settings) |
 | `/provider` | Switch providers |
 | `/thinking` | Select thinking effort |
 | `/plan` | Enter read-only exploration and planning mode |
@@ -267,7 +267,9 @@ Configuration precedence is:
 The committed [.settings.example](.settings.example) has empty values. Copy it to
 one of the settings locations if needed. Legacy `.env` files are not automatically
 migrated. An explicit `MODEL_ID` overrides a saved model; clear it to use the model
-selected during login. `/model` and `/provider` take effect in the current session.
+selected during login. `/model` lists the models of every locally configured provider; choosing one
+from another provider switches provider and model together and makes that
+provider the default. `/model` and `/provider` take effect in the current session.
 
 | Setting | Purpose |
 | --- | --- |

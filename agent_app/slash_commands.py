@@ -18,7 +18,7 @@ class SlashCommand:
 SLASH_COMMANDS = (
     SlashCommand("/login", "", "配置模型服务与认证"),
     SlashCommand("/status", "", "查看供应商、模型及登录状态"),
-    SlashCommand("/model", "", "选择或切换当前模型"),
+    SlashCommand("/model", "", "在所有已接入的服务间选择或切换模型"),
     SlashCommand("/provider", "", "选择并切换供应商"),
     SlashCommand("/thinking", "", "选择或切换模型思考程度"),
     SlashCommand("/context", "[window <tokens> | pin <文本> | pins | unpin <编号>]", "查看上下文预算及管理固定约束"),

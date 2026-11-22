@@ -712,24 +712,32 @@ def _handle_slash_command(
         if command == "/status":
             _cmd_status([], credentials_path=credentials_path)
         elif command == "/model" and ui is not None:
-            from .onboarding import choose_model
+            from .bootstrap import load_runtime_environment
+            from .onboarding import choose_any_model
 
             data = auth.load_credentials(credentials_path)
+            environment = load_runtime_environment()
             name = auth.configured_provider(data)
             if name:
-                record = auth.get_login(data, name)
-                model = argument or choose_model(ui, providers.get_provider(name), record.get("model"))
-                if model:
-                    try:
-                        auth.store_login(name, record.get("api_key", ""), model, credentials_path)
-                    except OSError:
-                        notify_or_print(
-                            ui,
-                            "模型保存失败，请检查凭证文件的写入权限或磁盘空间。",
-                            print_fn=print_fn,
-                        )
-                        return
-                    return name
+                saved = auth.get_login(data, name).get("model")
+                if argument:
+                    selected = (_model_provider(argument, data, environment, name, saved), argument)
+                else:
+                    selected = choose_any_model(ui, data, environment, name, saved)
+                if selected is None:
+                    notify_or_print(ui, "已取消模型选择。", print_fn=print_fn)
+                    return
+                name, model = selected
+                try:
+                    auth.store_login(name, auth.get_login(data, name).get("api_key", ""), model, credentials_path)
+                except OSError:
+                    notify_or_print(
+                        ui,
+                        "模型保存失败，请检查凭证文件的写入权限或磁盘空间。",
+                        print_fn=print_fn,
+                    )
+                    return
+                return name
         notify_or_print(ui, LOGIN_HINT, print_fn=print_fn)
         return
 
@@ -752,19 +760,34 @@ def _handle_slash_command(
         return
 
     if command == "/model":
-        if not argument:
-            name, model, _ = runtime.model.snapshot()
-            if ui is None:
-                print_fn(f"当前模型：{model}")
-                print_fn("用法：/model <model-id>")
-                return
-            from .onboarding import choose_model
+        name, model, _ = runtime.model.snapshot()
+        if not argument and ui is None:
+            print_fn(f"当前模型：{model}")
+            print_fn("用法：/model <model-id>")
+            return
+        from .bootstrap import load_runtime_environment
+        from .onboarding import choose_any_model
 
-            argument = choose_model(ui, providers.get_provider(name), model)
-            if argument is None:
+        data = auth.load_credentials(credentials_path)
+        environment = load_runtime_environment()
+        if argument:
+            target = _model_provider(argument, data, environment, name, model)
+        else:
+            selected = choose_any_model(ui, data, environment, name, model)
+            if selected is None:
                 notify_or_print(ui, "已取消模型选择。", print_fn=print_fn)
                 return
-        data = auth.load_credentials(credentials_path)
+            target, argument = selected
+        if target != name:
+            resolved = _switch_provider(
+                runtime, target, data, environment, model=argument, credentials_path=credentials_path,
+                client_factory=client_factory, print_fn=print_fn, ui=ui,
+            )
+            if resolved is not None:
+                print_fn(theme.success(
+                    f"模型已切换为 {resolved.spec.label} · {argument}（当前会话立即生效），并已设为默认供应商。"
+                ))
+            return
         active = runtime.model.provider
         if active and auth.get_login(data, active):
             try:
@@ -851,41 +874,68 @@ def _handle_slash_command(
                 print_fn=print_fn,
             )
             return
-        record = auth.get_login(data, spec.name)
-        try:
-            # An explicit session selection uses the target's saved model.
-            switch_environment = dict(environment)
-            if record.get("model"):
-                switch_environment.pop("MODEL_ID", None)
-            resolved = resolve_provider_config(switch_environment, data, spec.name)
-        except ValueError as error:
-            notify_or_print(
-                ui,
-                f"无法切换 {spec.label}：{error} 请先输入 /login 或运行 pamu login {spec.name}",
-                print_fn=print_fn,
-            )
-            return
-        from .cli_progress import terminal_progress
-
-        providers.apply_provider(
-            runtime,
-            resolved.spec,
-            resolved.api_key,
-            resolved.model,
-            anthropic_factory=client_factory,
-            progress=terminal_progress,
-            base_url=resolved.base_url,
-            auth_token=resolved.auth_token,
-            thinking=record.get("thinking"),
-            model_source=resolved.model_source,
+        resolved = _switch_provider(
+            runtime, spec.name, data, environment, credentials_path=credentials_path,
+            client_factory=client_factory, print_fn=print_fn, ui=ui,
         )
-        auth.set_active(spec.name, credentials_path)
-        LOGGER.info("switch provider=%s", spec.name)
-        model = resolved.model
-        print_fn(theme.success(f"供应商已切换为 {spec.label}（模型 {model}），并已设为默认。"))
+        if resolved is not None:
+            print_fn(theme.success(f"供应商已切换为 {spec.label}（模型 {resolved.model}），并已设为默认。"))
         return
 
     notify_or_print(ui, f"未知命令：{command}。输入 /help 查看可用命令。", print_fn=print_fn)
+
+
+def _model_provider(model, credentials, environment, current, current_model):
+    """Keep the current provider unless only another configured provider offers ``model``."""
+    from .onboarding import model_catalog
+
+    owners = [name for name, item in model_catalog(credentials, environment, current, current_model) if item == model]
+    return current if not owners or current in owners else owners[0]
+
+
+def _switch_provider(runtime, name, data, environment, *, model=None, credentials_path,
+                     client_factory, print_fn, ui):
+    """Rebuild the live adapter for ``name``; ``model`` overrides its saved model."""
+    spec = providers.get_provider(name)
+    record = auth.get_login(data, spec.name)
+    try:
+        # An explicit session selection uses the target's saved model.
+        switch_environment = dict(environment)
+        if model:
+            switch_environment["MODEL_ID"] = model
+        elif record.get("model"):
+            switch_environment.pop("MODEL_ID", None)
+        resolved = resolve_provider_config(switch_environment, data, spec.name)
+    except ValueError as error:
+        notify_or_print(
+            ui,
+            f"无法切换 {spec.label}：{error} 请先输入 /login 或运行 pamu login {spec.name}",
+            print_fn=print_fn,
+        )
+        return None
+    if model and record:
+        try:
+            auth.set_model(spec.name, model, credentials_path)
+        except OSError:
+            notify_or_print(ui, "模型保存失败，请检查凭证文件的写入权限或磁盘空间。", print_fn=print_fn)
+            return None
+    from .cli_progress import terminal_progress
+
+    providers.apply_provider(
+        runtime,
+        resolved.spec,
+        resolved.api_key,
+        resolved.model,
+        anthropic_factory=client_factory,
+        progress=terminal_progress,
+        base_url=resolved.base_url,
+        auth_token=resolved.auth_token,
+        thinking=record.get("thinking"),
+        model_source="当前会话选择" if model else resolved.model_source,
+    )
+    auth.set_active(spec.name, credentials_path)
+    LOGGER.info("switch provider=%s model=%s", spec.name, resolved.model)
+    return resolved
 
 
 def _create_runtime(runtime_factory, credentials_path, session_selection=None):

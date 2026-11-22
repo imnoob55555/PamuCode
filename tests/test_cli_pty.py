@@ -473,7 +473,7 @@ main(argv=[], credentials_path=Path(sys.argv[1]))
         # Select /model directly from slash hints, then select a model.
         start = len(output)
         os.write(master, b"/\x1b[B\x1b[B\r")
-        wait("选择模型 · DeepSeek", start)
+        wait("选择模型（所有已接入的服务）", start)
         os.write(master, b"\x1b[B\r")
         wait("模型已切换为 deepseek-v4-flash", start)
 

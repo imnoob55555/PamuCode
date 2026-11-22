@@ -137,7 +137,7 @@ def test_model_menu_updates_current_provider_not_stale_active(tmp_path):
     path = tmp_path / "credentials.json"
     auth.store_login("deepseek", "key", "old-model", path)
     auth.store_login("anthropic", "key", "keep-model", path)
-    ui = SimpleNamespace(choose=lambda title, choices: "deepseek-v4-pro")
+    ui = SimpleNamespace(choose=lambda title, choices: ("deepseek", "deepseek-v4-pro"))
     r = runtime()
     cli.handle_slash_command(r, "/model", credentials_path=path, ui=ui)
     assert r.model.snapshot()[1] == "deepseek-v4-pro"
@@ -273,3 +273,58 @@ def test_provider_menu_unconfigured_option_prompts_login(tmp_path, capsys):
     assert "/login" in capsys.readouterr().out
     assert r.model.snapshot()[:2] == ("deepseek", "selected")
     assert path.read_bytes() == before
+
+
+def test_model_menu_lists_every_configured_provider_and_switches_across(tmp_path):
+    path = tmp_path / "credentials.json"
+    auth.store_login("anthropic", "fake-anthropic", "claude-sonnet-4-6", path)
+    auth.store_login("ollama", "", "qwen3:8b", path, base_url="http://localhost:12345")
+    auth.store_login("deepseek", "fake-deepseek", "selected", path)
+    menus = []
+
+    def choose(title, choices):
+        menus.append(choices)
+        return ("anthropic", "claude-opus-4-7")
+
+    r = runtime()
+    options = []
+    cli.handle_slash_command(
+        r, "/model", credentials_path=path, ui=SimpleNamespace(choose=choose),
+        client_factory=lambda **kw: options.append(kw) or object(),
+    )
+    keys = [key for key, _ in menus[0]]
+    assert keys[0] == ("deepseek", "selected")
+    assert {("anthropic", "claude-sonnet-4-6"), ("anthropic", "claude-opus-4-7"), ("ollama", "qwen3:8b")} <= set(keys)
+    assert not any(isinstance(key, tuple) and key[0] == "moonshot" for key in keys)
+    assert keys[-1] == ""
+    assert r.model.snapshot()[:2] == ("anthropic", "claude-opus-4-7")
+    assert r.model.model_source == "当前会话选择"
+    assert options[0]["api_key"] == "fake-anthropic"
+    data = auth.load_credentials(path)
+    assert data["active"] == "anthropic"
+    assert data["providers"]["anthropic"]["model"] == "claude-opus-4-7"
+    assert data["providers"]["deepseek"]["model"] == "selected"
+
+
+def test_model_argument_switches_to_the_configured_provider_that_offers_it(tmp_path):
+    path = tmp_path / "credentials.json"
+    auth.store_login("anthropic", "fake-anthropic", "claude-sonnet-4-6", path)
+    auth.store_login("deepseek", "fake-deepseek", "selected", path)
+    r = runtime()
+    cli.handle_slash_command(r, "/model claude-haiku-4-5", credentials_path=path,
+                             client_factory=lambda **kw: object())
+    assert r.model.snapshot()[:2] == ("anthropic", "claude-haiku-4-5")
+    cli.handle_slash_command(r, "/model my-custom-model", credentials_path=path)
+    assert r.model.snapshot()[:2] == ("anthropic", "my-custom-model")
+    assert auth.load_credentials(path)["providers"]["anthropic"]["model"] == "my-custom-model"
+
+
+def test_model_menu_before_runtime_selects_any_configured_provider(tmp_path):
+    path = tmp_path / "credentials.json"
+    auth.store_login("anthropic", "fake-anthropic", "claude-sonnet-4-6", path)
+    auth.store_login("deepseek", "fake-deepseek", "selected", path)
+    ui = SimpleNamespace(choose=lambda title, choices: ("anthropic", "claude-opus-4-7"))
+    assert cli.handle_slash_command(None, "/model", credentials_path=path, ui=ui) == "anthropic"
+    data = auth.load_credentials(path)
+    assert data["active"] == "anthropic"
+    assert data["providers"]["anthropic"] == {"api_key": "fake-anthropic", "model": "claude-opus-4-7"}

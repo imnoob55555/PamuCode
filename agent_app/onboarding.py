@@ -42,6 +42,35 @@ def choose_model(ui, spec, current=None) -> str | None:
     return model
 
 
+def model_catalog(credentials, environment, current=None, current_model=None) -> list[tuple[str, str]]:
+    """List (provider, model) for every provider that has local API access."""
+    entries = []
+    for spec in sorted(providers.PROVIDERS.values(), key=lambda spec: spec.name != current):
+        if spec.name != current:
+            try:
+                resolve_provider_config(environment, credentials, spec.name)
+            except ValueError:
+                continue
+        saved = current_model if spec.name == current else auth.get_login(credentials, spec.name).get("model")
+        entries += [(spec.name, model) for model in providers.model_choices(spec, saved)]
+    return entries
+
+
+def choose_any_model(ui, credentials, environment, current=None, current_model=None) -> tuple[str, str] | None:
+    """Pick a model across all locally configured providers."""
+    choices = []
+    for name, model in model_catalog(credentials, environment, current, current_model):
+        label = f"{providers.get_provider(name).label} · {model}"
+        choices.append(((name, model), label + ("（当前）" if (name, model) == (current, current_model) else "")))
+    if current:
+        choices.append(("", f"自定义模型 ID（{providers.get_provider(current).label}）…"))
+    selected = ui.choose("选择模型（所有已接入的服务）", choices)
+    if selected == "":
+        model = ui.text("输入自定义模型 ID")
+        return (current, model) if model else None
+    return selected
+
+
 def login(ui, path: Path, provider: str | None = None) -> str | None:
     while True:
         name = provider or ui.choose(
