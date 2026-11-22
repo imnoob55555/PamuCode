@@ -1,301 +1,79 @@
 # PamuCode
 
-A Python terminal coding agent with an inspectable, layered runtime.
+中文 | [English](README.en.md)
 
-PamuCode combines a model-driven agent loop with file and shell tools, workspace
-sessions, context management, skills, and delegated work. Run it inside a project:
-**the current directory is the workspace**, and runtime state lives in `.pamu/`.
-The interface currently uses Chinese messages; this guide is primarily in English.
+PamuCode 是一个用 Python 写的终端编程智能体。它把模型驱动的智能体循环、文件和 Shell 工具、会话、上下文管理、技能和任务委派放在一个分层运行时里，每一层都能单独读懂和修改。
 
-Experimental release: **0.1.0**, Python **3.13+**.
+在哪个目录启动 `pamu`，哪个目录就是工作区，运行时状态保存在该目录的 `.pamu/` 下。界面提示是中文。
 
-## Features
+当前版本 0.1.0，仍处于实验阶段，需要 Python 3.13 及以上。
 
-- Streaming model responses with retry, fallback, continuation, and context recovery.
-- Anthropic Messages, OpenAI Responses, Chat Completions, and native Ollama adapters.
-- Inline terminal input in a rounded prompt box with slash suggestions, `@` file
-  completion, input history, and a single footer showing workspace, git branch,
-  context usage, model, thinking level, and work mode.
-- Styled transcript: `>` marks your messages, `●` marks model replies and shell
-  statuses, and streamed Markdown (headings, lists, inline code, fenced code with
-  syntax highlighting) is formatted line by line.
-- Tool calls appear as `● Read(path)` with a `⎿` summary line (lines read, files
-  found, `+added −removed` for edits, a checklist for todos). Shell commands keep
-  their `Running`/`Ran` status and only get a tool line when they were denied,
-  blocked, or sent to the background. Resuming a session replays these lines too; redirected
-  output keeps the plain `Shell（status）` records.
-- Explicit planning and execution modes, plus direct skill invocation.
-- Durable sessions, interrupted tool-call repair, context budgets, compaction,
-  pinned constraints, and retrievable history evidence.
-- Memory, todos, shared tasks, scheduled work, background commands, synchronous
-  subagents, teammates, and Git worktrees.
-- Tool hooks and an MCP discovery scaffold with bundled mock servers.
-- Bounded headless execution and a checkout-only evaluation harness.
+## 功能
 
-## Quick start
+- 流式输出，支持重试、降级模型、续写和上下文恢复。
+- 接入 Anthropic Messages、OpenAI Responses、OpenAI Chat Completions 和 Ollama 原生协议。
+- 用 `/login` 在本地保存多个服务的 API，用 `/model` 在所有已接入服务的模型之间切换。
+- 圆角输入框，支持斜杠命令提示、`@` 文件补全和输入历史；底栏显示工作区、Git 分支、上下文占用、模型、思考程度和工作模式。
+- 工具调用以 `● Read(path)` 加 `⎿` 摘要行显示，编辑会给出 `+新增 −删除` 行数；流式 Markdown 逐行渲染，代码块带语法高亮。
+- 规划模式和执行模式、`/undo` 撤销文件修改、可恢复的会话、上下文压缩和固定约束。
+- 自动记忆、待办、共享任务、定时任务、后台命令、子智能体、队友协作和 Git worktree。
+- 工具钩子、MCP 发现框架，以及有预算限制的无界面执行和评测工具。
 
-Install Python 3.13+, Git, and [uv](https://docs.astral.sh/uv/), then:
+## 快速开始
+
+先装好 Python 3.13+、Git 和 [uv](https://docs.astral.sh/uv/)：
 
 ```bash
-git clone --branch feat/eval-harness https://github.com/imnoob55555/PamuCode.git
+git clone https://github.com/imnoob55555/PamuCode.git
 cd PamuCode
 uv sync
 uv tool install --editable .
 uv tool update-shell
-pamu
 ```
 
-This README describes the `feat/eval-harness` development branch. Open a new shell
-if `pamu` is not yet on your PATH. The same `uv` commands work in PowerShell.
-From the checkout, `uv run python -m agent_app` also starts the CLI.
+如果 `pamu` 还不在 PATH 里，重开一个终端。PowerShell 下命令相同。也可以在源码目录里用 `uv run python -m agent_app` 启动。
 
-Use `/login` to choose a provider, configure its endpoint and model, and enter a
-key through masked input when required. Interactive setup is offline; it does not
-verify that the model or credentials work. Non-interactive `pamu login` performs
-verification unless `--no-verify` is supplied.
-
-After installation, start `pamu` from the project you want to work on:
+然后进入你要处理的项目再启动：
 
 ```bash
 cd /path/to/your/project
 pamu
 ```
 
-The startup screen contains the logo and basic controls. Workspace and model
-information appear below the input box. Menus accept arrow keys or the number
-of an entry. Cancelled or unsuccessful commands show
-feedback above the input box for three seconds; successful results stay in the
-terminal transcript. Slash commands can be recalled through input history.
-Exit with `/quit` or two presses of Ctrl+C within one second at the REPL.
+第一次启动会提示输入 `/login`。选择供应商，按需填写服务地址和 API Key（输入时打码），再选模型就能开始对话。
 
-The terminal shows an animated `Working…` status with elapsed time while
-waiting for the model. Shell commands show a temporary `● Running <command>`
-status that stays visible briefly for fast commands and is replaced by
-`● Ran <command>` on exit; the dot turns red for a non-zero exit code.
-Redirected output records the final status as plain text without colors or
-glyphs. Set `NO_COLOR` to keep the layout but drop colors.
-Operations requiring approval show the permission prompt and wait for your
-answer. Proposed file changes include a diff.
+## 接入模型
 
-Shell commands run without asking only when every part of the command is a known
-read-only program (`ls`, `cat`, `rg`, `find` without `-delete`/`-exec`,
-`git status`/`diff`/`log`/`show`, and similar). Everything else asks first and
-shows the reason: unknown programs, writes through `>` or `>>`, command
-substitution, subshells, nested `sh -c` scripts, and commands that cannot be
-parsed. Answer `a` to stop asking for the same program and subcommand (for example
-`uv run pytest`) for the rest of the session. Writes through redirection, commands
-touching sensitive paths, and programs that delete, move, or send data (`rm`, `mv`,
-`cp`, `curl`, `ssh`, `git push`, `git reset`, and similar) always ask.
-`sudo`, `su`, `doas`, `shutdown`, `reboot`, `mkfs`, `dd` to a device, and recursive
-`rm` of `/` or the home directory are refused, even when disguised as `s\udo` or
-`/usr/bin/sudo`. Approval questions raised by background work (such as scheduled
-turns) are refused instead of competing with the prompt for input.
+### 支持的供应商
 
-While the agent is working, Ctrl+C interrupts the current turn and returns to the
-same session's prompt. It keeps completed edits, captured command output, and
-visible partial model text. Interrupted tool calls receive explicit error results;
-continuing or resuming does not automatically replay them. Cancelling a permission
-prompt leaves that tool unexecuted. Incomplete operations may have side effects:
-inspect their actual state before retrying.
+| 名称 | 服务 | 协议 |
+| --- | --- | --- |
+| `anthropic` | Anthropic 官方 | Messages |
+| `deepseek` | DeepSeek | Messages |
+| `moonshot` | Moonshot Kimi | Messages |
+| `zhipu` | 智谱 GLM | Messages |
+| `openrouter` | OpenRouter | Messages |
+| `openai` | OpenAI 官方 | Responses |
+| `openai-compatible` | 任意 OpenAI 兼容服务 | 登录时选 Chat Completions 或 Responses |
+| `ollama` | Ollama 本地模型 | Ollama 原生 `/api/chat` |
 
-Each agent has up to three attempts per turn for the same tool and arguments.
-The model can use the error from a blocked attempt to change approach. Two
-consecutive batches containing only blocked repeats end the turn.
+模型必须支持原生工具调用才能完成编程任务。请求失败时不会自动换协议。`/thinking` 的五档思考程度目前只对 Messages 协议生效，其他协议只能设为 `off`。
 
-Background commands and teammates run independently of the foreground turn.
-The model can schedule prompts with cron expressions. Jobs are one-shot and last
-only for the current session unless the model asks for a recurring or durable job,
-which needs your approval. Recurring jobs expire after seven days; durable jobs are
-saved in `.pamu/scheduled_tasks.json`, and PamuCode reports how many it loaded at
-startup. A scheduled turn announces itself, and any approval it would need is
-refused. Use `/cron` to list jobs and `/cron cancel <id>` or `/cron cancel all` to
-remove them.
+### `/login`、`/model` 和 `/provider`
 
-Use `/background` to list this session's background commands, `/stop bg_0001` to
-stop one, or `/stop all` to stop all background commands. A cancellation request
-is not reported as finished until the worker acknowledges it. Exiting requests
-cleanup of background commands too. Shell cleanup covers the process group;
-detached descendants and remote jobs may survive. These controls do not roll back
-changes or stop independent teammates. Mid-turn text steering and Esc-to-interrupt
-are not implemented; use Ctrl+C, then enter your new instruction.
+`/login` 把一个服务的地址、协议、API Key 和默认模型保存到本机的 `~/.pamu/credentials.json`。可以登录多个供应商，它们会同时保存。交互式登录不联网，不会验证 Key 和模型是否可用，第一次真正发请求时才知道。命令行的 `pamu login` 默认会发一次验证请求，加 `--no-verify` 跳过。
 
-## Commands
+`/model` 列出所有已经在本地接入 API 的服务的模型，每行显示「服务 · 模型」。哪些服务算已接入：用 `/login` 登录过的，或者在 `.settings`、环境变量里配了 Key 的。每个服务列出它保存的模型和内置的常用模型，最后一项可以为当前服务输入自定义模型 ID。
 
-| Command | Purpose |
-| --- | --- |
-| `pamu` | Start an interactive session |
-| `pamu continue` or `pamu -c` | Restore the most recently updated workspace session |
-| `pamu resume [ID]` or `pamu -r [ID]` | Pick a workspace session or restore it by ID |
-| `pamu login [provider] [--no-verify]` | Save provider credentials and model |
-| `pamu logout [provider]` | Remove saved credentials |
-| `pamu status` | Show effective configuration and login status |
-| `pamu use <provider>` | Set the provider for future sessions |
-| `pamu run ...` | Execute one bounded headless task |
+选了另一个服务的模型，PamuCode 会用那个服务保存的 Key 和地址重建连接，当前会话立即生效，并把它设为下次启动的默认服务。也可以直接输入 `/model <模型 ID>`：当前服务有这个模型或者谁都没有时留在当前服务，只有别的已接入服务提供这个 ID 时才切过去。
 
-| Slash command | Purpose |
-| --- | --- |
-| `/login` | Configure provider access |
-| `/status` | Inspect current session and provider configuration |
-| `/model` | Select a model from any provider configured locally (via `/login` or settings) |
-| `/provider` | Switch providers |
-| `/thinking` | Select thinking effort |
-| `/plan` | Enter read-only exploration and planning mode |
-| `/execute` | Permit implementation within the user's request |
-| `/skill [name] [task]` | Select or explicitly invoke a skill |
-| `/skill trust` | Load the skills that come with this workspace |
-| `/context` | Inspect the context budget |
-| `/context window <tokens>` | Set a session window override |
-| `/context pin <text>` | Preserve a constraint verbatim |
-| `/context pins` / `/context unpin <id>` | List or remove pinned constraints |
-| `/compact [focus]` | Compact earlier conversation |
-| `/resume [--last \| ID]` | Switch to another saved session |
-| `/delete` | Confirm deletion of the current session and exit |
-| `/background` | List this session's background commands |
-| `/cron [cancel <id \| all>]` | List or cancel scheduled jobs |
-| `/memory [forget <name>]` | List automatic memories or delete one |
-| `/undo` | Restore the files changed through file tools in the previous turn |
-| `/stop <ID \| all>` | Stop selected background commands |
-| `/help` or `/h` | Show a concise command list |
-| `/quit` | Exit the session |
+`/provider` 按服务切换，使用该服务保存的模型。
 
-Use arrow keys to select suggestions, Tab to complete, Enter to submit, and Esc
-to dismiss menus. Type `@` to browse workspace files and directories; paths with
-spaces are quoted automatically.
+同一个供应商只保存一条记录，所以没法同时保存两个不同地址的 OpenAI 兼容服务，后登录的会覆盖前一个。
 
-### Planning and execution
+### 本地模型服务
 
-New sessions default to execution mode. Model instructions distinguish questions,
-investigation, planning, and authorized implementation. Execution mode itself does
-not authorize unrelated changes, pushes, or deployments.
-
-`/plan` enforces a restricted tool set: file reading, glob search, skill loading,
-history retrieval, compaction, and session todos. It blocks source edits, shell
-commands, MCP calls, scheduling, and delegation. Runtime checkpoints still write
-inside `.pamu/`. Finish active background work and teammates before switching modes.
-Use `/execute` explicitly to leave planning mode; a conversational confirmation
-alone does not switch it.
-
-Modes, pinned constraints, and the current request survive compaction and session
-restore. Delegates receive the original request and pinned constraints. In execution
-mode, natural-language limits still depend on model compliance; pinned text is not
-an execution deny rule. Use `/plan` when you need enforced read-only tool access.
-
-### Undo
-
-Before a turn first changes a file through `write_file` or `edit_file`, PamuCode
-saves its original content under `.pamu/checkpoints/<session>/<turn>/`. `/undo`
-lists the files from the most recent checkpointed turn and, after confirmation,
-restores them (files the turn created are removed). Run it again to step further
-back. If a file was edited again afterwards, `/undo` warns before overwriting it.
-The model is told which files were restored. Checkpoints cover file tools only:
-changes made by shell commands are not undone. The last 20 turns are kept per
-session, deleting a session removes its checkpoints, and the confined sandbox
-does not record checkpoints.
-
-### Memory
-
-After each turn PamuCode asks the model to extract lasting preferences and project
-facts from what you typed and what it answered; tool output and runtime notices are
-left out. New memories are announced, credential-like text is never saved, and
-`/memory` lists or forgets them. Before consolidating memories, the previous files are
-copied to `.pamu/memory/.backup/` (the five most recent copies are kept), and an empty
-consolidation result keeps the existing memories. Set `PAMU_AUTO_MEMORY=off` to
-disable extraction and consolidation.
-
-### Skills
-
-A skill is a directory containing `SKILL.md`. PamuCode searches these
-directories, highest priority first:
-
-| Directory | Scope |
-| --- | --- |
-| `<workspace>/.pamu/skills/` | This project, private (ignored by `.pamu/.gitignore`) |
-| `<workspace>/.agents/skills/` | This project, shareable through the repository |
-| `<workspace>/.claude/skills/` | This project, shared with Claude Code |
-| `~/.pamu/skills/` | All projects for the current user |
-| `~/.agents/skills/` | All projects, shared with other agent tools |
-| `~/.claude/skills/` | All projects, shared with Claude Code |
-
-When two directories define the same skill name, the higher-priority one wins,
-so project skills override user skills.
-
-Skills that come with the workspace (its `.pamu`, `.agents` and `.claude` skill
-directories) are loaded only after you trust them, because their descriptions enter
-the system prompt. The first time PamuCode finds them it lists them and asks; you can
-also run `/skill trust` later. Trust is stored per workspace in
-`~/.pamu/trusted_workspaces.json` for that exact set of skills, so adding or editing a
-project skill asks again. Until then those skills are not listed to the model, and
-`list_skills` says they are waiting. User-level skills are always trusted, and
-`PAMU_TRUST_PROJECT_SKILLS=1` trusts project skills without asking. A visible `skills/` folder in the
-project root is not read, so ordinary project folders are never mistaken for
-skills.
-
-```markdown
----
-name: Review
-description: Review the current changes
----
-Read the diff, identify defects, and report findings before editing.
-```
-
-The directory name (for example `review` in `.pamu/skills/review/SKILL.md`) is
-the identifier; the frontmatter `name` is accepted as an alias, case-insensitively.
-Without a `description`, the first line of the body is used. Skills are picked up
-when they are added, edited, or removed, without a restart. An unreadable
-`SKILL.md` is skipped and reported instead of stopping PamuCode.
-
-```text
-/skill review Check the authentication changes
-```
-
-`/skill` opens the picker and shows where each skill comes from. The skill body
-and task are supplied to the current model. Work mode and security policy remain
-in force. Without an interactive UI, `/skill` lists available names.
-You can also ask PamuCode which skills are available. It reads the registry
-through `list_skills`, which also names the searched directories when it is empty.
-Skill loading is unavailable in the confined sandbox.
-
-## Configuration
-
-Configuration precedence is:
-
-1. Process environment.
-2. `<workspace>/.pamu/.settings`.
-3. `~/.pamu/.settings`.
-4. Saved provider configuration in `~/.pamu/credentials.json`.
-
-The committed [.settings.example](.settings.example) has empty values. Copy it to
-one of the settings locations if needed. Legacy `.env` files are not automatically
-migrated. An explicit `MODEL_ID` overrides a saved model; clear it to use the model
-selected during login. `/model` lists the models of every locally configured provider; choosing one
-from another provider switches provider and model together and makes that
-provider the default. `/model` and `/provider` take effect in the current session.
-
-| Setting | Purpose |
-| --- | --- |
-| `PAMU_PROVIDER` | Provider selection |
-| `MODEL_ID` | Model ID, unless supplied by saved provider configuration |
-| `FALLBACK_MODEL_ID` | Optional fallback within the same provider |
-| `<PROVIDER>_API_KEY` | Credential for the selected service |
-| `<PROVIDER>_BASE_URL` | Optional endpoint override |
-| `OPENAI_COMPATIBLE_PROTOCOL` | `openai_chat` or `openai_responses` |
-| `PAMU_CONTEXT_WINDOW` | Explicit context window for the startup model |
-| `PAMU_SANDBOX` | `off` (default) or `confined` |
-| `PAMU_MAX_TURN_MODEL_CALLS` / `PAMU_MAX_TURN_TOOL_CALLS` / `PAMU_MAX_TURN_TOKENS` | Per-turn limits in the interactive session (defaults 50 / 200 / 2,000,000). When one is reached PamuCode asks whether to continue; scheduled turns stop |
-| `PAMU_MAX_TEAMMATES` / `PAMU_MAX_BACKGROUND_TASKS` | Concurrent teammates and running background commands (defaults 4 / 8) |
-| `PAMU_TRUST_PROJECT_SKILLS` | `1` loads the workspace's own skills without asking for trust |
-| `PAMU_AUTO_MEMORY` | `on` (default) or `off`. Automatic memory extraction after each turn |
-| `PAMU_SHELL_APPROVAL` | `ask` (default) or `auto`. **Dangerous:** `auto` runs every shell command except the refused ones without asking |
-| `LOG_LEVEL` | Runtime log verbosity |
-
-Provider entries: `anthropic`, `deepseek`, `moonshot`, `zhipu`, `openrouter`,
-`openai`, `openai-compatible`, and `ollama`. The first five use Messages;
-`openai` uses Responses; compatible services use the explicitly chosen protocol;
-Ollama uses native `/api/chat`. Failed requests do not automatically switch protocols.
-Thinking controls currently apply to Messages backends; other protocols accept `off`.
-Models need native tool-calling support to perform coding tasks.
-
-For an already-running local model service:
+PamuCode 不负责安装或运行模型，只连接已经在跑的服务：
 
 ```bash
 PAMU_PROVIDER=ollama MODEL_ID=your-installed-model pamu
@@ -305,47 +83,136 @@ PAMU_PROVIDER=openai-compatible MODEL_ID=your-served-model \
   OPENAI_COMPATIBLE_PROTOCOL=openai_chat pamu
 ```
 
-Ollama requires no key; compatible services can use an optional
-`OPENAI_COMPATIBLE_API_KEY`. PamuCode does not install or serve models.
-Endpoints must not embed credentials in their URL.
+Ollama 不需要 Key，兼容服务可以选配 `OPENAI_COMPATIBLE_API_KEY`。服务地址里不能带用户名、密码或查询参数。
 
-## Sessions and context
+## 命令
 
-Sessions are scoped to the workspace and stored in `.pamu/sessions/`. Use
-`pamu continue` (or `pamu -c`) to restore the latest one. Use `pamu resume`
-(or `pamu -r`) to choose a session, or append an ID to restore it directly.
-On restore, PamuCode prints saved messages in order, including messages archived
-during context compaction. Shell commands have their own `Shell` entries,
-separate from PamuCode's replies. Replay preserves line breaks
-and code indentation, then opens the prompt in the same session. Press Ctrl+C
-during replay to skip to the prompt. Historical commands are never re-executed.
-Restoring also retains the model selection and repairs interrupted tool-result
-pairs. Background processes and teammates are not automatically resumed.
+| 命令 | 作用 |
+| --- | --- |
+| `pamu` | 启动交互会话 |
+| `pamu continue` / `pamu -c` | 恢复当前工作区最近的会话 |
+| `pamu resume [ID]` / `pamu -r [ID]` | 选择会话恢复，或按 ID 直接恢复 |
+| `pamu login [供应商] [--no-verify]` | 保存供应商凭证和模型 |
+| `pamu logout [供应商]` | 删除已保存的凭证 |
+| `pamu status` | 查看实际生效的配置和登录状态 |
+| `pamu use <供应商>` | 设置以后启动使用的供应商 |
+| `pamu run ...` | 执行一次有预算限制的无界面任务 |
 
-In the interactive session, use `/delete` and confirm to permanently remove its
-snapshot and session archive, then exit. If work is still running or queued,
-finish it before deleting the session. Workspace files are outside the scope
-of session deletion.
+| 斜杠命令 | 作用 |
+| --- | --- |
+| `/login` | 配置模型服务与认证 |
+| `/model` | 在所有已接入的服务间选择或切换模型 |
+| `/provider` | 切换供应商 |
+| `/thinking` | 选择思考程度 |
+| `/status` | 查看当前会话、供应商和模型 |
+| `/plan` / `/execute` | 进入规划模式 / 执行模式 |
+| `/skill [名称] [任务]` | 选择或调用技能；`/skill trust` 信任项目自带技能 |
+| `/context` | 查看上下文预算；子命令 `window <tokens>`、`pin <文本>`、`pins`、`unpin <编号>` |
+| `/compact [重点]` | 压缩旧历史，保留近期交互 |
+| `/resume [--last \| ID]` | 切换到其他已保存会话 |
+| `/delete` | 确认后删除当前会话并退出 |
+| `/undo` | 撤销上一轮通过文件工具做的修改 |
+| `/memory [forget <名称>]` | 查看或删除自动记忆 |
+| `/background` / `/stop <ID \| all>` | 查看或停止后台命令 |
+| `/cron [cancel <ID \| all>]` | 查看或取消定时任务 |
+| `/help` / `/h` | 显示命令列表 |
+| `/quit` | 退出 |
 
-`Context xx%` in the footer estimates the share of the active model's
-context window occupied by the retained conversation, system instructions, and
-tools. It refreshes before each prompt. The window comes from the current
-provider and model configuration or a provisional default. Use `/context` to
-check its source and `/context window <tokens>` to set a session override.
-The percentage can exceed 100% when the estimate exceeds the window.
+方向键选择提示，Tab 补全，Enter 提交，Esc 关闭菜单。菜单也可以按数字快选。输入 `@` 浏览工作区文件，带空格的路径会自动加引号。退出用 `/quit`，或在一秒内按两次 Ctrl+C。
 
-`/context` reports estimated usage, window source, and output reserve. Usage
-reported by the provider is tracked separately. `/compact` summarizes older
-conversation, preserves the current request and recent tool batches, and stores
-references to historical evidence. Pinned constraints retain their original text.
-Unknown model windows use a provisional budget; set the actual window when needed.
+## 使用说明
 
-## Headless execution and evaluation
+### 审批与中断
 
-`pamu run` uses the production loop with explicit budgets and a reduced tool set.
-It reads provider configuration from the process environment, not saved credentials
-or `.settings`. Supply credentials through your environment or secret manager;
-never put them in task files, command arguments, or suite manifests.
+只读命令直接运行，比如 `ls`、`cat`、`rg`、不带 `-delete`/`-exec` 的 `find`、`git status`/`diff`/`log`/`show`。其他命令会先问你，并说明原因，包括未知程序、`>` 重定向写入、命令替换、子 Shell 和无法解析的命令。回答 `a` 后，本会话内同一程序加子命令（比如 `uv run pytest`）不再询问。
+
+删除、移动或外发数据的命令（`rm`、`mv`、`cp`、`curl`、`ssh`、`git push`、`git reset` 等）以及涉及敏感路径的命令每次都问。`sudo`、`su`、`shutdown`、`mkfs`、写设备的 `dd`、递归删除 `/` 或家目录会被直接拒绝，写成 `s\udo` 或 `/usr/bin/sudo` 也一样。文件修改在确认前会显示 diff。
+
+模型工作时按 Ctrl+C 会中断当前这一轮，回到同一个会话。已完成的修改和已经输出的内容会保留，被中断的工具调用会收到明确的错误结果，继续对话时不会自动重放。中断的操作可能已经产生了副作用，重试前先看一下实际状态。
+
+单轮默认最多 50 次模型调用、200 次工具调用、200 万 token，达到上限时会问你是否继续。
+
+### 规划与执行
+
+新会话默认是执行模式。`/plan` 进入规划模式后只能读文件、搜索、加载技能、检索历史和维护待办，改代码、跑 Shell、调用 MCP、定时和委派都会被拦下。要回到执行模式必须明确输入 `/execute`，在对话里说"可以开始了"不会切换。
+
+执行模式也不等于允许做无关修改、推送或部署。你在对话里提的限制靠模型自觉遵守，需要强制只读时用 `/plan`。
+
+### 撤销
+
+每一轮第一次通过 `write_file` 或 `edit_file` 改某个文件前，PamuCode 会把原内容存到 `.pamu/checkpoints/` 下。`/undo` 列出最近一轮改过的文件，确认后恢复（这一轮新建的文件会被删掉），再执行一次就继续往前撤。如果文件之后又被改过，会先警告。Shell 命令做的修改撤销不了。每个会话保留最近 20 轮。
+
+### 会话与上下文
+
+会话按工作区保存在 `.pamu/sessions/`。恢复时会按顺序重放历史消息，按 Ctrl+C 可以跳过重放。历史命令不会重新执行，后台进程和队友也不会自动恢复。
+
+底栏的 `Context xx%` 是保留的对话、系统指令和工具定义大约占模型上下文窗口的比例，估算值可能超过 100%。`/context` 查看窗口大小和来源，未知模型的窗口可以用 `/context window <tokens>` 手动设定。`/compact` 把旧对话压缩成摘要，保留当前请求和最近的工具调用。`/context pin` 固定的约束会原文保留，压缩和恢复会话后都还在。
+
+### 记忆
+
+每轮结束后，PamuCode 会让模型从你说的话和它的回答里提取长期有用的偏好和项目事实，工具输出不参与提取。新记忆会提示出来，看起来像凭证的内容不会保存。整理记忆前会把旧文件备份到 `.pamu/memory/.backup/`，保留最近 5 份。设 `PAMU_AUTO_MEMORY=off` 关闭。
+
+### 技能
+
+技能是一个包含 `SKILL.md` 的目录。按优先级从高到低搜索：
+
+| 目录 | 范围 |
+| --- | --- |
+| `<工作区>/.pamu/skills/` | 本项目，私有 |
+| `<工作区>/.agents/skills/` | 本项目，可随仓库共享 |
+| `<工作区>/.claude/skills/` | 本项目，和 Claude Code 共用 |
+| `~/.pamu/skills/` | 当前用户的所有项目 |
+| `~/.agents/skills/` | 所有项目，和其他智能体工具共用 |
+| `~/.claude/skills/` | 所有项目，和 Claude Code 共用 |
+
+```markdown
+---
+name: Review
+description: Review the current changes
+---
+Read the diff, identify defects, and report findings before editing.
+```
+
+目录名就是技能标识，frontmatter 里的 `name` 可作为别名。新增、修改、删除技能都不用重启。用 `/skill review 检查认证相关的改动` 调用。
+
+项目自带的技能（工作区里那三个目录）会进入系统提示，所以要你先信任才加载。第一次发现时 PamuCode 会列出来问你，之后也可以用 `/skill trust`。信任记录按工作区保存在 `~/.pamu/trusted_workspaces.json`，项目技能有增改时会重新询问。用户级技能始终信任。
+
+### 后台与定时
+
+后台命令和队友独立于当前对话运行。`/background` 查看，`/stop <ID>` 或 `/stop all` 停止。
+
+模型可以用 cron 表达式安排任务。默认是一次性的，只在本会话有效；周期任务和持久任务需要你批准，周期任务七天后过期，持久任务保存在 `.pamu/scheduled_tasks.json`。定时触发的轮次不能发起审批，需要审批的操作会被拒绝。`/cron` 查看，`/cron cancel <ID>` 取消。
+
+## 配置
+
+优先级从高到低：
+
+1. 进程环境变量
+2. `<工作区>/.pamu/.settings`
+3. `~/.pamu/.settings`
+4. `~/.pamu/credentials.json` 里保存的供应商配置
+
+[.settings.example](.settings.example) 是模板，需要时复制到上面的某个 `.settings` 位置再填。旧的 `.env` 不会自动迁移。设置了 `MODEL_ID` 会覆盖登录时保存的模型，想用保存的模型就把它清空。
+
+| 配置项 | 作用 |
+| --- | --- |
+| `PAMU_PROVIDER` | 选择供应商 |
+| `MODEL_ID` | 模型 ID，已保存的供应商配置里有模型时可不填 |
+| `FALLBACK_MODEL_ID` | 同一供应商内的降级模型 |
+| `<供应商>_API_KEY` / `<供应商>_BASE_URL` | 该服务的 Key 和可选地址 |
+| `OPENAI_COMPATIBLE_PROTOCOL` | `openai_chat` 或 `openai_responses` |
+| `PAMU_CONTEXT_WINDOW` | 启动模型的上下文窗口 |
+| `PAMU_SANDBOX` | `off`（默认）或 `confined` |
+| `PAMU_MAX_TURN_MODEL_CALLS` / `_TOOL_CALLS` / `_TOKENS` | 单轮上限，默认 50 / 200 / 2,000,000 |
+| `PAMU_MAX_TEAMMATES` / `PAMU_MAX_BACKGROUND_TASKS` | 并发队友数和后台命令数，默认 4 / 8 |
+| `PAMU_TRUST_PROJECT_SKILLS` | 设为 `1` 时不询问直接加载项目技能 |
+| `PAMU_AUTO_MEMORY` | `on`（默认）或 `off` |
+| `PAMU_SHELL_APPROVAL` | `ask`（默认）或 `auto`。`auto` 会不经询问运行除被拒命令以外的所有 Shell 命令，有风险 |
+| `LOG_LEVEL` | 日志级别 |
+
+## 无界面执行与评测
+
+`pamu run` 用和交互模式相同的循环执行一个任务，带明确的预算，工具只有 `bash`、`read_file`、`write_file`、`edit_file` 和 `glob`，可以用 `--allow-tool` 进一步缩小。它只从进程环境变量读供应商配置，不读保存的凭证和 `.settings`。
 
 ```bash
 pamu run --task-file /tmp/task.txt --output /tmp/pamu-run \
@@ -353,16 +220,9 @@ pamu run --task-file /tmp/task.txt --output /tmp/pamu-run \
   --max-model-calls 30 --max-tool-calls 100 --max-tokens 100000 --timeout 300
 ```
 
-Headless execution supports Messages, Chat Completions, and Responses. Configure
-the provider and endpoint to match the requested protocol. Tools are limited to
-`bash`, `read_file`, `write_file`, `edit_file`, and `glob`; repeat `--allow-tool NAME`
-to narrow the set. Background work, teams, subagents, and automatic memory extraction
-are disabled. Events and results are written to `events.jsonl` and `result.json`.
-A completed run is not proof of task correctness. Missing usage stays unknown;
-token accounting does not provide a precise cost cap, and a response can cross a
-budget before its usage is reported.
+结果写到输出目录的 `events.jsonl` 和 `result.json`。跑完不代表任务做对了，token 统计也不是精确的费用上限。
 
-The source checkout includes `pamu_eval`; it is not shipped in the runtime wheel:
+源码里的 `pamu_eval` 是评测工具，不随运行时一起打包：
 
 ```bash
 uv run python -m pamu_eval selftest --output /tmp/pamu-selftest
@@ -372,43 +232,40 @@ uv run python -m pamu_eval report /tmp/pamu-regression
 uv run python -m pamu_eval compare /tmp/pamu-baseline /tmp/pamu-candidate
 ```
 
-Regression replay is offline and measures runtime mechanisms. Real-model cases are
-in `evals/live.json` and `evals/intent-live.json`; use `--model` and `--protocol` with
-the runner. Intent cases cover explanation, diagnosis, planning, and authorized
-editing. File checks do not assess explanation quality or every side effect;
-inspect the answer and trace too. No live-model success rate is claimed here.
+`evals/regression.json` 离线回放，测的是运行时机制。`evals/live.json` 和 `evals/intent-live.json` 需要真实模型，用 `--model` 和 `--protocol` 指定。另外还有回放导出、性能采样、SWE-bench 预测导出和 Harbor/Terminal-Bench 桥接，这些只是适配器，不代表跑过官方评测。
 
-Each trial uses a fresh workspace, external grading, and evidence receipts. Resume
-only reuses matching, complete trials; incomplete trials require an explicit rerun
-in a new directory. Receipts detect accidental changes, not malicious tampering.
-The CLI also includes replay export, performance sampling, SWE-bench prediction
-export, and a Harbor/Terminal-Bench bridge. These adapters do not imply a completed
-official benchmark run or full ATIF support.
+## 安全
 
-## Architecture
+- 凭证保存在仓库外的 `~/.pamu/credentials.json`，权限只对当前用户开放。输入 Key 时打码，不进输入历史和日志。
+- 默认 `PAMU_SANDBOX=off`，没有操作系统级的文件和网络隔离。Shell 子进程拿到的是白名单环境变量、临时 HOME 和固定的 PATH，不会继承供应商凭证。
+- 即使不开沙箱，文件工具也会拒绝访问工作区里的 `.pamu`、`.env`、`.settings`、`.ssh`、`.aws`、`.gnupg`、`.codex`，并拒绝写 `.git/hooks` 和 `.git/config`。Shell 命令提到这些路径时一定会询问，但这只是文本检查，真正拦住 Shell 读取要靠 `PAMU_SANDBOX=confined`。
+- `confined` 模式在 macOS 上用 Seatbelt 限制 Shell 的文件和网络访问。平台不支持或沙箱后端不可用时直接报错，不会退回无隔离运行。
+- 本地边界不是多租户隔离，也没有完整的 CPU、内存、进程数和磁盘配额。不可信的任务请放到容器或虚拟机里跑。
+- `.env`、`.settings`、凭证文件、`.pamu/`、日志和评测输出都不要提交。会话记录和工具输出里可能有源码或私有数据，分享前先检查。
+
+## 架构
 
 ```text
-CLI and terminal UI
-  → agent loop and context management
-    → provider adapters and tool execution
-      → workspace features and execution policy
+CLI 与终端界面
+  → 智能体循环与上下文管理
+    → 模型适配器与工具执行
+      → 工作区功能与执行策略
 ```
 
-| Path | Responsibility |
+| 路径 | 职责 |
 | --- | --- |
-| `agent_app/cli.py`, `terminal.py` | Input, commands, status, and lifecycle |
-| `agent_app/bootstrap.py` | Runtime composition |
-| `agent_app/core/` | Loop, prompts, budgets, compaction, and recovery |
-| `agent_app/adapters/` | Provider protocols and streaming |
-| `agent_app/tools/` | Schemas, registry, dispatch, and hooks |
-| `agent_app/security/` | Execution policy, file access, and shell boundary |
-| `agent_app/features/` | Sessions, skills, memory, tasks, and collaboration |
-| `agent_app/working_mode.py` | User-selected planning/execution scope |
-| `pamu_eval/`, `evals/` | Checkout-only evaluation runner and fixtures |
+| `agent_app/cli.py`、`terminal.py` | 输入、命令、状态和生命周期 |
+| `agent_app/bootstrap.py` | 组装运行时 |
+| `agent_app/core/` | 循环、提示词、预算、压缩和恢复 |
+| `agent_app/adapters/` | 供应商协议和流式输出 |
+| `agent_app/tools/` | 工具定义、注册、分发和钩子 |
+| `agent_app/security/` | 执行策略、文件访问和 Shell 边界 |
+| `agent_app/features/` | 会话、技能、记忆、任务和协作 |
+| `pamu_eval/`、`evals/` | 评测工具和用例，仅在源码中 |
 
-Customize the logo, title, and welcome hints in `agent_app/branding.py`.
+Logo、标题和欢迎提示在 `agent_app/branding.py` 里改。
 
-## Development
+## 开发
 
 ```bash
 uv sync
@@ -417,53 +274,8 @@ uv run pytest tests/test_cli_pty.py -q
 uv tool install --editable .
 ```
 
-Tests use fake model clients and temporary workspaces without real keys or network.
-PTY tests require a Unix terminal environment. There is currently no configured
-linter, type checker, or CI workflow. Live provider, container, and official benchmark
-validation require their own configured environments.
+测试用假的模型客户端和临时目录，不需要真实 Key，也不联网。PTY 测试需要 Unix 终端环境。目前没有配置 linter、类型检查或 CI。
 
-## Security and repository hygiene
+## 许可
 
-- Credentials are stored outside the repository in `~/.pamu/credentials.json`
-  with owner-only permissions. Key entry is masked and excluded from input history.
-- Keep `.env`, `.settings`, credential files, `.pamu/`, logs, transcripts, and
-  evaluation artifacts private. Review staged changes before publishing.
-- `docs/` and `.superpowers/` contain local/internal documentation and are ignored.
-  Public project documentation belongs in this README. `.settings.example` must
-  keep all values empty.
-- Sessions, tool traces, and evaluation outputs can contain source code or private
-  task data even when credential patterns have been redacted. Review them before sharing.
-
-Execution defaults to `PAMU_SANDBOX=off`, which has no OS filesystem or network
-isolation. Shell children still receive an allowlisted environment, a temporary
-HOME, and a fixed executable search path instead of inherited provider credentials.
-Commands that depend on the original shell environment may need explicit paths.
-
-Even without the sandbox, file tools refuse credential and runtime-state paths in
-the workspace (`.pamu`, `.env`, `.env.*`, `.settings`, `.ssh`, `.aws`, `.gnupg`,
-`.codex`) and refuse writes to `.git/hooks` and `.git/config`. Persisted tool output
-under `.pamu/task_outputs/tool-results/` and teammate worktrees under
-`.pamu/worktrees/` stay accessible. Shell commands that mention such paths always
-ask for approval, but this is a textual check: only `PAMU_SANDBOX=confined` actually
-stops a shell command from reading them.
-
-`PAMU_SANDBOX=confined` uses macOS Seatbelt for shell file/network restrictions
-and descriptor-based file tools. Unsupported platforms or unavailable backends
-fail closed. Credential paths and runtime control code are protected; worktree
-and skill operations without a confined implementation are disabled. Team approval
-authority stays in process memory and cannot be granted by forged mailbox messages.
-
-The local boundary is not hostile multi-tenant isolation. Process-group cleanup
-cannot guarantee termination of detached descendants, and local execution has no
-complete CPU, memory, process-count, or disk quotas. Use an external container or VM
-for untrusted tasks. The optional Docker evaluation backend supports offline replay
-and file graders only, requires a preinstalled digest-pinned image and enforceable
-quotas, and does not automatically pull images or expose model credentials.
-
-## License and acknowledgments
-
-[MIT](LICENSE). Built with [prompt-toolkit](https://github.com/prompt-toolkit/python-prompt-toolkit),
-[Anthropic's Python SDK](https://github.com/anthropics/anthropic-sdk-python),
-[OpenAI's Python SDK](https://github.com/openai/openai-python), and
-[uv](https://github.com/astral-sh/uv). Interface and architecture ideas draw from
-Codex, Claude Code, and pi.
+[MIT](LICENSE)。基于 [prompt-toolkit](https://github.com/prompt-toolkit/python-prompt-toolkit)、[Anthropic Python SDK](https://github.com/anthropics/anthropic-sdk-python)、[OpenAI Python SDK](https://github.com/openai/openai-python) 和 [uv](https://github.com/astral-sh/uv) 构建。界面和架构参考了 Codex、Claude Code 和 pi。

@@ -7,7 +7,7 @@ PamuCode is a Python 3.13+ terminal coding-agent runtime (layered: CLI → agent
 - Setup: `uv sync` — installs the project plus the `dev` dependency group (pytest only).
 - Full suite: `uv run pytest -q` — self-contained; uses fake model clients and temp dirs, no API key or network required.
 - Focused run: `uv run pytest tests/test_cli_commands.py -q`; terminal/PTY check: `uv run pytest tests/test_cli_pty.py -q`.
-- Try changes through the real command: `uv tool install --editable .` then `pamu` (README "Development"). Running the REPL inside this repo creates a local `.pamu/` state directory.
+- Try changes through the real command: `uv tool install --editable .` then `pamu` (README "开发" / README.en.md "Development"). Running the REPL inside this repo creates a local `.pamu/` state directory.
 - There is no linter, formatter, or type-checker configuration in `pyproject.toml`, and no CI workflow in the repository. Do not assume lint/type-check gates exist.
 
 ## Repository structure
@@ -20,7 +20,7 @@ PamuCode is a Python 3.13+ terminal coding-agent runtime (layered: CLI → agent
 
 ## Configuration and credentials
 
-Priority order (README "Configuration"): process environment > `<workspace>/.pamu/.settings` > `~/.pamu/.settings` > `~/.pamu/credentials.json`.
+Priority order (README "配置" / README.en.md "Configuration"): process environment > `<workspace>/.pamu/.settings` > `~/.pamu/.settings` > `~/.pamu/credentials.json`.
 
 - `.settings.example` is the committed template; keep its values empty. `.env` is legacy and is not migrated automatically.
 - Credentials live in `~/.pamu/credentials.json` with owner-only permissions; API keys are masked during input and excluded from input history and logs. Never read, print, or commit real values.
@@ -38,9 +38,9 @@ Priority order (README "Configuration"): process environment > `<workspace>/.pam
 ## Generated and untracked files
 
 - `.pamu/` (runtime state, has its own `.gitignore` ignoring everything except itself), `.venv/`, `__pycache__/`, `.pytest_cache/`, `.ruff_cache/`, `*.egg-info/`, `.settings`, `.env` are generated or ignored — do not edit or commit them.
-- `docs/` is ignored by `.gitignore` (`git ls-files docs` is empty), including the local acceptance matrix `docs/ACCEPTANCE.md`. Anything written under `docs/` is not tracked; tracked documentation belongs in `README.md`.
+- `docs/` is ignored by `.gitignore` (`git ls-files docs` is empty), including the local acceptance matrix `docs/ACCEPTANCE.md`. Anything written under `docs/` is not tracked; tracked documentation belongs in `README.md` (Chinese, primary) and `README.en.md` (English); keep the two in sync.
 
 ## Completion criteria
 
 - `uv run pytest -q` passes.
-- Inspect the staged diff and confirm no credential values, `.settings`/`.env` files, or `.pamu/` state are included, per README "Security and repository hygiene".
+- Inspect the staged diff and confirm no credential values, `.settings`/`.env` files, or `.pamu/` state are included, per README "安全" / README.en.md "Security".
