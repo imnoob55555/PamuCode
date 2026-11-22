@@ -83,6 +83,10 @@ class AppConfig:
     def sessions_dir(self) -> Path:
         return self.state_dir / "sessions"
 
+    @property
+    def checkpoints_dir(self) -> Path:
+        return self.state_dir / "checkpoints"
+
     @classmethod
     def from_env(
         cls,

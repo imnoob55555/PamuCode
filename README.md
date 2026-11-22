@@ -150,6 +150,7 @@ are not implemented; use Ctrl+C, then enter your new instruction.
 | `/background` | List this session's background commands |
 | `/cron [cancel <id \| all>]` | List or cancel scheduled jobs |
 | `/memory [forget <name>]` | List automatic memories or delete one |
+| `/undo` | Restore the files changed through file tools in the previous turn |
 | `/stop <ID \| all>` | Stop selected background commands |
 | `/help` or `/h` | Show a concise command list |
 | `/quit` | Exit the session |
@@ -175,6 +176,18 @@ Modes, pinned constraints, and the current request survive compaction and sessio
 restore. Delegates receive the original request and pinned constraints. In execution
 mode, natural-language limits still depend on model compliance; pinned text is not
 an execution deny rule. Use `/plan` when you need enforced read-only tool access.
+
+### Undo
+
+Before a turn first changes a file through `write_file` or `edit_file`, PamuCode
+saves its original content under `.pamu/checkpoints/<session>/<turn>/`. `/undo`
+lists the files from the most recent checkpointed turn and, after confirmation,
+restores them (files the turn created are removed). Run it again to step further
+back. If a file was edited again afterwards, `/undo` warns before overwriting it.
+The model is told which files were restored. Checkpoints cover file tools only:
+changes made by shell commands are not undone. The last 20 turns are kept per
+session, deleting a session removes its checkpoints, and the confined sandbox
+does not record checkpoints.
 
 ### Memory
 

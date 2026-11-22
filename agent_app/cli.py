@@ -50,6 +50,7 @@ COMMANDS = ("login", "logout", "status", "use")
 SLASH_HELP = help_text()
 LOGIN_HINT = "尚未配置模型服务，请输入 /login 选择供应商、服务地址和模型。"
 SHUTDOWN = "Shutting down PamuCode…"
+UNDO_SCOPE = "（/undo 只覆盖 write_file/edit_file 的修改，Shell 命令造成的改动不会被撤销。）"
 
 
 def notify_or_print(ui, message: str, *, print_fn=print) -> None:
@@ -432,7 +433,7 @@ def run_command(
 def handle_slash_command(runtime, query: str, *, credentials_path=None,
                          client_factory=None, print_fn=print, ui=None):
     """Keep model changes and their durable checkpoint in one agent transaction."""
-    mutating = query.strip().partition(" ")[0] in ("/model", "/provider", "/thinking", "/context", "/compact", "/skill")
+    mutating = query.strip().partition(" ")[0] in ("/model", "/provider", "/thinking", "/context", "/compact", "/skill", "/undo")
     lock = getattr(runtime, "agent_lock", None) if mutating else None
     with lock if lock is not None else nullcontext():
         fields = ("provider", "protocol", "base_url", "primary_model", "fallback_model", "thinking_level")
@@ -461,6 +462,34 @@ def _handle_slash_command(
     credentials_path = credentials_path or auth.CREDENTIALS_PATH
     command, _, rest = query.strip().partition(" ")
     argument = rest.strip()
+    if command == '/undo':
+        if runtime is None:
+            notify_or_print(ui, LOGIN_HINT, print_fn=print_fn)
+            return
+        checkpoints = getattr(runtime, 'checkpoints', None)
+        if checkpoints is None:
+            notify_or_print(ui, '当前沙箱模式不支持 /undo。', print_fn=print_fn)
+            return
+        turn = checkpoints.latest()
+        if turn is None:
+            notify_or_print(ui, f'没有可撤销的文件修改。{UNDO_SCOPE}', print_fn=print_fn)
+            return
+        files, conflicts = checkpoints.files(turn), checkpoints.conflicts(turn)
+        if ui is None:
+            print_fn('上一轮修改的文件：' + '、'.join(files) + '\n请在交互终端使用 /undo 并确认。')
+            return
+        title = f"撤销上一轮对 {len(files)} 个文件的修改：{'、'.join(files)}"
+        if conflicts:
+            title += f"\n注意：{'、'.join(conflicts)} 在那之后又被修改过，撤销会覆盖这些修改。"
+        if ui.choose(title, [('cancel', '取消'), ('undo', '撤销并覆盖' if conflicts else '撤销')]) != 'undo':
+            notify_or_print(ui, '已取消撤销。', print_fn=print_fn)
+            return
+        restored = checkpoints.restore(turn)
+        runtime.session.history.append({'role': 'user', '_pamu_source': 'system', 'content':
+                                        '[用户执行了 /undo] 以下文件已恢复到上一轮修改之前：' + '、'.join(restored)})
+        checkpoint(runtime)
+        print_fn(theme.success('已撤销：' + '、'.join(restored)) + f'\n{UNDO_SCOPE}')
+        return
     if command == '/memory':
         if runtime is None:
             notify_or_print(ui, LOGIN_HINT, print_fn=print_fn)

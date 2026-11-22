@@ -132,6 +132,7 @@ class RuntimeContext:
     stop_event: threading.Event = field(default_factory=threading.Event)
 
     sessions: Any = None
+    checkpoints: Any = None
 
     def __post_init__(self) -> None:
         # Direct constructions without an explicit router (tests, embedders)

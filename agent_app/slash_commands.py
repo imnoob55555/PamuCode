@@ -28,6 +28,7 @@ SLASH_COMMANDS = (
     SlashCommand("/background", "", "查看当前会话的后台命令"),
     SlashCommand("/cron", "[cancel <任务编号 | all>]", "查看或取消定时任务"),
     SlashCommand("/memory", "[forget <名称>]", "查看或删除自动记忆"),
+    SlashCommand("/undo", "", "撤销上一轮通过文件工具做的修改"),
     SlashCommand("/stop", "<后台任务编号 | all>", "停止指定后台命令或全部后台命令"),
     SlashCommand("/help", "", "显示命令帮助", ("/h",)),
     SlashCommand("/plan", "", "进入规划模式，只读探索并制定计划"),

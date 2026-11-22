@@ -36,6 +36,7 @@ from .features.teams import protocol as team_protocol
 from .features.teams import teammates
 from .logging_setup import setup_logging
 from .runtime import ModelRouter, RuntimeContext, SessionState
+from .features.checkpoints import FileCheckpoints
 from .features.sessions import SessionPersistence
 from .thinking import DEFAULT_THINKING_LEVEL, normalize_level
 from .tools import builtin
@@ -321,14 +322,37 @@ def build_runtime(
             remember_file(session, config.workdir, path, offset=offset, limit=limit, cwd=cwd)
         return output
 
+    session_persistence = SessionPersistence(config.workdir)
+    file_checkpoints = None if policy.mode == "confined" else FileCheckpoints(
+        config.workdir, config.checkpoints_dir,
+        session_id=lambda: session_persistence.session_id,
+        turn_id=lambda: session.context_state.get("current_request", {}).get("id"),
+    )
+
+    def checkpointed(change, path, cwd):
+        try:
+            target = builtin.safe_path(config.workdir, path, cwd, policy=policy, write=True)
+        except (ValueError, PermissionError):
+            target = None
+        recorded = file_checkpoints is not None and target is not None and file_checkpoints.before_change(target)
+        output = change()
+        if file_checkpoints is not None and target is not None:
+            if not output.startswith("Error:"):
+                file_checkpoints.after_change(target)
+            elif recorded:
+                file_checkpoints.drop(target)
+        return output
+
     def run_write(path, content, cwd=None):
-        output = builtin.run_write(config.workdir, path, content, cwd, policy=policy)
+        output = checkpointed(lambda: builtin.run_write(config.workdir, path, content, cwd, policy=policy), path, cwd)
         if policy.mode != 'confined' and not output.startswith("Error:"):
             remember_file(session, config.workdir, path, cwd=cwd)
         return output
 
     def run_edit(path, old_text, new_text, cwd=None):
-        output = builtin.run_edit(config.workdir, path, old_text, new_text, cwd, policy=policy)
+        output = checkpointed(
+            lambda: builtin.run_edit(config.workdir, path, old_text, new_text, cwd, policy=policy), path, cwd,
+        )
         if policy.mode != 'confined' and not output.startswith("Error:"):
             remember_file(session, config.workdir, path, cwd=cwd)
         return output
@@ -584,7 +608,8 @@ def build_runtime(
         team=team_state,
         mcp=mcp_state,
         model=model_router,
-        sessions=SessionPersistence(config.workdir),
+        sessions=session_persistence,
+        checkpoints=file_checkpoints,
     )
 
 

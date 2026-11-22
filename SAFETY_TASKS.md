@@ -27,28 +27,6 @@
 
 ---
 
-## 任务 6：文件检查点与 /undo
-
-**现状**：会话历史有快照，但文件没有。被 Ctrl+C 中断的轮次会保留已做的修改；不在 git 仓库里，或者有未提交改动时，改坏了没法撤销。
-
-**要做的**
-1. 在 `agent_app/bootstrap.py` 的 `run_write` / `run_edit` 包装里：每轮第一次修改某个文件之前，把原内容（文件不存在时记为「不存在」）保存到 `.pamu/checkpoints/<session_id>/<turn_id>/`，并写一个 manifest，记录相对路径和原内容的哈希。
-   - 轮次 ID 可以复用 `session.context_state['current_request']['id']`。
-2. 新增 `/undo`：
-   - 列出上一轮改过的文件，确认后恢复；原来不存在的文件就删除；
-   - 恢复前检查当前内容的哈希，如果和那一轮结束时不一致（之后又被改过），要提示并让用户确认。
-   - 可以多次 `/undo`，逐轮往前撤。
-3. 明确告知：Shell 造成的改动不在检查点范围内，`/undo` 的输出和 README 都要写明。
-4. 检查点按会话最多保留 20 轮，删除会话时一并清理（参考 `repl_sessions.delete_current_session`）。
-
-**验收**
-- 写入、编辑、新建文件后执行 `/undo`，三种情况都能恢复。
-- 连续两轮后能逐轮撤销。
-- 文件被外部再次修改后，`/undo` 会提示。
-- 超过 20 轮时清理最旧的检查点。
-
----
-
 ## 任务 7：项目自带技能需要信任确认
 
 **现状**：`agent_app/config.py:skill_search_dirs` 会读取工作区里的 `.pamu/skills`、`.agents/skills`、`.claude/skills`。克隆一个陌生仓库，它自带的技能描述会直接进入系统提示词（`agent_app/core/context_materials.py` 的技能目录），技能正文也随时可以被加载，没有任何信任确认。
