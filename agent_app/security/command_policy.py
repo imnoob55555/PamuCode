@@ -43,6 +43,12 @@ SUBCOMMAND_PROGRAMS = frozenset({
     "git", "npm", "pnpm", "yarn", "bun", "cargo", "go", "pip", "pip3", "uv", "poetry",
     "docker", "kubectl", "brew", "gh", "make",
 })
+NEVER_REMEMBER = frozenset({
+    "rm", "rmdir", "mv", "cp", "chmod", "chown", "dd", "truncate", "shred", "kill", "pkill", "killall",
+    "curl", "wget", "scp", "rsync", "ssh", "nc", "ncat", "ftp", "sftp",
+    "git push", "git reset", "git clean", "git checkout", "git restore", "git rebase", "git branch",
+    "git tag", "git remote", "git config", "git rm", "git commit", "git merge",
+})
 RUNNER_SUBCOMMANDS = frozenset({"run", "exec", "x", "dlx"})
 SENSITIVE = re.compile(
     r"(^|/)\.(ssh|aws|gnupg|pamu|codex)(/|$)|(^|/)\.env(\.|$)|(^|/)\.settings$|(^|/)\.?credentials(\.json)?$|"
@@ -175,13 +181,20 @@ def _segment(argv: list[str]) -> CommandDecision:
         return CommandDecision(ASK, f"runs a nested {program} script")
     if program == "git":
         reason = _git_decision(argv)
-        return CommandDecision(ALLOW) if reason is None else CommandDecision(ASK, reason, (prefix(argv),))
+        return CommandDecision(ALLOW) if reason is None else _ask(reason, argv)
     if program in READ_ONLY:
         unsafe = UNSAFE_OPTIONS.get(program, set())
         if any(arg.split("=", 1)[0] in unsafe for arg in argv[1:]):
-            return CommandDecision(ASK, f"{program} with an option that writes or runs programs", (prefix(argv),))
+            return _ask(f"{program} with an option that writes or runs programs", argv)
         return CommandDecision(ALLOW)
-    return CommandDecision(ASK, f"{program} is not a known read-only command", (prefix(argv),))
+    return _ask(f"{program} is not a known read-only command", argv)
+
+
+def _ask(reason: str, argv: list[str]) -> CommandDecision:
+    """Ask, offering to remember the prefix unless the program deletes, moves or sends data."""
+    key = prefix(argv)
+    risky = key in NEVER_REMEMBER or _program(argv[0]) in NEVER_REMEMBER
+    return CommandDecision(ASK, reason, () if risky else (key,))
 
 
 def classify(command: str) -> CommandDecision:

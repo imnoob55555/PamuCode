@@ -83,7 +83,9 @@ read-only program (`ls`, `cat`, `rg`, `find` without `-delete`/`-exec`,
 shows the reason: unknown programs, writes through `>` or `>>`, command
 substitution, subshells, nested `sh -c` scripts, and commands that cannot be
 parsed. Answer `a` to stop asking for the same program and subcommand (for example
-`uv run pytest`) for the rest of the session; writes through redirection always ask.
+`uv run pytest`) for the rest of the session. Writes through redirection, commands
+touching sensitive paths, and programs that delete, move, or send data (`rm`, `mv`,
+`cp`, `curl`, `ssh`, `git push`, `git reset`, and similar) always ask.
 `sudo`, `su`, `doas`, `shutdown`, `reboot`, `mkfs`, `dd` to a device, and recursive
 `rm` of `/` or the home directory are refused, even when disguised as `s\udo` or
 `/usr/bin/sudo`. Approval questions raised by background work (such as scheduled

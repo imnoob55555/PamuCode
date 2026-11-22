@@ -32,12 +32,20 @@ def test_read_only_commands_skip_confirmation(tmp_path):
 def test_unknown_commands_ask_and_respect_the_answer(tmp_path, capsys):
     answers = Answers("n", "y")
     hook = make_permission_hook(tmp_path, answers)
-    assert hook(bash("git push --force")) == "Permission denied by user"
-    assert hook(bash("git push --force")) is None
+    assert hook(bash("npm install")) == "Permission denied by user"
+    assert hook(bash("npm install")) is None
     assert answers.prompts == ["  Allow this change? [y/N] "] * 2
     out = capsys.readouterr().out
-    assert "Command needs approval" in out and "Command: git push --force" in out
-    assert "Reason: git push" in out and "a = 本会话不再询问 git push" in out
+    assert "Command needs approval" in out and "Command: npm install" in out
+    assert "Reason: npm is not a known read-only command" in out and "a = 本会话不再询问 npm install" in out
+
+
+def test_destructive_programs_are_never_remembered(tmp_path, capsys):
+    answers = Answers("a", "n")
+    hook = make_permission_hook(tmp_path, answers)
+    assert hook(bash("rm -f build.log")) is None
+    assert hook(bash("rm -f build.log")) == "Permission denied by user"
+    assert "本会话不再询问" not in capsys.readouterr().out
 
 
 def test_always_answer_remembers_the_command_prefix_for_this_hook_only(tmp_path):

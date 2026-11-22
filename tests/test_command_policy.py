@@ -62,6 +62,9 @@ def test_only_unknown_programs_can_be_remembered_for_the_session():
     decision = classify("uv run pytest -q && npm test")
     assert decision.prefixes == ("uv run pytest", "npm test") and decision.rememberable
     assert classify("touch a.txt").prefixes == ("touch",)
+    for risky in ("rm -f build.log", "git push origin main", "curl https://example.com", "mv a b", "git reset --hard"):
+        decision = classify(risky)
+        assert decision.action == ASK and not decision.rememberable
     assert not classify("uv run pytest > log.txt").rememberable
     assert not classify("python -c \"$(cat x)\"").rememberable
     assert not classify("ls").rememberable
