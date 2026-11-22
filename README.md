@@ -77,6 +77,20 @@ glyphs. Set `NO_COLOR` to keep the layout but drop colors.
 Operations requiring approval show the permission prompt and wait for your
 answer. Proposed file changes include a diff.
 
+Shell commands run without asking only when every part of the command is a known
+read-only program (`ls`, `cat`, `rg`, `find` without `-delete`/`-exec`,
+`git status`/`diff`/`log`/`show`, and similar). Everything else asks first and
+shows the reason: unknown programs, writes through `>` or `>>`, command
+substitution, subshells, nested `sh -c` scripts, and commands that cannot be
+parsed. Answer `a` to stop asking for the same program and subcommand (for example
+`uv run pytest`) for the rest of the session. Writes through redirection, commands
+touching sensitive paths, and programs that delete, move, or send data (`rm`, `mv`,
+`cp`, `curl`, `ssh`, `git push`, `git reset`, and similar) always ask.
+`sudo`, `su`, `doas`, `shutdown`, `reboot`, `mkfs`, `dd` to a device, and recursive
+`rm` of `/` or the home directory are refused, even when disguised as `s\udo` or
+`/usr/bin/sudo`. Approval questions raised by background work (such as scheduled
+turns) are refused instead of competing with the prompt for input.
+
 While the agent is working, Ctrl+C interrupts the current turn and returns to the
 same session's prompt. It keeps completed edits, captured command output, and
 visible partial model text. Interrupted tool calls receive explicit error results;
@@ -89,6 +103,14 @@ The model can use the error from a blocked attempt to change approach. Two
 consecutive batches containing only blocked repeats end the turn.
 
 Background commands and teammates run independently of the foreground turn.
+The model can schedule prompts with cron expressions. Jobs are one-shot and last
+only for the current session unless the model asks for a recurring or durable job,
+which needs your approval. Recurring jobs expire after seven days; durable jobs are
+saved in `.pamu/scheduled_tasks.json`, and PamuCode reports how many it loaded at
+startup. A scheduled turn announces itself, and any approval it would need is
+refused. Use `/cron` to list jobs and `/cron cancel <id>` or `/cron cancel all` to
+remove them.
+
 Use `/background` to list this session's background commands, `/stop bg_0001` to
 stop one, or `/stop all` to stop all background commands. A cancellation request
 is not reported as finished until the worker acknowledges it. Exiting requests
@@ -120,6 +142,7 @@ are not implemented; use Ctrl+C, then enter your new instruction.
 | `/plan` | Enter read-only exploration and planning mode |
 | `/execute` | Permit implementation within the user's request |
 | `/skill [name] [task]` | Select or explicitly invoke a skill |
+| `/skill trust` | Load the skills that come with this workspace |
 | `/context` | Inspect the context budget |
 | `/context window <tokens>` | Set a session window override |
 | `/context pin <text>` | Preserve a constraint verbatim |
@@ -128,6 +151,9 @@ are not implemented; use Ctrl+C, then enter your new instruction.
 | `/resume [--last \| ID]` | Switch to another saved session |
 | `/delete` | Confirm deletion of the current session and exit |
 | `/background` | List this session's background commands |
+| `/cron [cancel <id \| all>]` | List or cancel scheduled jobs |
+| `/memory [forget <name>]` | List automatic memories or delete one |
+| `/undo` | Restore the files changed through file tools in the previous turn |
 | `/stop <ID \| all>` | Stop selected background commands |
 | `/help` or `/h` | Show a concise command list |
 | `/quit` | Exit the session |
@@ -154,6 +180,28 @@ restore. Delegates receive the original request and pinned constraints. In execu
 mode, natural-language limits still depend on model compliance; pinned text is not
 an execution deny rule. Use `/plan` when you need enforced read-only tool access.
 
+### Undo
+
+Before a turn first changes a file through `write_file` or `edit_file`, PamuCode
+saves its original content under `.pamu/checkpoints/<session>/<turn>/`. `/undo`
+lists the files from the most recent checkpointed turn and, after confirmation,
+restores them (files the turn created are removed). Run it again to step further
+back. If a file was edited again afterwards, `/undo` warns before overwriting it.
+The model is told which files were restored. Checkpoints cover file tools only:
+changes made by shell commands are not undone. The last 20 turns are kept per
+session, deleting a session removes its checkpoints, and the confined sandbox
+does not record checkpoints.
+
+### Memory
+
+After each turn PamuCode asks the model to extract lasting preferences and project
+facts from what you typed and what it answered; tool output and runtime notices are
+left out. New memories are announced, credential-like text is never saved, and
+`/memory` lists or forgets them. Before consolidating memories, the previous files are
+copied to `.pamu/memory/.backup/` (the five most recent copies are kept), and an empty
+consolidation result keeps the existing memories. Set `PAMU_AUTO_MEMORY=off` to
+disable extraction and consolidation.
+
 ### Skills
 
 A skill is a directory containing `SKILL.md`. PamuCode searches these
@@ -169,7 +217,16 @@ directories, highest priority first:
 | `~/.claude/skills/` | All projects, shared with Claude Code |
 
 When two directories define the same skill name, the higher-priority one wins,
-so project skills override user skills. A visible `skills/` folder in the
+so project skills override user skills.
+
+Skills that come with the workspace (its `.pamu`, `.agents` and `.claude` skill
+directories) are loaded only after you trust them, because their descriptions enter
+the system prompt. The first time PamuCode finds them it lists them and asks; you can
+also run `/skill trust` later. Trust is stored per workspace in
+`~/.pamu/trusted_workspaces.json` for that exact set of skills, so adding or editing a
+project skill asks again. Until then those skills are not listed to the model, and
+`list_skills` says they are waiting. User-level skills are always trusted, and
+`PAMU_TRUST_PROJECT_SKILLS=1` trusts project skills without asking. A visible `skills/` folder in the
 project root is not read, so ordinary project folders are never mistaken for
 skills.
 
@@ -222,6 +279,11 @@ selected during login. `/model` and `/provider` take effect in the current sessi
 | `OPENAI_COMPATIBLE_PROTOCOL` | `openai_chat` or `openai_responses` |
 | `PAMU_CONTEXT_WINDOW` | Explicit context window for the startup model |
 | `PAMU_SANDBOX` | `off` (default) or `confined` |
+| `PAMU_MAX_TURN_MODEL_CALLS` / `PAMU_MAX_TURN_TOOL_CALLS` / `PAMU_MAX_TURN_TOKENS` | Per-turn limits in the interactive session (defaults 50 / 200 / 2,000,000). When one is reached PamuCode asks whether to continue; scheduled turns stop |
+| `PAMU_MAX_TEAMMATES` / `PAMU_MAX_BACKGROUND_TASKS` | Concurrent teammates and running background commands (defaults 4 / 8) |
+| `PAMU_TRUST_PROJECT_SKILLS` | `1` loads the workspace's own skills without asking for trust |
+| `PAMU_AUTO_MEMORY` | `on` (default) or `off`. Automatic memory extraction after each turn |
+| `PAMU_SHELL_APPROVAL` | `ask` (default) or `auto`. **Dangerous:** `auto` runs every shell command except the refused ones without asking |
 | `LOG_LEVEL` | Runtime log verbosity |
 
 Provider entries: `anthropic`, `deepseek`, `moonshot`, `zhipu`, `openrouter`,
@@ -374,6 +436,14 @@ Execution defaults to `PAMU_SANDBOX=off`, which has no OS filesystem or network
 isolation. Shell children still receive an allowlisted environment, a temporary
 HOME, and a fixed executable search path instead of inherited provider credentials.
 Commands that depend on the original shell environment may need explicit paths.
+
+Even without the sandbox, file tools refuse credential and runtime-state paths in
+the workspace (`.pamu`, `.env`, `.env.*`, `.settings`, `.ssh`, `.aws`, `.gnupg`,
+`.codex`) and refuse writes to `.git/hooks` and `.git/config`. Persisted tool output
+under `.pamu/task_outputs/tool-results/` and teammate worktrees under
+`.pamu/worktrees/` stay accessible. Shell commands that mention such paths always
+ask for approval, but this is a textual check: only `PAMU_SANDBOX=confined` actually
+stops a shell command from reading them.
 
 `PAMU_SANDBOX=confined` uses macOS Seatbelt for shell file/network restrictions
 and descriptor-based file tools. Unsupported platforms or unavailable backends

@@ -9,10 +9,30 @@ USER_HOME = Path.home()
 SKILL_PARENTS = (".pamu", ".agents", ".claude")
 
 
+def project_skill_dirs(workspace: Path, home: Path) -> tuple[Path, ...]:
+    """Skill directories that come with the workspace and therefore need trust."""
+    if Path(workspace).resolve() == Path(home).resolve():
+        return ()
+    return tuple(workspace / parent / "skills" for parent in SKILL_PARENTS)
+
+
 def skill_search_dirs(workspace: Path, home: Path) -> tuple[Path, ...]:
     """Project skill directories first, then the user's, without duplicates."""
     candidates = [base / parent / "skills" for base in (workspace, home) for parent in SKILL_PARENTS]
     return tuple(dict.fromkeys(candidates))
+
+
+def _positive_int(environment: Mapping[str, str], name: str, default: int) -> int:
+    raw = environment.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 0
+    if value <= 0:
+        raise ValueError(f"{name} must be a positive integer")
+    return value
 
 
 class MissingConfigurationError(ValueError):
@@ -58,10 +78,23 @@ class AppConfig:
     headless: bool = False
     sandbox_mode: str = "off"
     skill_dirs: tuple[Path, ...] = ()
+    project_skill_dirs: tuple[Path, ...] = ()
+    trust_project_skills: bool = False
+    shell_approval: str = "ask"
+    max_turn_model_calls: int = 50
+    max_turn_tool_calls: int = 200
+    max_turn_tokens: int = 2_000_000
+    max_teammates: int = 4
+    max_background_tasks: int = 8
+    auto_memory: bool = True
 
     @property
     def sessions_dir(self) -> Path:
         return self.state_dir / "sessions"
+
+    @property
+    def checkpoints_dir(self) -> Path:
+        return self.state_dir / "checkpoints"
 
     @classmethod
     def from_env(
@@ -80,6 +113,22 @@ class AppConfig:
         sandbox = environment.get("PAMU_SANDBOX", "off").strip()
         if sandbox not in {"off", "confined"}:
             raise ValueError("PAMU_SANDBOX must be 'off' or 'confined'")
+        limits = {
+            field: _positive_int(environment, name, default)
+            for field, name, default in (
+                ("max_turn_model_calls", "PAMU_MAX_TURN_MODEL_CALLS", 50),
+                ("max_turn_tool_calls", "PAMU_MAX_TURN_TOOL_CALLS", 200),
+                ("max_turn_tokens", "PAMU_MAX_TURN_TOKENS", 2_000_000),
+                ("max_teammates", "PAMU_MAX_TEAMMATES", 4),
+                ("max_background_tasks", "PAMU_MAX_BACKGROUND_TASKS", 8),
+            )
+        }
+        auto_memory = environment.get("PAMU_AUTO_MEMORY", "on").strip().lower() or "on"
+        if auto_memory not in {"on", "off"}:
+            raise ValueError("PAMU_AUTO_MEMORY must be 'on' or 'off'")
+        shell_approval = environment.get("PAMU_SHELL_APPROVAL", "ask").strip() or "ask"
+        if shell_approval not in {"ask", "auto"}:
+            raise ValueError("PAMU_SHELL_APPROVAL must be 'ask' or 'auto'")
         root = repo_root.resolve()
         workspace = (workdir or repo_root).resolve()
         state_dir = workspace / ".pamu"
@@ -91,6 +140,9 @@ class AppConfig:
             state_dir=state_dir,
             skills_dir=state_dir / "skills",
             skill_dirs=skill_search_dirs(workspace, USER_HOME),
+            project_skill_dirs=project_skill_dirs(workspace, USER_HOME),
+            trust_project_skills=environment.get("PAMU_TRUST_PROJECT_SKILLS", "").strip().lower()
+            in {"1", "true", "yes", "on"},
             memory_dir=memory_dir,
             memory_index=memory_dir / "MEMORY.md",
             transcripts_dir=state_dir / "transcripts",
@@ -105,4 +157,7 @@ class AppConfig:
             fallback_model=environment.get("FALLBACK_MODEL_ID"),
             log_level=(environment.get("LOG_LEVEL") or "INFO").strip() or "INFO",
             sandbox_mode=sandbox,
+            shell_approval=shell_approval,
+            auto_memory=auto_memory == "on",
+            **limits,
         )

@@ -8,6 +8,7 @@ import time
 
 from .. import theme
 from ..features.background import (
+    running_task_count,
     collect_background_results,
     start_background_task,
 )
@@ -34,6 +35,7 @@ from .compaction import persist_large_output
 from .context import append_user_text_blocks, build_context
 from .context_manager import archive_result, compact, normalize_results, register_history_tools
 from .context_budget import prepare_budget, record_usage, resolve_window
+from .turn_budget import TurnBudget
 from .recovery import (
     PartialStreamError,
     RecoveryState,
@@ -171,6 +173,9 @@ def run_agent_loop(runtime: RuntimeContext) -> str | None:
     )
     max_tokens = runtime.config.default_max_tokens
     repeat_limit = ToolRepeatLimit()
+    budget = None if runtime.config.headless else TurnBudget(
+        runtime.config.max_turn_model_calls, runtime.config.max_turn_tool_calls, runtime.config.max_turn_tokens,
+    )
 
     def summarize(payload, max_tokens=2_000):
         return _summarize(runtime, payload, max_tokens)
@@ -183,6 +188,13 @@ def run_agent_loop(runtime: RuntimeContext) -> str | None:
         return request if thinking else strip_thinking_blocks(request)
 
     while True:
+        if budget is not None and budget.exceeded():
+            if runtime.hooks.trigger("TurnLimit", budget.summary()) is True:
+                budget.reset()
+            else:
+                print(f"{budget.summary()}，已达到单轮上限并停止。可继续输入指令，或调整 PAMU_MAX_TURN_* 设置。")
+                _update_context(runtime)
+                return "turn_limit"
         checkpoint(runtime, status="running")
         fired_jobs = consume_cron_queue(runtime.scheduler)
         pending_texts = [
@@ -282,7 +294,9 @@ def run_agent_loop(runtime: RuntimeContext) -> str | None:
                 base_delay_ms=runtime.config.base_delay_ms,
                 progress=null_progress if runtime.config.headless else getattr(runtime.llm, 'progress', null_progress),
             )
-            record_usage(runtime, response, model=state.current_model, estimated_input=report.input_tokens)
+            usage = record_usage(runtime, response, model=state.current_model, estimated_input=report.input_tokens)
+            if budget is not None:
+                budget.record_model_call(usage, report.input_tokens)
         except ResponseInterrupted as exc:
             with protect_interrupt_cleanup():
                 if exc.partial_text:
@@ -412,10 +426,13 @@ def run_agent_loop(runtime: RuntimeContext) -> str | None:
                 continue
             if _wait_for_team_activity(runtime):
                 continue
-            if not runtime.config.headless and getattr(runtime.config, 'sandbox_mode', 'off') != 'confined':
-                extract_memories(runtime.memory, pre_compact_messages, summarize)
+            remember = (not runtime.config.headless and getattr(runtime.config, 'auto_memory', True)
+                        and getattr(runtime.config, 'sandbox_mode', 'off') != 'confined')
+            if remember:
+                for name in extract_memories(runtime.memory, pre_compact_messages, summarize) or []:
+                    print(theme.success(f"已记住：{name}（/memory 查看，/memory forget {name} 删除）"))
             checkpoint(runtime)
-            if not runtime.config.headless and getattr(runtime.config, 'sandbox_mode', 'off') != 'confined':
+            if remember:
                 consolidate_memories(runtime.memory, summarize)
             checkpoint(runtime)
             _update_context(runtime)
@@ -495,6 +512,8 @@ def run_agent_loop(runtime: RuntimeContext) -> str | None:
                 compacted_now = True
                 break
 
+            if budget is not None:
+                budget.record_tool_call()
             runtime.hooks.trigger("ToolStart", block)
             blocked = None if runtime.config.headless else runtime.hooks.trigger("PreToolUse", block)
             if blocked:
@@ -509,6 +528,12 @@ def run_agent_loop(runtime: RuntimeContext) -> str | None:
 
             checkpoint(runtime, tool_id=tool_use_id, tool_status="running")
             if not runtime.config.headless and should_run_background(name, tool_input):
+                limit = runtime.config.max_background_tasks
+                if running_task_count(runtime.background) >= limit:
+                    add_result({"type": "tool_result", "tool_use_id": tool_use_id, "is_error": True,
+                                "content": f"Error: 已有 {limit} 个后台命令在运行，达到上限 PAMU_MAX_BACKGROUND_TASKS。"
+                                           "请等待其中一个完成，或改为前台执行。"})
+                    continue
                 background_id = start_background_task(
                     runtime.background,
                     block,

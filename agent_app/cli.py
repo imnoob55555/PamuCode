@@ -29,9 +29,13 @@ from .features.session_store import SessionError
 from .features import auth, skills
 from .features.skills import SkillInvocation
 from .features.scheduler import (
+    cancel_job,
     cron_scheduler_loop,
+    describe_job,
     has_cron_queue,
+    list_jobs,
     load_durable_jobs,
+    queued_jobs,
 )
 from .rendering import help_block
 from .repl_sessions import ResumeAction, delete_current_session, resume_runtime
@@ -46,6 +50,7 @@ COMMANDS = ("login", "logout", "status", "use")
 SLASH_HELP = help_text()
 LOGIN_HINT = "尚未配置模型服务，请输入 /login 选择供应商、服务地址和模型。"
 SHUTDOWN = "Shutting down PamuCode…"
+UNDO_SCOPE = "（/undo 只覆盖 write_file/edit_file 的修改，Shell 命令造成的改动不会被撤销。）"
 
 
 def notify_or_print(ui, message: str, *, print_fn=print) -> None:
@@ -54,6 +59,25 @@ def notify_or_print(ui, message: str, *, print_fn=print) -> None:
         notify(message)
     else:
         print_fn(message)
+
+
+def offer_project_skill_trust(runtime, ui) -> None:
+    """Ask once per skill set whether the workspace's own skills may load."""
+    state = getattr(runtime, "skills", None)
+    if state is None or getattr(runtime.config, "sandbox_mode", "off") == "confined":
+        return
+    skills.refresh_skills(state)
+    if not state.pending or state.asked_fingerprint == state.pending_fingerprint:
+        return
+    state.asked_fingerprint = state.pending_fingerprint
+    choice = ui.choose(
+        f"此项目自带 {len(state.pending)} 个技能：{skills.describe_pending(state)}。"
+        "它们会进入系统提示词并可被模型加载，是否信任？",
+        [("no", "暂不信任（之后可输入 /skill trust）"), ("yes", "信任此项目的技能")],
+    )
+    if choice == "yes":
+        names = skills.trust_project_skills(state)
+        print(theme.success(f"已信任此项目的技能：{', '.join(names)}"))
 
 
 def _save_background_results(runtime):
@@ -128,6 +152,8 @@ def _queue_processor_loop(runtime) -> None:
                 return
             if has_cron_queue(runtime.scheduler):
                 LOGGER.debug("delivering scheduled work")
+                names = ", ".join(job.id for job in queued_jobs(runtime.scheduler))
+                print(theme.paint(f"⏰ 定时任务 {names} 开始执行；需要确认的操作会被自动拒绝。", "muted"))
                 run_agent_turn(runtime)
         except SessionError as exc:
             print(str(exc))
@@ -138,7 +164,8 @@ def _queue_processor_loop(runtime) -> None:
 
 
 def start_runtime_threads(runtime) -> list[threading.Thread]:
-    load_durable_jobs(runtime.scheduler, runtime.config)
+    if load_durable_jobs(runtime.scheduler, runtime.config):
+        print(f"已加载 {len(list_jobs(runtime.scheduler))} 个持久定时任务，输入 /cron 查看或取消。")
     scheduler = threading.Thread(
         target=cron_scheduler_loop,
         args=(runtime.scheduler, runtime.config, runtime.stop_event),
@@ -425,7 +452,7 @@ def run_command(
 def handle_slash_command(runtime, query: str, *, credentials_path=None,
                          client_factory=None, print_fn=print, ui=None):
     """Keep model changes and their durable checkpoint in one agent transaction."""
-    mutating = query.strip().partition(" ")[0] in ("/model", "/provider", "/thinking", "/context", "/compact", "/skill")
+    mutating = query.strip().partition(" ")[0] in ("/model", "/provider", "/thinking", "/context", "/compact", "/skill", "/undo")
     lock = getattr(runtime, "agent_lock", None) if mutating else None
     with lock if lock is not None else nullcontext():
         fields = ("provider", "protocol", "base_url", "primary_model", "fallback_model", "thinking_level")
@@ -454,6 +481,68 @@ def _handle_slash_command(
     credentials_path = credentials_path or auth.CREDENTIALS_PATH
     command, _, rest = query.strip().partition(" ")
     argument = rest.strip()
+    if command == '/undo':
+        if runtime is None:
+            notify_or_print(ui, LOGIN_HINT, print_fn=print_fn)
+            return
+        checkpoints = getattr(runtime, 'checkpoints', None)
+        if checkpoints is None:
+            notify_or_print(ui, '当前沙箱模式不支持 /undo。', print_fn=print_fn)
+            return
+        turn = checkpoints.latest()
+        if turn is None:
+            notify_or_print(ui, f'没有可撤销的文件修改。{UNDO_SCOPE}', print_fn=print_fn)
+            return
+        files, conflicts = checkpoints.files(turn), checkpoints.conflicts(turn)
+        if ui is None:
+            print_fn('上一轮修改的文件：' + '、'.join(files) + '\n请在交互终端使用 /undo 并确认。')
+            return
+        title = f"撤销上一轮对 {len(files)} 个文件的修改：{'、'.join(files)}"
+        if conflicts:
+            title += f"\n注意：{'、'.join(conflicts)} 在那之后又被修改过，撤销会覆盖这些修改。"
+        if ui.choose(title, [('cancel', '取消'), ('undo', '撤销并覆盖' if conflicts else '撤销')]) != 'undo':
+            notify_or_print(ui, '已取消撤销。', print_fn=print_fn)
+            return
+        restored = checkpoints.restore(turn)
+        runtime.session.history.append({'role': 'user', '_pamu_source': 'system', 'content':
+                                        '[用户执行了 /undo] 以下文件已恢复到上一轮修改之前：' + '、'.join(restored)})
+        checkpoint(runtime)
+        print_fn(theme.success('已撤销：' + '、'.join(restored)) + f'\n{UNDO_SCOPE}')
+        return
+    if command == '/memory':
+        if runtime is None:
+            notify_or_print(ui, LOGIN_HINT, print_fn=print_fn)
+            return
+        from .features.memory import forget_memory, list_memory_files
+        action, _, target = argument.partition(' ')
+        if not action:
+            items = list_memory_files(runtime.memory)
+            state = '' if getattr(runtime.config, 'auto_memory', True) else '（自动记忆已关闭：PAMU_AUTO_MEMORY=off）\n'
+            print_fn(state + ('\n'.join(f"{item['name']}  [{item['type']}]  {item['description']}" for item in items)
+                              or '没有记忆。'))
+        elif action == 'forget' and target.strip():
+            name = forget_memory(runtime.memory, target)
+            notify_or_print(ui, f"已删除记忆：{name}" if name else f"记忆不存在：{target.strip()}", print_fn=print_fn)
+        else:
+            notify_or_print(ui, '用法：/memory 或 /memory forget <名称>', print_fn=print_fn)
+        return
+    if command == '/cron':
+        if runtime is None:
+            notify_or_print(ui, LOGIN_HINT, print_fn=print_fn)
+            return
+        action, _, target = argument.partition(' ')
+        target = target.strip()
+        if not action:
+            jobs = list_jobs(runtime.scheduler)
+            print_fn('\n'.join(f"{job.id}  '{job.cron}'  {describe_job(job)}  → {job.prompt[:60]}" for job in jobs)
+                     or '没有定时任务。')
+        elif action == 'cancel' and target:
+            ids = [job.id for job in list_jobs(runtime.scheduler)] if target == 'all' else [target]
+            print_fn('\n'.join(cancel_job(runtime.scheduler, runtime.config, job_id) for job_id in ids)
+                     or '没有定时任务。')
+        else:
+            notify_or_print(ui, '用法：/cron 或 /cron cancel <任务编号 | all>', print_fn=print_fn)
+        return
     if command in ('/background', '/stop'):
         if runtime is None:
             notify_or_print(ui, LOGIN_HINT, print_fn=print_fn)
@@ -487,6 +576,16 @@ def _handle_slash_command(
             notify_or_print(ui, "当前沙箱模式不支持加载技能。", print_fn=print_fn)
             return
         catalog = skills.refresh_skills(runtime.skills)
+        if argument == "trust":
+            names = skills.trust_project_skills(runtime.skills)
+            notify_or_print(
+                ui, theme.success(f"已信任此项目的技能：{', '.join(names)}") if names else "没有等待信任的项目技能。",
+                print_fn=print_fn,
+            )
+            return
+        if runtime.skills.pending:
+            notify_or_print(ui, f"此项目自带的技能尚未信任：{skills.describe_pending(runtime.skills)}。"
+                                "输入 /skill trust 加载。", print_fn=print_fn)
         if not catalog:
             places = "、".join(skills.root_label(runtime.skills, root) for root in runtime.skills.roots)
             notify_or_print(ui, f"没有可用技能。可在以下目录添加 <名称>/SKILL.md，无需重启：{places}", print_fn=print_fn)
@@ -929,6 +1028,7 @@ def main(
             notify_or_print(ui, LOGIN_HINT)
         while True:
             if ui is not None and runtime is not None:
+                offer_project_skill_trust(runtime, ui)
                 _provider, ui.model_name = runtime.model.snapshot()[:2]
                 ui.thinking_level = runtime.model.thinking_snapshot()
                 from .working_mode import working_mode

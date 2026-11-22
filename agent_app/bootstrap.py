@@ -36,6 +36,7 @@ from .features.teams import protocol as team_protocol
 from .features.teams import teammates
 from .logging_setup import setup_logging
 from .runtime import ModelRouter, RuntimeContext, SessionState
+from .features.checkpoints import FileCheckpoints
 from .features.sessions import SessionPersistence
 from .thinking import DEFAULT_THINKING_LEVEL, normalize_level
 from .tools import builtin
@@ -207,16 +208,16 @@ def _run_git(config: AppConfig, args: list[str]) -> tuple[bool, str]:
 
 
 def _register_default_hooks(
-    hooks: HookRegistry, config: AppConfig, mcp_state: mcp.MCPState
+    hooks: HookRegistry, config: AppConfig, mcp_state: mcp.MCPState, policy: ExecutionPolicy
 ) -> None:
     hooks.register("UserPromptSubmit", make_context_inject_hook(config.workdir))
     hooks.register(
         "PreToolUse",
-        make_permission_hook(config.workdir, terminal_confirmation, mcp_state=mcp_state),
+        make_permission_hook(config.workdir, terminal_confirmation, mcp_state=mcp_state,
+                             shell_approval=config.shell_approval),
     )
     hooks.register("PreToolUse", make_log_hook(config.workdir))
-    hooks.register("PreToolUse", make_diff_preview_hook(config.workdir, terminal_confirmation,
-                   policy=ExecutionPolicy(config.workdir, config.repo_root, mode=config.sandbox_mode)))
+    hooks.register("PreToolUse", make_diff_preview_hook(config.workdir, terminal_confirmation, policy=policy))
     hooks.register("PostToolUse", make_large_output_hook(config.workdir))
     hooks.register("Stop", make_summary_hook(config.workdir))
 
@@ -236,7 +237,10 @@ def build_runtime(
     shell_deadline: float | None = None,
 ) -> RuntimeContext:
     """Build one completely independent runtime from explicit dependencies."""
-    policy = execution_policy or ExecutionPolicy(config.workdir, config.repo_root, config.sandbox_mode)
+    policy = execution_policy or ExecutionPolicy(
+        config.workdir, config.repo_root, config.sandbox_mode,
+        state_roots=(config.tool_result_dir, config.worktrees_dir),
+    )
     if policy.workspace != config.workdir.resolve() or policy.install_root != config.repo_root.resolve():
         raise ValueError("Execution policy roots do not match runtime configuration")
     config = replace(config, sandbox_mode=policy.mode)
@@ -264,10 +268,15 @@ def build_runtime(
     scheduler_state = scheduler.SchedulerState()
     background_state = background.BackgroundState()
     task_store = tasks.TaskStore(config.task_dir)
+    from .features.skill_trust import SkillTrustStore, TrustEverything
+
     skill_state = skills.SkillState(
         config.skill_dirs if policy.mode != "confined" else (),
         workspace=config.workdir,
         home=config_module.USER_HOME,
+        project_roots=config.project_skill_dirs,
+        trust_store=TrustEverything() if config.trust_project_skills
+        else SkillTrustStore(config_module.USER_HOME / ".pamu" / "trusted_workspaces.json"),
     )
     memory_store = memory.MemoryStore(config.memory_dir, config.memory_index)
     message_bus = team_bus.MessageBus(config.mailbox_dir)
@@ -291,9 +300,15 @@ def build_runtime(
                 return f"Permission denied: {exc}"
         return None
     hooks.register("PreToolUse", security_hook)
-    _register_default_hooks(hooks, config, mcp_state)
+    _register_default_hooks(hooks, config, mcp_state, policy)
     if not config.headless:
         from .tool_display import ToolDisplay
+
+        def continue_after_limit(summary):
+            answer = terminal_confirmation(f"\n  {summary}，已达到单轮上限。继续执行？[y/N] ")
+            return answer.strip().lower() in ("y", "yes")
+
+        hooks.register("TurnLimit", continue_after_limit)
 
         display = ToolDisplay()
         hooks.register("ToolStart", display.start)
@@ -312,14 +327,37 @@ def build_runtime(
             remember_file(session, config.workdir, path, offset=offset, limit=limit, cwd=cwd)
         return output
 
+    session_persistence = SessionPersistence(config.workdir)
+    file_checkpoints = None if policy.mode == "confined" else FileCheckpoints(
+        config.workdir, config.checkpoints_dir,
+        session_id=lambda: session_persistence.session_id,
+        turn_id=lambda: session.context_state.get("current_request", {}).get("id"),
+    )
+
+    def checkpointed(change, path, cwd):
+        try:
+            target = builtin.safe_path(config.workdir, path, cwd, policy=policy, write=True)
+        except (ValueError, PermissionError):
+            target = None
+        recorded = file_checkpoints is not None and target is not None and file_checkpoints.before_change(target)
+        output = change()
+        if file_checkpoints is not None and target is not None:
+            if not output.startswith("Error:"):
+                file_checkpoints.after_change(target)
+            elif recorded:
+                file_checkpoints.drop(target)
+        return output
+
     def run_write(path, content, cwd=None):
-        output = builtin.run_write(config.workdir, path, content, cwd, policy=policy)
+        output = checkpointed(lambda: builtin.run_write(config.workdir, path, content, cwd, policy=policy), path, cwd)
         if policy.mode != 'confined' and not output.startswith("Error:"):
             remember_file(session, config.workdir, path, cwd=cwd)
         return output
 
     def run_edit(path, old_text, new_text, cwd=None):
-        output = builtin.run_edit(config.workdir, path, old_text, new_text, cwd, policy=policy)
+        output = checkpointed(
+            lambda: builtin.run_edit(config.workdir, path, old_text, new_text, cwd, policy=policy), path, cwd,
+        )
         if policy.mode != 'confined' and not output.startswith("Error:"):
             remember_file(session, config.workdir, path, cwd=cwd)
         return output
@@ -416,6 +454,11 @@ def build_runtime(
         )
 
     def spawn_teammate(name: str, role: str, prompt: str) -> str:
+        with team_state.lock:
+            crowded = name not in team_state.active and len(team_state.active) >= config.max_teammates
+        if crowded:
+            return (f"Error: 已有 {config.max_teammates} 个队友，达到上限 PAMU_MAX_TEAMMATES。"
+                    "请先让现有队友完成或关闭后再创建。")
         from .working_mode import delegated_scope
         prompt = delegated_scope(session) + "\n\nDelegated task:\n" + prompt
         with model_router.lock:
@@ -570,7 +613,8 @@ def build_runtime(
         team=team_state,
         mcp=mcp_state,
         model=model_router,
-        sessions=SessionPersistence(config.workdir),
+        sessions=session_persistence,
+        checkpoints=file_checkpoints,
     )
 
 

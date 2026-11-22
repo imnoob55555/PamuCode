@@ -42,7 +42,7 @@ def runtime(tmp_path):
     manifest = tmp_path / ".pamu" / "skills" / "review" / "SKILL.md"
     manifest.parent.mkdir(parents=True)
     manifest.write_text("---\nname: Code Review\ndescription: Inspect changes\n---\nRead the diff and report defects.")
-    config = replace(AppConfig.from_env(tmp_path, environ={"MODEL_ID": "test"}), headless=True)
+    config = replace(AppConfig.from_env(tmp_path, environ={"MODEL_ID": "test", "PAMU_TRUST_PROJECT_SKILLS": "1"}), headless=True)
     rt = build_runtime(config, None, adapter=Model())
     yield rt
     rt.sessions.close()

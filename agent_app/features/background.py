@@ -32,6 +32,11 @@ class BackgroundState:
     closed: bool = False
 
 
+def running_task_count(state: BackgroundState) -> int:
+    with state.lock:
+        return sum(task.get("status") == "running" for task in state.tasks.values())
+
+
 def start_background_task(
     state: BackgroundState,
     block,

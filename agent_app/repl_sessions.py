@@ -75,7 +75,11 @@ def delete_current_session(runtime) -> str | None:
             if reason:
                 return reason
             runtime.stop_event.set()
+            session_id = runtime.sessions.session_id
             runtime.sessions.delete_current()
+            checkpoints = getattr(runtime, 'checkpoints', None)
+            if checkpoints is not None:
+                checkpoints.discard_session(session_id)
         return None
     finally:
         runtime.agent_lock.release()

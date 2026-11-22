@@ -204,3 +204,42 @@ def test_output_limit_does_not_limit_regular_workspace_files(tmp_path):
     result = executor.run("dd if=/dev/zero of=large.bin bs=200000 count=1 2>/dev/null")
     assert result.exit_code == 0
     assert (tmp_path / "large.bin").stat().st_size == 200000
+
+
+def test_default_mode_protects_credentials_and_git_control_files(tmp_path):
+    from agent_app.security import ExecutionPolicy, SecurityDenied
+    state = tmp_path / ".pamu"
+    policy = ExecutionPolicy(tmp_path, tmp_path / "install",
+                             state_roots=(state / "task_outputs" / "tool-results", state / "worktrees"))
+    for path in (".pamu/github-token", ".pamu/.settings", ".env", "nested/.env.local", ".ssh/key", ".settings",
+                 ".pamu/worktrees/w/.env", ".pamu/task_outputs/other.txt"):
+        with pytest.raises(SecurityDenied):
+            policy.check_path(tmp_path / path)
+    for path in (".git/hooks/pre-commit", ".git/config", ".pamu/worktrees/w/.git/hooks/post-checkout"):
+        with pytest.raises(SecurityDenied):
+            policy.check_path(tmp_path / path, write=True)
+    for path in (".pamu/task_outputs/tool-results/call.txt", ".pamu/worktrees/w/src/app.py", "agent_app/x.py",
+                 ".git/HEAD", "src/app.py"):
+        assert policy.check_path(tmp_path / path) == (tmp_path / path).resolve()
+    assert policy.check_path(tmp_path / ".pamu/worktrees/w/src/app.py", write=True)
+    assert policy.check_path(tmp_path / "agent_app/x.py", write=True)
+
+
+def test_default_runtime_file_tools_refuse_secrets_but_read_persisted_output(tmp_path, monkeypatch):
+    from dataclasses import replace
+    from agent_app.bootstrap import build_runtime
+    from agent_app.config import AppConfig
+    config = replace(AppConfig.from_env(tmp_path, environ={"MODEL_ID": "m"}), headless=True)
+    (tmp_path / ".env").write_text("TOKEN=fake")
+    config.tool_result_dir.mkdir(parents=True)
+    (config.tool_result_dir / "call.txt").write_text("persisted")
+    runtime = build_runtime(config, None, adapter=object())
+    try:
+        _, handlers = runtime.tools.snapshot()
+        assert handlers["read_file"](".env").startswith("Error:")
+        assert "fake" not in handlers["read_file"](".env")
+        assert handlers["read_file"](".pamu/task_outputs/tool-results/call.txt") == "persisted"
+        assert handlers["write_file"](".git/hooks/pre-commit", "evil").startswith("Error:")
+        assert ".env" not in handlers["glob"](".*")
+    finally:
+        runtime.sessions.close()

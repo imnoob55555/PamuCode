@@ -115,7 +115,7 @@ class Adapter:
         return NS(stop_reason='end_turn', content=[NS(type='text', text='NEXT_TURN_OK')])
     def create(self, **kwargs):
         return NS(content=[])
-config = AppConfig.from_env(Path.cwd(), environ={'MODEL_ID': 'fake'})
+config = AppConfig.from_env(Path.cwd(), environ={'MODEL_ID': 'fake', 'PAMU_SHELL_APPROVAL': 'auto'})
 runtime = build_runtime(config, None, adapter=Adapter())
 main(argv=[], runtime_factory=lambda: runtime, start_threads=lambda rt: [], stop_threads=lambda *args: None)
 print('EXIT_OK')
@@ -213,7 +213,7 @@ print('EXIT_OK')
         _read_until(master, output, PROMPT, deadline)
         os.write(master, b'check approvals\r')
         _read_until(master, output, prompt, deadline)
-        assert b'Potentially destructive command' in output
+        assert b'Command needs approval' in output and b'writes to declined.txt' in output
         assert not (tmp_path / 'declined.txt').exists()
         next_prompt = output.index(prompt) + len(prompt)
         os.write(master, b'n\r')

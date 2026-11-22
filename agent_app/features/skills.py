@@ -6,6 +6,8 @@ override user skills. The directory name is the identifier the model and
 ``/skill`` use; a frontmatter ``name`` is accepted as an alias.
 """
 
+import hashlib
+import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -32,6 +34,11 @@ class SkillState:
     registry: dict[str, dict] = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)
     signature: tuple | None = None
+    project_roots: tuple[Path, ...] = ()
+    trust_store: object | None = None
+    pending: dict[str, dict] = field(default_factory=dict)
+    pending_fingerprint: str = ""
+    asked_fingerprint: str = ""
 
 
 @dataclass(frozen=True)
@@ -87,14 +94,13 @@ def _signature(roots) -> tuple:
     return tuple(entries)
 
 
-def scan_skills(state: SkillState) -> dict[str, dict]:
-    """Rebuild the registry from every root, skipping unreadable skills."""
-    registry: dict[str, dict] = {}
-    errors: list[str] = []
-    for root in dict.fromkeys(state.roots):
+def _read_roots(roots, errors: list[str]) -> dict[str, dict]:
+    """Skills from ``roots`` in priority order; the first root defining a name wins."""
+    found: dict[str, dict] = {}
+    for root in dict.fromkeys(roots):
         for directory in _skill_directories(root):
             manifest = directory / "SKILL.md"
-            if directory.name in registry or not manifest.is_file():
+            if directory.name in found or not manifest.is_file():
                 continue
             try:
                 raw = manifest.read_text(encoding="utf-8").removeprefix("\ufeff").replace("\r\n", "\n")
@@ -103,16 +109,51 @@ def scan_skills(state: SkillState) -> dict[str, dict]:
                 LOGGER.warning("skipped unreadable skill %s: %s", manifest, error)
                 continue
             metadata, body = _parse_skill_frontmatter(raw)
-            registry[directory.name] = {
+            found[directory.name] = {
                 "name": _text(metadata.get("name")) or directory.name,
                 "description": " ".join((_text(metadata.get("description")) or _first_line(body)).split()),
                 "content": raw,
                 "path": manifest,
                 "source": root,
             }
-    state.registry, state.errors = registry, errors
+    return found
+
+
+def _fingerprint(state: SkillState, skills: dict[str, dict]) -> str:
+    entries = sorted(
+        (root_label(state, skill["source"]), key, hashlib.sha256(skill["content"].encode("utf-8")).hexdigest())
+        for key, skill in skills.items()
+    )
+    return hashlib.sha256(json.dumps(entries).encode("utf-8")).hexdigest() if entries else ""
+
+
+def scan_skills(state: SkillState) -> dict[str, dict]:
+    """Rebuild the registry, holding back project skills the user has not trusted."""
+    errors: list[str] = []
+    project = [root for root in state.roots if root in state.project_roots]
+    pending = _read_roots(project, errors) if project and state.trust_store is not None else {}
+    fingerprint = _fingerprint(state, pending)
+    trusted = not pending or state.trust_store.is_trusted(state.workspace, fingerprint)
+    roots = state.roots if trusted else tuple(root for root in state.roots if root not in project)
+    state.registry = _read_roots(roots, errors if trusted else [])
+    state.errors = errors
+    state.pending, state.pending_fingerprint = ({}, "") if trusted else (pending, fingerprint)
     state.signature = _signature(state.roots)
-    return registry
+    return state.registry
+
+
+def trust_project_skills(state: SkillState) -> list[str]:
+    """Trust the current set of project skills; return the names now loaded."""
+    refresh_skills(state)
+    names = sorted(state.pending)
+    if names:
+        state.trust_store.trust(state.workspace, state.pending_fingerprint)
+        scan_skills(state)
+    return names
+
+
+def describe_pending(state: SkillState) -> str:
+    return ", ".join(f"{key} [{root_label(state, skill['source'])}]" for key, skill in sorted(state.pending.items()))
 
 
 def refresh_skills(state: SkillState) -> dict[str, dict]:
@@ -157,6 +198,9 @@ def list_skills(state: SkillState) -> str:
         lines = ["(no skills found)", "Searched, highest priority first:"]
         lines += [f"- {root_label(state, root)}" for root in dict.fromkeys(state.roots)]
         lines.append("Add a skill as <directory>/<name>/SKILL.md in one of these directories.")
+    if state.pending:
+        lines.append(f"Project skills awaiting trust (not loaded): {describe_pending(state)}. "
+                     "Ask the user to run /skill trust to load them.")
     if state.errors:
         lines.append(f"Skipped {len(state.errors)} unreadable skill(s): " + "; ".join(state.errors))
     return "\n".join(lines)
@@ -165,6 +209,8 @@ def list_skills(state: SkillState) -> str:
 def load_skill(state: SkillState, name: str) -> str:
     key = resolve_skill(state, name)
     if key is None:
+        if isinstance(name, str) and name.strip() in state.pending:
+            return f"Skill {name} belongs to this project and is not trusted yet; ask the user to run /skill trust."
         available = ", ".join(state.registry) or "(none)"
         return f"Skill not found: {name}. Available skills: {available}"
     return state.registry[key]["content"]

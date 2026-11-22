@@ -25,6 +25,11 @@ def _within(path: Path, root: Path) -> bool:
     return child == parent or child.startswith(parent + '/')
 
 
+def _secret(parts: tuple[str, ...]) -> bool:
+    return any(part in SECRET_DIRECTORIES or part == ".settings" or part == ".env" or part.startswith(".env.")
+               for part in parts)
+
+
 def child_environment(source: Mapping[str, str], *, scratch: Path) -> dict[str, str]:
     """Allowlist rather than guessing names of every possible credential."""
     return {
@@ -43,6 +48,7 @@ class ExecutionPolicy:
     install_root: Path
     mode: str = "off"
     protected_paths: tuple[Path, ...] = ()
+    state_roots: tuple[Path, ...] = ()
 
     def __post_init__(self):
         if self.mode not in {"off", "confined"}:
@@ -50,6 +56,7 @@ class ExecutionPolicy:
         object.__setattr__(self, "workspace", Path(self.workspace).resolve())
         object.__setattr__(self, "install_root", Path(self.install_root).resolve())
         object.__setattr__(self, "protected_paths", tuple(Path(path).resolve() for path in self.protected_paths))
+        object.__setattr__(self, "state_roots", tuple(Path(path).resolve() for path in self.state_roots))
 
     @property
     def runtime_write_roots(self) -> tuple[Path, ...]:
@@ -64,9 +71,9 @@ class ExecutionPolicy:
         if not resolved.is_relative_to(self.workspace):
             raise SecurityDenied("Path escapes workspace")
         if self.mode == "off":
-            return resolved
+            return self._check_default(resolved, write)
         parts = tuple(part.casefold() for part in resolved.relative_to(self.workspace).parts)
-        secret = any(part in SECRET_DIRECTORIES or part == ".settings" or part == ".env" or part.startswith(".env.") for part in parts)
+        secret = _secret(parts)
         protected = any(_within(resolved, root) for root in self.protected_paths)
         if write:
             protected |= any(_within(resolved, root) for root in self.runtime_write_roots)
@@ -79,6 +86,21 @@ class ExecutionPolicy:
             protected = True
         if secret or protected:
             raise SecurityDenied("Access to protected runtime or credential path denied")
+        return resolved
+
+    def _check_default(self, resolved: Path, write: bool) -> Path:
+        """Without a sandbox, still keep credentials and git control files out of reach.
+
+        Runtime state the model is pointed at (persisted tool output, teammate
+        worktrees) lives under ``.pamu``; those roots are judged from their own
+        top so files such as ``.env`` inside them stay protected.
+        """
+        base = next((root for root in self.state_roots if resolved.is_relative_to(root)), self.workspace)
+        parts = tuple(part.casefold() for part in resolved.relative_to(base).parts)
+        if _secret(parts):
+            raise SecurityDenied("Access to credential or runtime state path denied")
+        if write and ".git" in parts and parts[parts.index(".git") + 1:][:1] in (("hooks",), ("config",)):
+            raise SecurityDenied("Writing git hooks or git config is denied")
         return resolved
 
     def metadata(self, *, backend: str | None = None) -> dict:

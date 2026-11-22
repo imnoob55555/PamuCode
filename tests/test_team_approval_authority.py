@@ -100,3 +100,20 @@ def test_cancel_during_trusted_review_discards_late_allow():
         finish.set()
         assert decision.result() is False
     assert not authority.consume('request', 'worker', request)
+
+
+def test_spawning_past_the_teammate_limit_is_refused(tmp_path, monkeypatch):
+    from dataclasses import replace
+    from agent_app import bootstrap
+    from agent_app.config import AppConfig
+    config = replace(AppConfig.from_env(tmp_path, environ={"MODEL_ID": "m"}), max_teammates=1)
+    runtime = bootstrap.build_runtime(config, None, adapter=object())
+    try:
+        runtime.team.active["first"] = {"name": "first", "role": "r", "status": "running"}
+        spawned = []
+        monkeypatch.setattr(bootstrap.teammates, "spawn_teammate_thread", lambda *a, **k: spawned.append(k) or "ok")
+        _, handlers = runtime.tools.snapshot()
+        assert "PAMU_MAX_TEAMMATES" in handlers["spawn_teammate"]("second", "role", "task")
+        assert spawned == []
+    finally:
+        runtime.sessions.close()
