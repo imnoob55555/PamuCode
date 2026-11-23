@@ -22,6 +22,7 @@ from ..runtime import RuntimeContext
 from ..working_mode import tool_denial
 from ..thinking import plan_request, strip_thinking_blocks
 from ..tools.builtin import resolve_tool_cwd
+from ..tools.visibility import offered_tools
 from ..tools.executor import (
     TOOL_REPEAT_ERROR, TOOL_REPEAT_STOP, ToolRepeatLimit, execute_tool, should_run_background,
 )
@@ -167,7 +168,7 @@ def run_agent_loop(runtime: RuntimeContext) -> str | None:
         tools, handlers = snapshot_mcp_tools(
             runtime.mcp, *runtime.tools.snapshot()
         )
-        tools = [tool for tool in tools if not tool_denial(session, tool["name"])]
+        tools = offered_tools(runtime, [tool for tool in tools if not tool_denial(session, tool["name"])])
         _update_context(runtime, tools)
         system = runtime.prompt_builder.build(session.context)
         thinking, request_max_tokens = plan_request(

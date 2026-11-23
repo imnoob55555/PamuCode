@@ -225,7 +225,8 @@ def normalize_results(runtime, messages, limit):
 def estimate_current_context(runtime):
     """Estimate the next request from retained context without calling a model."""
     tools, _ = snapshot_mcp_tools(runtime.mcp, *runtime.tools.snapshot())
-    tools = [tool for tool in tools if not tool_denial(runtime.session, tool['name'])]
+    from ..tools.visibility import offered_tools
+    tools = offered_tools(runtime, [tool for tool in tools if not tool_denial(runtime.session, tool['name'])])
     from .context import build_context
     system = runtime.prompt_builder.build(build_context(runtime, tools))
     thinking, max_tokens = plan_request(
