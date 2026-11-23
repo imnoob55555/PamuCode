@@ -91,19 +91,12 @@ def test_runtime_records_only_successful_tools(tmp_path):
     runtime.sessions.close()
 
 
-def test_memory_selector_and_injection_are_bounded(tmp_path):
-    from agent_app.features.memory import build_request_messages_with_memories
-    from agent_app.core.context_materials import text_tokens
-    store = MemoryStore(tmp_path, tmp_path/'MEMORY.md')
-    for i in range(70):
-        (tmp_path/f'{i:02}.md').write_text('---\nname: note\ndescription: ' + 'x'*10000 + '\n---\n' + 'BODY'*10000)
-    prompts = []
-    def summarize(prompt, tokens):
-        prompts.append(prompt)
-        return '[0, 1, 2]'
-    messages = [{'role': 'user', 'content': 'question'}]
-    output = build_request_messages_with_memories(store, messages, summarize, max_tokens=120)
-    suffix = output[0]['content'][len('question\n\n'):]
-    assert text_tokens(suffix) <= 120
-    assert len(prompts[0]) < 7000
-    assert messages == [{'role': 'user', 'content': 'question'}]
+def test_memory_index_injection_is_bounded(tmp_path):
+    from agent_app.core.context_materials import optional_materials, text_tokens
+    runtime = rt(tmp_path)
+    runtime.memory.root.mkdir()
+    runtime.memory.index_path.write_text(''.join(f'- line {i}\n' for i in range(500)))
+    context = optional_materials(runtime, 100000)
+    assert '- line 199' in context['memories'] and '- line 200' not in context['memories']
+    assert 'MEMORY.md truncated' in context['memories']
+    assert text_tokens(optional_materials(runtime, 200)['memories']) <= 100

@@ -43,6 +43,8 @@ def build_context(runtime, tools: list[dict]) -> dict:
         "tool_fingerprint": tool_fingerprint,
         "current_time": runtime.session.context_state.get('turn_time') or datetime.now().isoformat(timespec="seconds"),
         "pinned_constraints": '\n'.join(p['text'] for p in runtime.session.context_state.get('pins', [])),
+        "memory_writable": (bool(getattr(runtime.config, "auto_memory", True)) and not getattr(runtime.config, "headless", False)
+                            and working_mode(runtime.session) != "plan"),
         "project_rules": _project_rules(runtime.config.workdir, confined=getattr(runtime.config, 'sandbox_mode', 'off') == 'confined'),
     }
 

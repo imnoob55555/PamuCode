@@ -36,6 +36,7 @@ def test_slash_matches_names_descriptions_and_hides_for_normal_text():
         "/background",
         "/cron",
         "/memory",
+        "/dream",
         "/undo",
         "/stop",
         "/context",

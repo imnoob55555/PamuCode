@@ -16,7 +16,7 @@ Version 0.1.0 is experimental and requires Python 3.13 or newer.
 - A rounded prompt box with slash suggestions, `@` file completion, and input history. The footer shows workspace, git branch, context usage, model, thinking level, and work mode.
 - Tool calls render as `● Read(path)` with a `⎿` summary line, and edits show `+added −removed`. Streamed Markdown is formatted line by line with syntax-highlighted code blocks.
 - Planning and execution modes, `/undo` for file changes, resumable sessions, context compaction, and pinned constraints.
-- Automatic memory, todos, shared tasks, scheduled jobs, background commands, subagents, teammates, and Git worktrees.
+- Cross-session memory with offline consolidation, todos, shared tasks, scheduled jobs, background commands, subagents, teammates, and Git worktrees.
 - Tool hooks, an MCP discovery scaffold, bounded headless execution, and an evaluation harness.
 
 ## Quick start
@@ -112,7 +112,8 @@ Ollama needs no key. Compatible services accept an optional `OPENAI_COMPATIBLE_A
 | `/resume [--last \| ID]` | Switch to another saved session |
 | `/delete` | Delete the current session after confirmation and exit |
 | `/undo` | Undo the previous turn's file-tool changes |
-| `/memory [forget <name>]` | List or delete automatic memories |
+| `/memory [forget <path>]` | List or delete memory notes |
+| `/dream` | Review recent sessions and consolidate memory |
 | `/background` / `/stop <ID \| all>` | List or stop background commands |
 | `/cron [cancel <ID \| all>]` | List or cancel scheduled jobs |
 | `/help` / `/h` | Show the command list |
@@ -150,7 +151,15 @@ Sessions are stored per workspace in `.pamu/sessions/`. Restoring a session repl
 
 ### Memory
 
-After each turn, PamuCode asks the model to extract lasting preferences and project facts from what you typed and what it answered. Tool output is left out. New memories are announced, and anything that looks like a credential is never saved. Before memories are consolidated, the old files are copied to `.pamu/memory/.backup/`, keeping the five most recent copies. Set `PAMU_AUTO_MEMORY=off` to turn this off.
+Memory has three layers, following Anthropic's [The components of agent memory](https://www.anthropic.com/research/components-of-agent-memory):
+
+- **Transcripts**: past sessions in `.pamu/sessions/`. The model can look them up with `transcript_search` and `transcript_read`. It sees what you typed, what it answered and which tools it called, but never tool output.
+- **Notes**: Markdown files under `.pamu/memory/`, optionally grouped into topic folders (up to three levels). The model reads and writes them with the `memory` tool and decides for itself what is worth keeping: things you ask it to remember, or things clearly useful later, such as preferences, decisions and their reasons, verified rules, and pitfalls. Anything the code or git history already says does not belong there. Content that looks like a credential is refused. Every write shows up in the tool call log.
+- **`MEMORY.md`**: the index of the notes. The first 200 lines (at most 25 KB) are loaded at the start of every session; other notes are read on demand. Until a `MEMORY.md` exists, a listing of the notes is loaded instead.
+
+Notes written in the middle of a task can be wrong or go stale. `/dream` runs an offline consolidation pass: it checks notes against recent transcripts, fixes wrong ones, adds what was missed, merges duplicates, and trims `MEMORY.md` back to a short index. Notes are backed up to `.pamu/memory/.backup/` first (the five most recent copies are kept); if the pass fails or you press Ctrl+C, the notes are restored. When you leave the REPL, PamuCode consolidates automatically if three or more sessions with real dialogue have accumulated since the last pass, or if the last pass was more than 24 hours ago and there are new sessions. Press Ctrl+C to skip it.
+
+`/memory` lists the notes and `/memory forget <path>` deletes one. With `PAMU_AUTO_MEMORY=off` the model can only read memory and nothing is consolidated on exit; `/dream` still works on request. Memory is read-only in plan mode, and the memory tools are not available in `confined` sandbox mode.
 
 ### Skills
 
@@ -206,7 +215,7 @@ Precedence, highest first:
 | `PAMU_MAX_TURN_MODEL_CALLS` / `_TOOL_CALLS` / `_TOKENS` | Per-turn limits, defaults 50 / 200 / 2,000,000 |
 | `PAMU_MAX_TEAMMATES` / `PAMU_MAX_BACKGROUND_TASKS` | Concurrent teammates and background commands, defaults 4 / 8 |
 | `PAMU_TRUST_PROJECT_SKILLS` | `1` loads workspace skills without asking |
-| `PAMU_AUTO_MEMORY` | `on` (default) or `off` |
+| `PAMU_AUTO_MEMORY` | `on` (default) or `off`: the model can only read memory and nothing is consolidated on exit |
 | `PAMU_SHELL_APPROVAL` | `ask` (default) or `auto`. `auto` runs every shell command except the refused ones without asking, which is risky |
 | `LOG_LEVEL` | Log verbosity |
 

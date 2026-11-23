@@ -32,6 +32,9 @@ TITLES = {
     "history_search": "Search history",
     "history_read": "Read history",
     "compact": "Compact",
+    "memory": "Memory",
+    "transcript_search": "Search sessions",
+    "transcript_read": "Read session",
 }
 DENIALS = {
     "Permission denied by user": "Denied by user",
@@ -86,7 +89,10 @@ def arguments(name: str, tool_input) -> str:
         return path
     key = {"bash": "command", "write_file": "path", "edit_file": "path", "glob": "pattern",
            "load_skill": "name", "task": "description", "history_search": "query",
-           "history_read": "ref", "compact": "focus"}.get(name)
+           "history_read": "ref", "compact": "focus", "transcript_search": "query",
+           "transcript_read": "session"}.get(name)
+    if name == "memory":
+        return safe_preview(f"{tool_input.get('command', '')} {tool_input.get('path', '')}".strip(), 200)
     if key is not None:
         return safe_preview(str(tool_input.get(key, "")), 200)
     if name.startswith("mcp__"):

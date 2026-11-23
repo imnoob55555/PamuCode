@@ -24,6 +24,7 @@ from .core.loop import run_agent_loop
 from .features.background import (
     close_background_tasks, collect_background_results, describe_background_tasks, stop_background_tasks,
 )
+from .features.dreaming import maybe_dream_on_exit
 from .features.sessions import checkpoint, interrupt_turn
 from .features.session_store import SessionError
 from .features import auth, skills
@@ -513,18 +514,48 @@ def _handle_slash_command(
         if runtime is None:
             notify_or_print(ui, LOGIN_HINT, print_fn=print_fn)
             return
-        from .features.memory import forget_memory, list_memory_files
+        from .features.memory import forget_note, list_notes
         action, _, target = argument.partition(' ')
         if not action:
-            items = list_memory_files(runtime.memory)
-            state = '' if getattr(runtime.config, 'auto_memory', True) else '（自动记忆已关闭：PAMU_AUTO_MEMORY=off）\n'
-            print_fn(state + ('\n'.join(f"{item['name']}  [{item['type']}]  {item['description']}" for item in items)
-                              or '没有记忆。'))
+            notes = list_notes(runtime.memory)
+            index = runtime.memory.index_path
+            lines = [] if getattr(runtime.config, 'auto_memory', True) else [
+                '（PAMU_AUTO_MEMORY=off：模型只读记忆，退出时不自动整理）']
+            has_index = index.is_file() and not index.is_symlink()
+            if has_index:
+                count = len(index.read_text(encoding='utf-8', errors='replace').splitlines())
+                lines.append(f"MEMORY.md  {count} 行（每个会话加载前 200 行）")
+            lines += [f"{note['path']}  {note['summary']}".rstrip() for note in notes]
+            print_fn('\n'.join(lines if has_index or notes else lines + ['没有记忆。']))
         elif action == 'forget' and target.strip():
-            name = forget_memory(runtime.memory, target)
-            notify_or_print(ui, f"已删除记忆：{name}" if name else f"记忆不存在：{target.strip()}", print_fn=print_fn)
+            path = forget_note(runtime.memory, target)
+            notify_or_print(ui, f"已删除记忆：{path}" if path else f"记忆不存在：{target.strip()}", print_fn=print_fn)
         else:
-            notify_or_print(ui, '用法：/memory 或 /memory forget <名称>', print_fn=print_fn)
+            notify_or_print(ui, '用法：/memory 或 /memory forget <路径>', print_fn=print_fn)
+        return
+    if command == '/dream':
+        if runtime is None:
+            notify_or_print(ui, LOGIN_HINT, print_fn=print_fn)
+            return
+        from .features.dreaming import dream_available, run_dream
+        reason = dream_available(runtime)
+        if reason:
+            notify_or_print(ui, reason, print_fn=print_fn)
+            return
+        if not runtime.agent_lock.acquire(blocking=False):
+            notify_or_print(ui, '代理正在执行任务，结束后再整理记忆。', print_fn=print_fn)
+            return
+        try:
+            print_fn(theme.paint('正在整理记忆（Ctrl+C 中断）…', 'muted'))
+            report = run_dream(runtime)
+            print_fn(report.describe() + (f"\n{report.summary}" if report.summary else ''))
+        except KeyboardInterrupt:
+            notify_or_print(ui, '已中断记忆整理，记忆保持原样。', print_fn=print_fn)
+        except Exception as error:
+            LOGGER.warning('dream failed', exc_info=True)
+            notify_or_print(ui, f'记忆整理失败，记忆保持原样：{error}', print_fn=print_fn)
+        finally:
+            runtime.agent_lock.release()
         return
     if command == '/cron':
         if runtime is None:
@@ -976,6 +1007,7 @@ def main(
     client_factory=None,
     ui=None,
     configuration_check=None,
+    dream_on_exit=maybe_dream_on_exit,
 ) -> int | None:
     args = list(sys.argv[1:]) if argv is None else list(argv)
     if args and args[0] == "run":
@@ -1190,6 +1222,8 @@ def main(
                                 checkpoint(runtime)
                         finally:
                             lock.release()
+                if ui is not None and isinstance(runtime, RuntimeContext) and exit_code != 2 and save_on_exit:
+                    dream_on_exit(runtime)
             except SessionError as error:
                 print(f"会话错误：{error}", file=sys.stderr)
                 exit_code = 2

@@ -315,18 +315,15 @@ def test_worker_stops_on_persistence_failure(runtime_factory, monkeypatch, capsy
     assert '无法保存会话' in capsys.readouterr().out
 
 
-def test_swallowed_summary_persistence_error_still_prevents_model_request(runtime_factory, monkeypatch):
+def test_persistence_stopped_mid_round_still_prevents_model_request(runtime_factory, monkeypatch):
     import agent_app.core.loop as loop
     rt = runtime_factory([text_response()])
     rt.sessions = SessionPersistence(rt.config.workdir)
-    def swallowed(memory, messages, summarize, **kwargs):
+    original = loop.register_history_tools
+    def stopped(runtime):
+        original(runtime)
         rt.sessions.close()
-        try:
-            summarize('memory')
-        except Exception:
-            pass
-        return messages
-    monkeypatch.setattr(loop, 'build_request_messages_with_memories', swallowed)
+    monkeypatch.setattr(loop, 'register_history_tools', stopped)
     with pytest.raises(SessionError):
         run_agent_turn(rt, 'go')
     assert rt.llm.requests == []

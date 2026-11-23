@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import copy
 import json
 import time
 
@@ -12,15 +11,10 @@ from ..features.background import (
     collect_background_results,
     start_background_task,
 )
-from ..adapters.common import generic_blocks, null_progress, output_text, value as _block_value
+from ..adapters.common import null_progress, value as _block_value
 from ..features.mcp import snapshot_mcp_tools
 from ..features.sessions import checkpoint
 from ..features.session_store import SessionError
-from ..features.memory import (
-    build_request_messages_with_memories,
-    consolidate_memories,
-    extract_memories,
-)
 from ..features.scheduler import consume_cron_queue
 from ..features.teams.protocol import collect_lead_inbox
 from ..logging_setup import get_logger
@@ -56,46 +50,6 @@ LOGGER = get_logger("pamu.loop")
 
 def _has_tool_use(content) -> bool:
     return any(_block_value(block, "type") == "tool_use" for block in content)
-
-
-def _extract_text(content) -> str:
-    return output_text(content).strip()
-
-
-def _summarize(runtime: RuntimeContext, payload, max_tokens: int = 2_000) -> str:
-    checkpoint(runtime, status="running")
-    router = runtime.model
-    assert router is not None
-    if isinstance(payload, list):
-        portable = [
-            {"role": message["role"], "content": generic_blocks(message["content"])}
-            for message in payload
-        ]
-        conversation = json.dumps(portable, ensure_ascii=False, default=str)
-        prompt = (
-            "Summarize this coding-agent conversation so work can continue.\n"
-            "Preserve: 1. current goal, 2. key findings/decisions, "
-            "3. files read/changed, 4. remaining work, 5. user constraints.\n"
-            "Be compact but concrete.\n\n" + conversation
-        )
-    else:
-        prompt = str(payload)
-    auxiliary = prepare_budget(runtime, None, [{'role': 'user', 'content': prompt}], [], max_tokens)
-    if auxiliary.input_tokens > auxiliary.budget.input_limit:
-        raise ValueError('辅助模型请求超过上下文预算')
-    adapter = runtime.llm
-    if hasattr(adapter, 'with_context_window'):
-        adapter = adapter.with_context_window(auxiliary.budget.window)
-    progress = null_progress if runtime.config.headless else getattr(adapter, 'progress', null_progress)
-    with progress('正在处理会话记忆'):
-        response = adapter.create(
-            model=router.primary_model,
-            system=None,
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=auxiliary.budget.output_tokens,
-            tools=None,
-        )
-    return _extract_text(response.content) or "(empty summary)"
 
 
 def _format_team_inbox(messages: list[dict]) -> str:
@@ -177,15 +131,8 @@ def run_agent_loop(runtime: RuntimeContext) -> str | None:
         runtime.config.max_turn_model_calls, runtime.config.max_turn_tool_calls, runtime.config.max_turn_tokens,
     )
 
-    def summarize(payload, max_tokens=2_000):
-        return _summarize(runtime, payload, max_tokens)
-
     def request_history(thinking):
-        request = build_request_messages_with_memories(
-            runtime.memory, messages, summarize,
-            max_tokens=session.context.get('optional_remaining_tokens', 0),
-        )
-        return request if thinking else strip_thinking_blocks(request)
+        return messages if thinking else strip_thinking_blocks(messages)
 
     while True:
         if budget is not None and budget.exceeded():
@@ -206,7 +153,6 @@ def run_agent_loop(runtime: RuntimeContext) -> str | None:
             pending_texts.append(_format_team_inbox(team_messages))
         append_user_text_blocks(messages, pending_texts)
 
-        pre_compact_messages = copy.deepcopy(messages)
         register_history_tools(runtime)
 
         if session.rounds_since_todo >= 3:
@@ -426,14 +372,6 @@ def run_agent_loop(runtime: RuntimeContext) -> str | None:
                 continue
             if _wait_for_team_activity(runtime):
                 continue
-            remember = (not runtime.config.headless and getattr(runtime.config, 'auto_memory', True)
-                        and getattr(runtime.config, 'sandbox_mode', 'off') != 'confined')
-            if remember:
-                for name in extract_memories(runtime.memory, pre_compact_messages, summarize) or []:
-                    print(theme.success(f"已记住：{name}（/memory 查看，/memory forget {name} 删除）"))
-            checkpoint(runtime)
-            if remember:
-                consolidate_memories(runtime.memory, summarize)
             checkpoint(runtime)
             _update_context(runtime)
             LOGGER.info("turn complete")

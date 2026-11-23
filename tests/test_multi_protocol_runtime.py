@@ -6,7 +6,7 @@ import pytest
 
 from agent_app.bootstrap import build_runtime
 from agent_app.config import AppConfig
-from agent_app.core.loop import run_agent_loop, _summarize
+from agent_app.core.loop import run_agent_loop
 from agent_app.adapters.common import TextBlock, ModelResponse
 from tests.test_agent_app_loop import tool_results
 
@@ -34,10 +34,6 @@ def protocol_adapter(protocol):
 
 @pytest.mark.parametrize('protocol', ['openai_responses', 'openai_chat', 'ollama'])
 def test_real_loop_executes_tool_and_returns_result_through_protocol(tmp_path, protocol, monkeypatch):
-    # Memory selection/extraction is separately exercised below; keep this
-    # conversation focused on the two streaming turns and real tool executor.
-    monkeypatch.setattr('agent_app.core.loop.extract_memories', lambda *args, **kw: None)
-    monkeypatch.setattr('agent_app.core.loop.consolidate_memories', lambda *args, **kw: None)
     adapter, sent = protocol_adapter(protocol)
     runtime = build_runtime(AppConfig.from_env(tmp_path, environ={'MODEL_ID': 'local', 'PAMU_CONTEXT_WINDOW': '256000'}), object(), adapter=adapter, protocol=protocol)
     executed = []
@@ -66,8 +62,7 @@ def test_subagents_summary_and_teammates_keep_selected_adapter(tmp_path, monkeyp
     runtime = build_runtime(AppConfig.from_env(tmp_path, environ={'MODEL_ID': 'local', 'PAMU_CONTEXT_WINDOW': '256000'}), object(), adapter=adapter, provider='ollama', protocol='ollama')
     handlers = runtime.tools.snapshot()[1]
     assert handlers['task']('inspect') == 'result'
-    assert _summarize(runtime, 'summarize') == 'result'
-    assert [r['model'] for r in calls] == ['local', 'local']
+    assert [r['model'] for r in calls] == ['local']
     assert calls[0]['messages'][0]['content'] == 'inspect'
     teammate = []
     def spawn(team, bus, llm, **kwargs):
@@ -102,19 +97,3 @@ def test_local_connection_failure_mentions_service_address(capsys):
     history = []
     append_unrecoverable_error(history, httpx.ConnectError('connection refused'))
     assert '服务地址' in capsys.readouterr().out
-
-
-def test_summary_uses_portable_content_without_native_signatures(tmp_path):
-    calls = []
-    adapter = SimpleNamespace(create=lambda **kwargs: calls.append(kwargs) or ModelResponse([TextBlock('summary')], 'end_turn'))
-    runtime = build_runtime(AppConfig.from_env(tmp_path, environ={'MODEL_ID': 'local', 'PAMU_CONTEXT_WINDOW': '256000'}), object(), adapter=adapter, provider='ollama', protocol='ollama')
-    history = [{'role': 'assistant', 'content': [
-        SimpleNamespace(type='thinking', thinking='private-thought', signature='private-signature', _pamu_scope=('anthropic_messages', 'old', 'old')),
-        {'type': 'redacted_thinking', 'data': 'private-data'},
-        TextBlock('visible-answer'),
-    ]}]
-    assert _summarize(runtime, history) == 'summary'
-    prompt = calls[0]['messages'][0]['content']
-    assert 'visible-answer' in prompt
-    assert 'private-' not in prompt
-    assert '_pamu_scope' not in prompt

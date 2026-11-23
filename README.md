@@ -16,7 +16,7 @@ PamuCode 是一个用 Python 写的终端编程智能体。它把模型驱动的
 - 圆角输入框，支持斜杠命令提示、`@` 文件补全和输入历史；底栏显示工作区、Git 分支、上下文占用、模型、思考程度和工作模式。
 - 工具调用以 `● Read(path)` 加 `⎿` 摘要行显示，编辑会给出 `+新增 −删除` 行数；流式 Markdown 逐行渲染，代码块带语法高亮。
 - 规划模式和执行模式、`/undo` 撤销文件修改、可恢复的会话、上下文压缩和固定约束。
-- 自动记忆、待办、共享任务、定时任务、后台命令、子智能体、队友协作和 Git worktree。
+- 跨会话记忆与离线整理、待办、共享任务、定时任务、后台命令、子智能体、队友协作和 Git worktree。
 - 工具钩子、MCP 发现框架，以及有预算限制的无界面执行和评测工具。
 
 ## 快速开始
@@ -112,7 +112,8 @@ Ollama 不需要 Key，兼容服务可以选配 `OPENAI_COMPATIBLE_API_KEY`。�
 | `/resume [--last \| ID]` | 切换到其他已保存会话 |
 | `/delete` | 确认后删除当前会话并退出 |
 | `/undo` | 撤销上一轮通过文件工具做的修改 |
-| `/memory [forget <名称>]` | 查看或删除自动记忆 |
+| `/memory [forget <路径>]` | 查看或删除记忆笔记 |
+| `/dream` | 回顾近期会话，整理和修正记忆 |
 | `/background` / `/stop <ID \| all>` | 查看或停止后台命令 |
 | `/cron [cancel <ID \| all>]` | 查看或取消定时任务 |
 | `/help` / `/h` | 显示命令列表 |
@@ -150,7 +151,15 @@ Ollama 不需要 Key，兼容服务可以选配 `OPENAI_COMPATIBLE_API_KEY`。�
 
 ### 记忆
 
-每轮结束后，PamuCode 会让模型从你说的话和它的回答里提取长期有用的偏好和项目事实，工具输出不参与提取。新记忆会提示出来，看起来像凭证的内容不会保存。整理记忆前会把旧文件备份到 `.pamu/memory/.backup/`，保留最近 5 份。设 `PAMU_AUTO_MEMORY=off` 关闭。
+记忆分三层，设计参考了 Anthropic 的文章 [The components of agent memory](https://www.anthropic.com/research/components-of-agent-memory)：
+
+- **会话记录**：`.pamu/sessions/` 里的历史会话。模型可以用 `transcript_search` 和 `transcript_read` 查以前的会话，只能看到你说的话、模型的回答和它调用了哪些工具，看不到工具输出。
+- **记忆笔记**：`.pamu/memory/` 下的 Markdown 文件，可以按主题分子目录（最多 3 层）。模型通过 `memory` 工具读写，什么值得记由它自己判断：你要求它记住的，或者明显以后用得上的，比如偏好、做过的决定和理由、验证过的规则、踩过的坑。代码和 git 里能直接查到的东西不该记。看起来像凭证的内容会被拒绝。每次写入都会显示在工具调用记录里。
+- **`MEMORY.md`**：笔记的索引，每个会话开始时加载前 200 行（最多 25 KB），其余笔记按需读取。还没有 `MEMORY.md` 时，加载的是笔记列表。
+
+在会话里随手写下的笔记难免有错，或者过一段时间就过时了。`/dream` 会启动一个离线整理过程：对照最近的会话记录检查笔记，改掉错的，补上漏记的，合并重复的，把 `MEMORY.md` 压回一个简短的索引。整理前会把笔记备份到 `.pamu/memory/.backup/`（保留最近 5 份）；中途失败或按 Ctrl+C，笔记会恢复原样。退出 REPL 时，如果自上次整理以来积累了 3 个以上有实际对话的会话，或者上次整理已超过 24 小时且有新会话，会自动整理一次，按 Ctrl+C 可以跳过。
+
+`/memory` 列出笔记，`/memory forget <路径>` 删除一条。设 `PAMU_AUTO_MEMORY=off` 后，模型只能读记忆，退出时也不再自动整理，`/dream` 仍可手动使用。规划模式下记忆只读。沙箱 `confined` 模式下不提供记忆工具。
 
 ### 技能
 
@@ -206,7 +215,7 @@ Read the diff, identify defects, and report findings before editing.
 | `PAMU_MAX_TURN_MODEL_CALLS` / `_TOOL_CALLS` / `_TOKENS` | 单轮上限，默认 50 / 200 / 2,000,000 |
 | `PAMU_MAX_TEAMMATES` / `PAMU_MAX_BACKGROUND_TASKS` | 并发队友数和后台命令数，默认 4 / 8 |
 | `PAMU_TRUST_PROJECT_SKILLS` | 设为 `1` 时不询问直接加载项目技能 |
-| `PAMU_AUTO_MEMORY` | `on`（默认）或 `off` |
+| `PAMU_AUTO_MEMORY` | `on`（默认）或 `off`：关闭后模型只读记忆，退出时不自动整理 |
 | `PAMU_SHELL_APPROVAL` | `ask`（默认）或 `auto`。`auto` 会不经询问运行除被拒命令以外的所有 Shell 命令，有风险 |
 | `LOG_LEVEL` | 日志级别 |
 

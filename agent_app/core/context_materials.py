@@ -75,11 +75,6 @@ def remember_skill(session, name, content):
     del records[:-32]
 
 
-def _read_prefix(path, bytes_limit):
-    with path.open('r', encoding='utf-8') as stream:
-        return stream.read(max(0, bytes_limit))
-
-
 def optional_materials(runtime, tokens):
     """Account index, catalogs, loaded skill text and file evidence together."""
     if getattr(runtime.config, 'sandbox_mode', 'off') == 'confined':
@@ -146,12 +141,8 @@ def optional_materials(runtime, tokens):
             header += ' [当前不可读取]'
         file_parts.append(header)
     allocate('recent_files', '\n\n'.join(file_parts), remaining // 2)
-    try:
-        path = runtime.memory.index_path
-        memory = _read_prefix(path, remaining * 2) if path.is_file() and not path.is_symlink() else ''
-    except (OSError, UnicodeError):
-        memory = ''
-    allocate('memories', memory, remaining // 2)
+    from ..features.memory import injected_index
+    allocate('memories', injected_index(runtime.memory), remaining // 2)
     catalog = '\n'.join(
         f"- {key[:128]}: {skill['description'][:256]}"
         + (f" (name: {skill['name'][:128]})" if skill['name'].casefold() != key.casefold() else '')

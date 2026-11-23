@@ -1,27 +1,67 @@
-import json
+"""Workspace memory notes, the agent-written layer of the memory hierarchy.
+
+transcripts (past sessions, read-only) -> notes (``.pamu/memory/**/*.md``)
+-> ``MEMORY.md`` (index loaded into every session). The model writes notes
+through the ``memory`` tool when it judges something worth keeping; dreaming
+(``features/dreaming.py``) later corrects and reorganizes them offline.
+"""
+
+import hashlib
 import re
 import shutil
-import time
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
-from ..adapters.common import output_text
 from ..logging_setup import get_logger
 
 LOGGER = get_logger("pamu.memory")
-MEMORY_TYPES = ["user", "feedback", "project", "reference"]
-CONSOLIDATE_THRESHOLD = 10
+INDEX_NAME = "MEMORY.md"
+INDEX_MAX_LINES = 200
+INDEX_MAX_BYTES = 25_000
+NOTE_MAX_BYTES = 32_000
+MAX_DEPTH = 3
+MAX_NOTES = 200
 BACKUPS_KEPT = 5
 SECRET_PATTERN = re.compile(
     r"sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16}"
     r"|xox[abpr]-[A-Za-z0-9-]{10,}|-----BEGIN [A-Z ]*PRIVATE KEY-----"
     r"|(?i:api[_-]?key|token|secret|password|passwd)\s*[:=]\s*['\"]?[A-Za-z0-9_\-./+=]{12,}"
 )
-_INTERNAL_TEXT = (
-    "<task_notification>", "<reminder>", "[Scheduled:", "[Team inbox]", "[Compacted",
-    "[Reactive compact]", "[snipped ", "[会话恢复]", "[用户中断]",
-)
+MEMORY_COMMANDS = ("view", "create", "str_replace", "delete")
+
+
+def memory_tool_schema(writable: bool = True) -> dict:
+    commands = list(MEMORY_COMMANDS) if writable else ["view"]
+    return {
+        "name": "memory",
+        "description": (
+            "Read and write this workspace's persistent memory folder. Paths are relative to the folder, "
+            "e.g. 'MEMORY.md' (the index loaded into every session) or 'topic/note.md'. "
+            "view lists the folder or shows a note with line numbers; create writes a whole note; "
+            "str_replace replaces one exact, unique snippet; delete removes a note."
+            if writable else
+            "Read this workspace's persistent memory folder (read-only: PAMU_AUTO_MEMORY=off). "
+            "view lists the folder or shows a note, e.g. 'MEMORY.md' or 'topic/note.md'."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "command": {"type": "string", "enum": commands},
+                "path": {"type": "string", "description": "Note path relative to the memory folder; empty for the folder."},
+                **({
+                    "file_text": {"type": "string", "description": "Full note content for create."},
+                    "old_str": {"type": "string", "description": "Exact text to replace for str_replace."},
+                    "new_str": {"type": "string", "description": "Replacement text for str_replace."},
+                } if writable else {}),
+            },
+            "required": ["command"],
+        },
+    }
+
+
+class MemoryPathError(ValueError):
+    """A note path that is outside, hidden in, or not a markdown note of the memory folder."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,353 +70,235 @@ class MemoryStore:
     index_path: Path
 
 
-def _parse_memory_frontmatter(text: str) -> tuple[dict, str]:
-    if not text.startswith("---"):
-        return {}, text
-    parts = text.split("---", 2)
-    if len(parts) < 3:
-        return {}, text
-    metadata = {}
-    for line in parts[1].splitlines():
-        if ":" in line:
-            key, value = line.split(":", 1)
-            metadata[key.strip()] = value.strip().strip('"').strip("'")
-    return metadata, parts[2].strip()
-
-
-def write_memory_file(
-    store: MemoryStore,
-    name: str,
-    memory_type: str,
-    description: str,
-    body: str,
-):
-    slug = name.lower().replace(" ", "-").replace("/", "-")
-    path = store.root / f"{slug}.md"
-    store.root.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        f"---\nname: {name}\ndescription: {description}\ntype: {memory_type}\n---\n\n{body}\n"
-    )
-    rebuild_index(store)
-    return path
-
-
-def rebuild_index(store: MemoryStore):
-    lines = []
-    for path in sorted(store.root.glob("*.md")):
-        if path.name == "MEMORY.md":
-            continue
-        raw = path.read_text()
-        metadata, body = _parse_memory_frontmatter(raw)
-        name = metadata.get("name", path.stem)
-        description = metadata.get("description", body.split("\n")[0][:80])
-        lines.append(f"- [{name}]({path.name}) — {description}")
-    store.index_path.write_text("\n".join(lines) + "\n" if lines else "")
-
-
-def read_memory_index(store: MemoryStore) -> str:
-    if not store.index_path.exists():
-        return ""
-    text = store.index_path.read_text().strip()
-    return text if text else ""
-
-
-def read_memory_file(store: MemoryStore, filename: str, *, max_chars=None) -> str | None:
-    path = store.root / filename
-    if path.name.lower().startswith((".env", ".settings", "credentials")) or not path.exists() or path.is_symlink() or not path.resolve().is_relative_to(store.root.resolve()):
-        return None
-    with path.open(encoding="utf-8") as stream:
-        return stream.read(max_chars) if max_chars is not None else stream.read()
-
-
-def list_memory_files(store: MemoryStore, *, max_files=None, max_chars=None) -> list[dict]:
-    result = []
-    if not store.root.exists():
-        return result
-    for path in sorted(store.root.glob("*.md")):
-        if path.name == "MEMORY.md":
-            continue
-        if path.is_symlink() or path.name.lower().startswith((".env", ".settings", "credentials")):
-            continue
-        try:
-            with path.open(encoding="utf-8") as stream:
-                raw = stream.read(max_chars) if max_chars is not None else stream.read()
-        except (OSError, UnicodeError):
-            continue
-        metadata, body = _parse_memory_frontmatter(raw)
-        result.append(
-            {
-                "filename": path.name,
-                "name": metadata.get("name", path.stem),
-                "description": metadata.get("description", ""),
-                "type": metadata.get("type", "user"),
-                "body": body,
-            }
-        )
-        if max_files is not None and len(result) >= max_files:
-            break
-    return result
-
-
-def is_internal_reminder_text(text: str) -> bool:
-    text = text.strip().lower()
-    return text.startswith(("<reminder>", "</reminder>"))
-
-
-def select_relevant_memories(
-    store: MemoryStore,
-    messages: list,
-    summarize,
-    max_items: int = 5,
-) -> list[str]:
-    files = list_memory_files(store, max_files=64, max_chars=2048)
-    if not files:
-        return []
-    recent_texts = []
-    for message in reversed(messages):
-        content = message.get("content", "")
-        if isinstance(content, list):
-            content = output_text(content, separator=" ")
-        if is_internal_reminder_text(content.strip()):
-            continue
-        if isinstance(content, str):
-            recent_texts.append(content)
-        if len(recent_texts) >= 5:
-            break
-    recent = " ".join(reversed(recent_texts))[:2000]
-    if not recent.strip():
-        return []
-    catalog = "\n".join(
-        f"{index}: {file['name'][:128]} — {file['description'][:256]}"
-        for index, file in enumerate(files)
-    )
-    prompt = (
-        "Given the recent conversation and the memory catalog below, "
-        "select the indices of memories that are clearly relevant. "
-        "Return ONLY a JSON array of integers, e.g. [0, 3]. "
-        "If none are relevant, return [].\n\n"
-        f"Recent conversation:\n{recent}\n\nMemory catalog:\n{catalog[:4000]}"
-    )
-    try:
-        text = summarize(prompt, 200).strip()
-        match = re.search(r"\[.*?\]", text, re.DOTALL)
-        if match:
-            indices = json.loads(match.group())
-            selected = []
-            for index in indices:
-                if isinstance(index, int) and 0 <= index < len(files):
-                    selected.append(files[index]["filename"])
-                    if len(selected) >= max_items:
-                        break
-            return selected
-    except Exception:
-        ...  # fall back to keyword matching below
-    keywords = [word.lower() for word in recent.split() if len(word) > 3]
-    selected = []
-    for file in files:
-        text = (file["name"] + " " + file["description"]).lower()
-        if any(keyword in text for keyword in keywords):
-            selected.append(file["filename"])
-            if len(selected) >= max_items:
-                break
-    return selected
-
-
-def load_memories(store: MemoryStore, messages: list, summarize, *, max_tokens=1024) -> str:
-    from ..core.context_materials import bounded_text
-    if max_tokens <= 0:
-        return ""
-    selected_files = select_relevant_memories(store, messages, summarize)
-    if not selected_files:
-        return ""
-    parts = ["<relevant_memories>"]
-    for filename in selected_files:
-        content = read_memory_file(store, filename, max_chars=max_tokens * 2)
-        if content:
-            parts.append(content)
-    parts.append("</relevant_memories>")
-    return bounded_text("\n\n".join(parts), max_tokens)
-
-
 def contains_secret(text: str) -> bool:
     return bool(SECRET_PATTERN.search(text))
 
 
-def _authored_text(message) -> str:
-    """User-typed and assistant-written text only; tool results and runtime notices are excluded."""
-    role = message.get("role")
-    if role not in ("user", "assistant") or message.get("_pamu_source") == "system":
+def resolve_note(store: MemoryStore, path: str, *, allow_dir: bool = False) -> Path:
+    text = str(path or "").strip().replace("\\", "/").lstrip("/")
+    parts = PurePosixPath(text).parts if text else ()
+    if any(part in (".", "..") or part.startswith(".") for part in parts):
+        raise MemoryPathError(f"无效的记忆路径：{path}")
+    if len(parts) > MAX_DEPTH:
+        raise MemoryPathError(f"记忆目录最多 {MAX_DEPTH} 层：{path}")
+    if not allow_dir and (not parts or not parts[-1].endswith(".md")):
+        raise MemoryPathError(f"记忆笔记必须是 .md 文件：{path}")
+    current = store.root
+    for part in ("", *parts):
+        current = current / part if part else current
+        if current.is_symlink():
+            raise MemoryPathError(f"记忆路径不能经过符号链接：{path}")
+    if current.exists() and not current.resolve().is_relative_to(store.root.resolve()):
+        raise MemoryPathError(f"记忆路径越界：{path}")
+    return current
+
+
+def _note_paths(store: MemoryStore) -> list[Path]:
+    if not store.root.is_dir() or store.root.is_symlink():
+        return []
+    paths = []
+    for path in sorted(store.root.rglob("*.md")):
+        relative = path.relative_to(store.root)
+        if any(part.startswith(".") for part in relative.parts) or len(relative.parts) > MAX_DEPTH:
+            continue
+        if path.is_symlink() or any(parent.is_symlink() for parent in path.parents if parent != store.root and parent.is_relative_to(store.root)):
+            continue
+        if path.is_file():
+            paths.append(path)
+    return paths
+
+
+def _summary(text: str) -> str:
+    lines = text.splitlines()
+    if lines[:1] == ["---"]:
+        for line in lines[1:]:
+            if line.strip() == "---":
+                break
+            if line.startswith("description:"):
+                return line.split(":", 1)[1].strip().strip("'\"")[:120]
+    for line in lines:
+        line = line.strip().lstrip("#").strip()
+        if line and line != "---":
+            return line[:120]
+    return ""
+
+
+def list_notes(store: MemoryStore) -> list[dict]:
+    """Every note except the index, with size and a one-line summary."""
+    notes = []
+    for path in _note_paths(store):
+        if path == store.index_path:
+            continue
+        try:
+            with path.open(encoding="utf-8") as stream:
+                head = stream.read(2048)
+            size = path.stat().st_size
+        except (OSError, UnicodeError):
+            continue
+        notes.append({"path": path.relative_to(store.root).as_posix(), "bytes": size, "summary": _summary(head)})
+    return notes
+
+
+def injected_index(store: MemoryStore) -> str:
+    """The top of the hierarchy: first 200 lines / 25 KB of MEMORY.md, or a listing if there is none."""
+    path = store.index_path
+    try:
+        if path.is_file() and not path.is_symlink():
+            with path.open(encoding="utf-8", errors="replace") as stream:
+                raw = stream.read(INDEX_MAX_BYTES + 1)
+            lines = raw[:INDEX_MAX_BYTES].splitlines()
+            text = "\n".join(lines[:INDEX_MAX_LINES]).strip()
+            if len(raw) > INDEX_MAX_BYTES or len(lines) > INDEX_MAX_LINES:
+                text += (f"\n[MEMORY.md truncated: only the first {INDEX_MAX_LINES} lines / "
+                         f"{INDEX_MAX_BYTES // 1000} KB are loaded; move detail into notes]")
+            if text:
+                return text
+    except OSError:
         return ""
-    content = message.get("content", "")
-    blocks = [content] if isinstance(content, str) else [
-        block.get("text", "") if isinstance(block, dict) else getattr(block, "text", "")
-        for block in content
-        if (block.get("type") if isinstance(block, dict) else getattr(block, "type", None)) == "text"
-    ]
-    texts = [text for text in blocks if isinstance(text, str) and text.strip()]
-    if role == "user":
-        texts = [text for text in texts if not text.strip().startswith(_INTERNAL_TEXT)]
-    return " ".join(texts)
+    notes = list_notes(store)[:50]
+    if not notes:
+        return ""
+    return "[No MEMORY.md yet; notes in the memory folder:]\n" + "\n".join(
+        f"- {note['path']}" + (f" — {note['summary']}" if note["summary"] else "") for note in notes
+    )
 
 
-def _safe_items(items) -> list[dict]:
-    safe = []
-    for memory in items if isinstance(items, list) else []:
-        if not isinstance(memory, dict):
-            continue
-        fields = [str(memory.get(key, "")) for key in ("name", "description", "body")]
-        if contains_secret("\n".join(fields)):
-            LOGGER.warning("skipped a memory that looks like it contains a credential")
-            continue
-        safe.append(memory)
-    return safe
+def _view(store: MemoryStore, path: str) -> str:
+    target = resolve_note(store, path, allow_dir=True)
+    if target.is_dir() or not path.strip():
+        notes = [note for note in list_notes(store) if not path.strip() or note["path"].startswith(
+            target.relative_to(store.root).as_posix().rstrip("/") + "/")]
+        lines = [f"- {note['path']} ({note['bytes']} B)" + (f" — {note['summary']}" if note["summary"] else "")
+                 for note in notes]
+        if not path.strip() and store.index_path.is_file():
+            lines.insert(0, f"- {INDEX_NAME} (index, loaded into every session)")
+        return "\n".join(lines) if lines else "(memory folder is empty)"
+    if not target.is_file():
+        return f"Error: 记忆不存在：{path}"
+    with target.open(encoding="utf-8", errors="replace") as stream:
+        text = stream.read(NOTE_MAX_BYTES)
+    return "\n".join(f"{number:4}\t{line}" for number, line in enumerate(text.splitlines(), 1)) or "(empty note)"
+
+
+def _check_content(path: str, text: str) -> str | None:
+    if contains_secret(text):
+        LOGGER.warning("refused a memory write that looks like it contains a credential")
+        return "Error: 内容看起来包含凭证，记忆不会保存凭证。"
+    if len(text.encode("utf-8")) > NOTE_MAX_BYTES:
+        return f"Error: 单条记忆不能超过 {NOTE_MAX_BYTES} 字节；请拆分或精简 {path}。"
+    return None
+
+
+def _create(store: MemoryStore, path: str, file_text: str) -> str:
+    target = resolve_note(store, path)
+    if error := _check_content(path, file_text):
+        return error
+    existed = target.exists()
+    if not existed and len(_note_paths(store)) >= MAX_NOTES:
+        return f"Error: 记忆已有 {MAX_NOTES} 条笔记；请先合并或删除旧笔记。"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    resolve_note(store, path)
+    target.write_text(file_text if file_text.endswith("\n") else file_text + "\n", encoding="utf-8")
+    return f"{'Updated' if existed else 'Created'} {target.relative_to(store.root).as_posix()}"
+
+
+def _str_replace(store: MemoryStore, path: str, old_str: str, new_str: str) -> str:
+    target = resolve_note(store, path)
+    if not target.is_file():
+        return f"Error: 记忆不存在：{path}"
+    text = target.read_text(encoding="utf-8")
+    count = text.count(old_str) if old_str else 0
+    if count != 1:
+        return f"Error: old_str 在 {path} 中出现 {count} 次，必须恰好出现一次。"
+    updated = text.replace(old_str, new_str, 1)
+    if error := _check_content(path, updated):
+        return error
+    target.write_text(updated, encoding="utf-8")
+    return f"Updated {target.relative_to(store.root).as_posix()}"
+
+
+def _remove(store: MemoryStore, target: Path) -> None:
+    target.unlink()
+    parent = target.parent
+    while parent != store.root and parent.is_relative_to(store.root) and not any(parent.iterdir()):
+        parent.rmdir()
+        parent = parent.parent
+
+
+def _delete(store: MemoryStore, path: str) -> str:
+    target = resolve_note(store, path)
+    if not target.is_file():
+        return f"Error: 记忆不存在：{path}"
+    _remove(store, target)
+    return f"Deleted {target.relative_to(store.root).as_posix()}"
+
+
+def run_memory_command(store: MemoryStore, command: str, path: str = "", file_text: str | None = None,
+                       old_str: str | None = None, new_str: str | None = None, *, writable: bool = True) -> str:
+    try:
+        if command == "view":
+            return _view(store, path)
+        if command not in MEMORY_COMMANDS:
+            return f"Error: 未知的 memory 命令：{command}"
+        if not writable:
+            return "Error: 记忆为只读（PAMU_AUTO_MEMORY=off）。"
+        if command == "create":
+            return _create(store, path, file_text or "") if file_text else "Error: create 需要 file_text。"
+        if command == "str_replace":
+            return _str_replace(store, path, old_str or "", new_str or "")
+        return _delete(store, path)
+    except (MemoryPathError, OSError, UnicodeError) as error:
+        return f"Error: {error}"
+
+
+def forget_note(store: MemoryStore, target: str) -> str | None:
+    """Delete the note matching a path, a path without .md, or a file stem; return its path."""
+    folded = target.strip().casefold().removesuffix(".md")
+    for path in _note_paths(store):
+        relative = path.relative_to(store.root).as_posix()
+        if folded and folded in (relative.casefold().removesuffix(".md"), path.stem.casefold()):
+            _remove(store, path)
+            return relative
+    return None
+
+
+def snapshot_tree(store: MemoryStore) -> dict[str, str]:
+    return {path.relative_to(store.root).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in _note_paths(store)}
 
 
 def backup_memories(store: MemoryStore, clock=datetime.now) -> Path | None:
-    """Copy the memory files aside, keeping only the most recent backups."""
-    files = [path for path in store.root.glob("*.md")] if store.root.exists() else []
+    """Copy every note aside, keeping only the most recent backups."""
+    files = _note_paths(store)
     if not files:
         return None
     backups = store.root / ".backup"
     target = backups / clock().strftime("%Y%m%d-%H%M%S-%f")
     target.mkdir(parents=True)
     for path in files:
-        shutil.copy2(path, target / path.name)
+        copy = target / path.relative_to(store.root)
+        copy.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(path, copy)
     for old in sorted(path for path in backups.iterdir() if path.is_dir())[:-BACKUPS_KEPT]:
         shutil.rmtree(old, ignore_errors=True)
     return target
 
 
-def forget_memory(store: MemoryStore, name: str) -> str | None:
-    """Delete the memory whose name or file stem matches; return its name."""
-    folded = name.strip().casefold()
-    for item in list_memory_files(store):
-        if folded in (item["name"].casefold(), Path(item["filename"]).stem.casefold()):
-            (store.root / item["filename"]).unlink()
-            rebuild_index(store)
-            return item["name"]
-    return None
-
-
-def extract_memories(store: MemoryStore, messages: list, summarize) -> list[str]:
-    """Persist new memories from the dialogue; return the names that were written."""
-    dialogue_parts = []
-    for message in messages:
-        text = _authored_text(message)
-        if text:
-            dialogue_parts.append(f"{message['role']}: {text}")
-    dialogue = "\n".join(dialogue_parts)
-    if not dialogue.strip():
-        return []
-    existing = list_memory_files(store)
-    existing_description = (
-        "\n".join(f"- {item['name']}: {item['description']}" for item in existing)
-        if existing
-        else "(none)"
-    )
-    prompt = (
-        "Extract user preferences, constraints, or project facts from this dialogue.\n"
-        "Return a JSON array. Each item: {name, type, description, body}.\n"
-        "- name: short kebab-case identifier (e.g. 'user-preference-tabs')\n"
-        "- type: one of 'user' (user preference), 'feedback' (guidance), "
-        "'project' (project fact), 'reference' (external pointer)\n"
-        "- description: one-line summary for index lookup\n"
-        "- body: full detail in markdown\n"
-        "If nothing new or already covered by existing memories, return [].\n\n"
-        f"Existing memories:\n{existing_description}\n\nDialogue:\n{dialogue[:4000]}"
-    )
-    try:
-        text = summarize(prompt, 800).strip()
-        match = re.search(r"\[.*\]", text, re.DOTALL)
-        if not match:
-            return []
-        written = []
-        for memory in _safe_items(json.loads(match.group())):
-            name = str(memory.get("name") or f"memory_{int(time.time())}")
-            description, body = str(memory.get("description", "")), str(memory.get("body", ""))
-            if description and body:
-                write_memory_file(store, name, str(memory.get("type", "user")), description, body)
-                written.append(name)
-        if written:
-            LOGGER.info("extracted %d new memories", len(written))
-        return written
-    except Exception:
-        LOGGER.warning("memory extraction failed", exc_info=True)
-        return []
-
-
-def consolidate_memories(store: MemoryStore, summarize):
-    files = list_memory_files(store)
-    if len(files) < CONSOLIDATE_THRESHOLD:
+def restore_backup(store: MemoryStore, backup: Path | None) -> None:
+    """Put the notes back exactly as they were in ``backup`` (``None`` means there were none)."""
+    for path in _note_paths(store):
+        _remove(store, path)
+    if backup is None:
         return
-    catalog = "\n".join(
-        f"## {file['filename']}\nname: {file['name']}\n"
-        f"description: {file['description']}\n{file['body']}"
-        for file in files
-    )
-    prompt = (
-        "Consolidate the following memory files. Rules:\n"
-        "1. Merge duplicates into one\n"
-        "2. Remove outdated/contradicted memories\n"
-        "3. Keep the total under 30 memories\n"
-        "4. Preserve important user preferences above all\n"
-        "Return a JSON array. Each item: {name, type, description, body}.\n\n"
-        f"{catalog[:16000]}"
-    )
-    try:
-        text = summarize(prompt, 3000).strip()
-        match = re.search(r"\[.*\]", text, re.DOTALL)
-        if not match:
-            return
-        items = _safe_items(json.loads(match.group()))
-        if not items:
-            LOGGER.warning("memory consolidation returned nothing; keeping existing memories")
-            return
-        backup_memories(store)
-        for path in store.root.glob("*.md"):
-            if path.name != "MEMORY.md":
-                path.unlink()
-        for memory in items:
-            name = memory.get("name", f"memory_{int(time.time())}")
-            memory_type = memory.get("type", "user")
-            description = memory.get("description", "")
-            body = memory.get("body", "")
-            if description and body:
-                write_memory_file(store, name, memory_type, description, body)
-        LOGGER.info("consolidated %d memories into %d", len(files), len(items))
-    except Exception:
-        LOGGER.warning("memory consolidation failed", exc_info=True)
+    for path in sorted(backup.rglob("*.md")):
+        target = store.root / path.relative_to(backup)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(path, target)
 
 
-def find_latest_text_user_message(messages: list) -> int | None:
-    for index in range(len(messages) - 1, -1, -1):
-        message = messages[index]
-        if message.get("role") != "user":
-            continue
-        content = message.get("content")
-        if not isinstance(content, str) or not content.strip():
-            continue
-        if content.strip().startswith("<reminder>"):
-            continue
-        return index
-    return None
-
-
-def build_request_messages_with_memories(
-    store: MemoryStore,
-    messages: list,
-    summarize,
-    *, max_tokens=1024,
-):
-    memories = load_memories(store, messages, summarize, max_tokens=max_tokens)
-    if not memories:
-        return messages
-    target = find_latest_text_user_message(messages)
-    if target is None:
-        return messages
-    request_messages = messages.copy()
-    request_messages[target] = {
-        **messages[target],
-        "content": messages[target]["content"] + "\n\n" + memories,
-    }
-    return request_messages
+def memory_handler(store: MemoryStore, *, writable: bool = True):
+    def handle(command="view", path="", file_text=None, old_str=None, new_str=None, **unexpected):
+        if unexpected:
+            return f"Error: memory 不接受参数：{', '.join(sorted(unexpected))}"
+        return run_memory_command(store, str(command), str(path or ""), file_text, old_str, new_str, writable=writable)
+    return handle

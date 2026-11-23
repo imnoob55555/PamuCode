@@ -386,6 +386,22 @@ def build_runtime(
                         for name, handler in builtin_handlers.items()}
     builtin.register_builtin_tools(registry, builtin_handlers)
     registry.register(skills.LIST_SKILLS_SCHEMA, lambda: skills.list_skills(skill_state))
+    if policy.mode != "confined":
+        from .features.transcripts import TRANSCRIPT_READ_SCHEMA, TRANSCRIPT_SEARCH_SCHEMA, transcript_handlers
+        from .working_mode import working_mode
+
+        memory_writable = config.auto_memory and not config.headless
+        handle_memory = memory.memory_handler(memory_store, writable=memory_writable)
+
+        def run_memory(command="view", **arguments):
+            if command != "view" and working_mode(session) == "plan":
+                return "Error: 规划模式下记忆只读；用户可通过 /execute 允许写入。"
+            return handle_memory(command, **arguments)
+
+        registry.register(memory.memory_tool_schema(memory_writable), run_memory)
+        transcript_tools = transcript_handlers(config.workdir)
+        registry.register(TRANSCRIPT_SEARCH_SCHEMA, transcript_tools["transcript_search"])
+        registry.register(TRANSCRIPT_READ_SCHEMA, transcript_tools["transcript_read"])
     todos.register_todo_tools(registry, session)
     tasks.register_task_tools(registry, task_store)
     scheduler.register_scheduler_tools(registry, scheduler_state, config)

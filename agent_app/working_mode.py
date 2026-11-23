@@ -7,7 +7,7 @@ from functools import wraps
 # Shell commands and external tools have effects we cannot infer safely here.
 PLAN_TOOLS = frozenset({
     "read_file", "glob", "load_skill", "list_skills", "compact", "todo_write",
-    "history_search", "history_read",
+    "history_search", "history_read", "memory", "transcript_search", "transcript_read",
 })
 
 

@@ -22,6 +22,23 @@ PROMPT_SECTIONS = {
     "tools": "Available tools: ",
 }
 
+MEMORY_GUIDANCE = (
+    "Memory:\n"
+    "The memory tool reads and writes a folder of notes that persists across sessions in this workspace. "
+    "MEMORY.md is its index; its first 200 lines are loaded below at the start of every session. "
+    "Memory is for what a future session cannot get from the code, git history or tools: user preferences "
+    "and corrections, decisions and why they were made, rules you verified and how, pitfalls, unfinished goals. "
+    "Write a note when the user asks you to remember something or when something is clearly worth remembering; "
+    "judge what is salient yourself. Keep MEMORY.md short and link to detailed notes. Notes can go stale: when "
+    "one contradicts what you observe, trust the observation and fix the note. Read the relevant note before "
+    "relying on it, and use transcript_search to look up earlier sessions. Never store secrets."
+)
+MEMORY_READONLY_GUIDANCE = (
+    "Memory (read-only):\n"
+    "The memory tool can view a folder of notes from earlier sessions in this workspace; MEMORY.md is its index. "
+    "Notes can go stale: trust what you observe over a note. Use transcript_search to look up earlier sessions."
+)
+
 
 def assemble_system_prompt(context: dict) -> str:
     sections = []
@@ -74,7 +91,10 @@ def assemble_system_prompt(context: dict) -> str:
     )
 
     memories = context.get("memories", "")
-    if memories:
+    if "memory" in context.get("enabled_tools", []):
+        guidance = MEMORY_GUIDANCE if context.get("memory_writable", True) else MEMORY_READONLY_GUIDANCE
+        sections.append(guidance + "\n\nMEMORY.md:\n" + (memories or "(empty)"))
+    elif memories:
         sections.append(f"Memory index:\n{memories}")
 
     skills = context.get("skills")

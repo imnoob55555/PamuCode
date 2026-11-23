@@ -648,7 +648,7 @@ def test_final_teammate_message_forces_one_more_round(runtime_factory):
     assert "late result" in str(runtime.llm.requests[1]["messages"])
 
 
-def test_finalization_runs_stop_then_team_wait_then_memory(
+def test_finalization_runs_stop_then_team_wait(
     runtime_factory, monkeypatch
 ):
     runtime = runtime_factory([text_response()])
@@ -659,18 +659,10 @@ def test_finalization_runs_stop_then_team_wait_then_memory(
         "agent_app.core.loop._wait_for_team_activity",
         lambda _runtime: events.append("team") or False,
     )
-    monkeypatch.setattr(
-        "agent_app.core.loop.extract_memories",
-        lambda *_args: events.append("extract"),
-    )
-    monkeypatch.setattr(
-        "agent_app.core.loop.consolidate_memories",
-        lambda *_args: events.append("consolidate"),
-    )
 
     run_agent_loop(runtime)
 
-    assert events == ["stop", "team", "extract", "consolidate"]
+    assert events == ["stop", "team"]
 
 
 def test_tool_registry_is_snapshotted_again_each_round(runtime_factory):
@@ -775,17 +767,15 @@ def test_background_dispatch_respects_the_running_task_limit(runtime_factory):
     assert result["is_error"] and "PAMU_MAX_BACKGROUND_TASKS" in result["content"]
 
 
-def test_loop_announces_new_memories_and_respects_auto_memory_off(runtime_factory, monkeypatch, capsys):
-    monkeypatch.setattr("agent_app.core.loop.extract_memories", lambda *_args: ["tabs"])
-    monkeypatch.setattr("agent_app.core.loop.consolidate_memories", lambda *_args: None)
+def test_turns_make_no_hidden_memory_model_calls(runtime_factory):
     runtime = runtime_factory([text_response()])
-    runtime.session.history.append({"role": "user", "content": "use tabs"})
+    runtime.memory.root.mkdir(parents=True, exist_ok=True)
+    (runtime.memory.root / "tabs.md").write_text("Use tabs.\n")
+    hidden = []
+    runtime.llm.create = lambda **kwargs: hidden.append(kwargs)
+    runtime.session.history.append({"role": "user", "content": "please always use tabs"})
     run_agent_loop(runtime)
-    assert "已记住：tabs" in capsys.readouterr().out
+    assert len(runtime.llm.requests) == 1 and hidden == []
+    assert runtime.llm.requests[0]["messages"][-1]["content"] == "please always use tabs"
+    assert sorted(path.name for path in runtime.memory.root.iterdir()) == ["tabs.md"]
 
-    monkeypatch.setattr("agent_app.core.loop.extract_memories", lambda *_args: pytest.fail("extracted while off"))
-    monkeypatch.setattr("agent_app.core.loop.consolidate_memories", lambda *_args: pytest.fail("consolidated while off"))
-    runtime = runtime_factory([text_response()])
-    runtime.config = replace(runtime.config, auto_memory=False)
-    runtime.session.history.append({"role": "user", "content": "use tabs"})
-    run_agent_loop(runtime)
