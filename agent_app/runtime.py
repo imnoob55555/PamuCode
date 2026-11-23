@@ -133,6 +133,7 @@ class RuntimeContext:
 
     sessions: Any = None
     checkpoints: Any = None
+    repository: Any = None
 
     def __post_init__(self) -> None:
         # Direct constructions without an explicit router (tests, embedders)

@@ -18,6 +18,8 @@ from .cli_progress import show_shell_status, terminal_confirmation, terminal_pro
 from . import config as config_module
 from .config import AppConfig
 from .core.prompt import PromptBuilder
+from .core.context import warn_large_project_rules
+from .core.repository import inspect_repository
 from .core.delegated_context import DelegatedContext
 from .features import auth as auth_store
 from .features import (
@@ -189,7 +191,7 @@ def _create_storage_roots(config: AppConfig) -> None:
         root.mkdir(parents=True, exist_ok=True)
 
 
-def _run_git(config: AppConfig, args: list[str]) -> tuple[bool, str]:
+def _run_git(config: AppConfig, args: list[str], timeout: float = 30) -> tuple[bool, str]:
     if config.sandbox_mode == "confined":
         return False, "Error: worktree commands are unavailable in confined mode"
     try:
@@ -198,7 +200,7 @@ def _run_git(config: AppConfig, args: list[str]) -> tuple[bool, str]:
             cwd=config.workdir,
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=timeout,
             env=child_environment(os.environ, scratch=config.state_dir / "child-tmp"),
         )
         output = (result.stdout + result.stderr).strip()
@@ -611,6 +613,8 @@ def build_runtime(
     subagents.register_subagent_tool(registry, spawn_subagent)
     mcp.register_mcp_connection_tool(registry, mcp_state)
 
+    repository = inspect_repository(config.workdir, lambda args: _run_git(config, args, timeout=5))
+    warn_large_project_rules(config, repository)
     return RuntimeContext(
         config=config,
         llm=llm,
@@ -631,6 +635,7 @@ def build_runtime(
         model=model_router,
         sessions=session_persistence,
         checkpoints=file_checkpoints,
+        repository=repository,
     )
 
 

@@ -143,6 +143,14 @@ Execution mode does not authorize unrelated changes, pushes, or deployments. Lim
 
 Before a turn first changes a file through `write_file` or `edit_file`, PamuCode saves the original under `.pamu/checkpoints/`. `/undo` lists the files from the most recent turn and restores them after confirmation (files created in that turn are removed). Run it again to go further back. If a file was edited again afterwards, you get a warning first. Changes made by shell commands cannot be undone. Each session keeps the last 20 turns.
 
+### Project instructions
+
+Every request carries the project's instruction files. PamuCode walks from the git repository root down to the current directory and reads one `AGENTS.md` per level. A level without a usable `AGENTS.md` (missing, empty, or a symlink) falls back to its `CLAUDE.md`. The files are joined outermost first, each labelled with its relative path, so the ones closest to the current directory come last. Outside a git repository only the current directory is read. Instruction files in subdirectories below the current directory are not read.
+
+The files go into the prompt in full and are never truncated. When they add up to more than 32 KB, PamuCode warns once at startup. Edits take effect on the next turn.
+
+PamuCode also records a git snapshot at startup: current branch, default branch, `git status --short --branch` (clipped at about 2000 characters) and the last 5 commits. It is taken once per launch, never stored with the session, and taken again when you resume. The snapshot runs git with hooks, fsmonitor and signature checks disabled and a 5-second timeout. Confined mode reads only the current directory's instruction file and takes no snapshot.
+
 ### Sessions and context
 
 Sessions are stored per workspace in `.pamu/sessions/`. Restoring a session replays its messages in order; press Ctrl+C to skip the replay. Past commands are never re-run, and background processes and teammates are not resumed.

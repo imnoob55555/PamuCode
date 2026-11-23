@@ -40,7 +40,7 @@ def test_optional_materials_bounded_and_required_rules_intact(tmp_path):
     context = build_context(runtime, [])
     total = sum(text_tokens(context[key]) for key in ('memories', 'skills', 'loaded_skills', 'recent_files'))
     assert total <= context['optional_budget_tokens']
-    assert context['project_rules'] == 'REQUIRED' * 10000
+    assert context['project_rules'] == 'From AGENTS.md:\n' + 'REQUIRED' * 10000
     assert 'KEEP EXACT' in assemble_system_prompt(context)
 
 
